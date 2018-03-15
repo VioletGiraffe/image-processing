@@ -73,10 +73,10 @@ inline uint32_t applyKernel(const CImageInterpolationKernelBase<float>& kernel, 
 	else
 		assert_and_return_unconditional_r("Unsupported number of channels", 0);
 
-	const uint32_t red = Math::round<uint32_t>(254.9f * r);
-	const uint32_t green = Math::round<uint32_t>(254.9f * g);
-	const uint32_t blue = Math::round<uint32_t>(254.9f * b);
-	const uint32_t alpha = Math::round<uint32_t>(254.9f * a);
+	const uint32_t red = Math::round<uint32_t>(r);
+	const uint32_t green = Math::round<uint32_t>(g);
+	const uint32_t blue = Math::round<uint32_t>(b);
+	const uint32_t alpha = Math::round<uint32_t>(a);
 
 	assert(red <= 255 && green <= 255 && blue <= 255);
 	return (red << 24) | (green << 16) | (blue << 8) | alpha;
@@ -86,7 +86,9 @@ std::unique_ptr<ImageAdapter> CImageResizer::bicubicInterpolation(const ImageAda
 {
 	if (newWidth == source.width() && newHeight == source.height())
 		return source.clone();
-	else if (source.bytesPerChannel() != 4 && source.bytesPerChannel() != 3)
+	else if (source.numChannels() != 4 && source.numChannels() != 3)
+		return source.clone();
+	else if (source.bytesPerChannel() != 1)
 		return source.clone();
 
 	const Size sourceSize{source.width(), source.height()};
