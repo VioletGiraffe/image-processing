@@ -33,9 +33,6 @@ struct Size {
 
 inline uint32_t applyKernel(const CImageInterpolationKernelBase<float>& kernel, const ImageAdapter& source, int x, int y)
 {
-	assert_r(x >= 0 && y >= 0); // Tested - doesn't affect performance within 1 ms resolution
-	assert_and_return_r(source.bytesPerChannel() == 1, 0);
-
 	float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.0f;
 
 	const auto srcHeight = source.height(), srcWidth = source.width();
@@ -49,10 +46,10 @@ inline uint32_t applyKernel(const CImageInterpolationKernelBase<float>& kernel, 
 			for (auto i = x, i_kernel = 0; i < x + kernelSize && i < srcWidth; ++i, ++i_kernel)
 			{
 				const auto coeff = kernel.coeff(i_kernel, k_kernel);
-				r += static_cast<uint8_t>(line[i] >> 24) * coeff;
-				g += static_cast<uint8_t>((line[i] >> 16) & 0xFF) * coeff;
-				b += static_cast<uint8_t>((line[i] >> 8) & 0xFF)  * coeff;
-				a += static_cast<uint8_t>(line[i] & 0xFF)  * coeff;
+				a += static_cast<uint8_t>(line[i] >> 24) * coeff;
+				r += static_cast<uint8_t>((line[i] >> 16) & 0xFF) * coeff;
+				g += static_cast<uint8_t>((line[i] >> 8) & 0xFF)  * coeff;
+				b += static_cast<uint8_t>(line[i] & 0xFF)  * coeff;
 			}
 		}
 	}
@@ -79,7 +76,7 @@ inline uint32_t applyKernel(const CImageInterpolationKernelBase<float>& kernel, 
 	const uint32_t alpha = Math::round<uint32_t>(a);
 
 	assert(red <= 255 && green <= 255 && blue <= 255);
-	return (red << 24) | (green << 16) | (blue << 8) | alpha;
+	return (alpha << 24) | (red << 16) | (green << 8) | blue;
 }
 
 std::unique_ptr<ImageAdapter> CImageResizer::bicubicInterpolation(const ImageAdapter& source, const uint32_t newWidth, const uint32_t newHeight, const AspectRatioPolicy aspectRatio)
@@ -93,22 +90,11 @@ std::unique_ptr<ImageAdapter> CImageResizer::bicubicInterpolation(const ImageAda
 
 	const Size sourceSize{source.width(), source.height()};
 
-	Size actualTargetSize {newWidth, newHeight};
-	if (fabs((newWidth / (float)newHeight) - source.aspectRatio()) > 0.001f)
-		actualTargetSize = sourceSize.scaled(actualTargetSize);
-
-	if (actualTargetSize.width * actualTargetSize.height == 0)
-		return nullptr;
-
-	const float scaleFactor = source.width() > actualTargetSize.width ? source.width() / (float)actualTargetSize.width : actualTargetSize.width / (float)source.width();
-
-	const auto intScaleFactor = Math::ceil<int>(scaleFactor);
-	const Size upscaledSourceSize = scaleFactor != 1.0f ? sourceSize.scaled(actualTargetSize * intScaleFactor) : sourceSize;
-
+	const Size actualTargetSize{newWidth, newHeight};
 	auto dest = source.createSameFormat(actualTargetSize.width, actualTargetSize.height);
 
 	// TODO: refactor this. There's no need to create all the kernels, we're only going to use one.
-	const CLanczosKernel lanczosKernel(sourceSize.width / actualTargetSize.width, 3);
+	//const CLanczosKernel lanczosKernel(sourceSize.width / actualTargetSize.width, 3);
 	const CBicubicKernel bicubicKernel(sourceSize.width / actualTargetSize.width, 0.5f);
 
 	const CImageInterpolationKernelBase<float>& kernel = bicubicKernel;
@@ -122,11 +108,11 @@ std::unique_ptr<ImageAdapter> CImageResizer::bicubicInterpolation(const ImageAda
 		for (uint32_t x = 0; x < actualTargetSize.width; ++x, currentPixel += nChannels)
 		{
 			const uint32_t pixel = applyKernel(kernel, source, x * kernelSize, y * kernelSize);
-			*currentPixel = pixel >> 24;
-			*(currentPixel + 1) = (pixel >> 16) & 0xFF;
-			*(currentPixel + 2) = (pixel >> 8) & 0xFF;
+			*currentPixel = pixel & 0xFF;
+			*(currentPixel + 1) = (pixel >> 8) & 0xFF;
+			*(currentPixel + 2) = (pixel >> 16) & 0xFF;
 			if (nChannels == 4)
-				*(currentPixel + 3) = pixel & 0xFF;
+				*(currentPixel + 3) = (pixel >> 24) & 0xFF;
 		}
 	}
 
