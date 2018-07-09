@@ -40,10 +40,10 @@ inline uint32_t applyKernel(const CImageInterpolationKernelBase<float>& kernel, 
 	const auto nChannels = source.numChannels();
 	if (nChannels == 4)
 	{
-		for (auto k = y, k_kernel = 0; k < y + kernelSize && k < srcHeight; ++k, ++ k_kernel)
+		for (auto k = y, k_kernel = 0; k < y + kernelSize && k < (int)srcHeight; ++k, ++ k_kernel)
 		{
 			const auto* line = (const uint32_t*)source.scanLine(k);
-			for (auto i = x, i_kernel = 0; i < x + kernelSize && i < srcWidth; ++i, ++i_kernel)
+			for (auto i = x, i_kernel = 0; i < x + kernelSize && i < (int)srcWidth; ++i, ++i_kernel)
 			{
 				const auto coeff = kernel.coeff(i_kernel, k_kernel);
 				a += static_cast<uint8_t>(line[i] >> 24) * coeff;
@@ -55,10 +55,10 @@ inline uint32_t applyKernel(const CImageInterpolationKernelBase<float>& kernel, 
 	}
 	else if (nChannels == 3)
 	{
-		for (auto k = y, k_kernel = 0; k < y + kernelSize && k < srcHeight; ++k, ++ k_kernel)
+		for (auto k = y, k_kernel = 0; k < y + kernelSize && k < (int)srcHeight; ++k, ++ k_kernel)
 		{
 			const auto* line = (const uint8_t*)source.scanLine(k);
-			for (auto i = x, i_kernel = 0; i < x + kernelSize && i < srcWidth; ++i, ++i_kernel)
+			for (auto i = x, i_kernel = 0; i < x + kernelSize && i < (int)srcWidth; ++i, ++i_kernel)
 			{
 				const auto coeff = kernel.coeff(i_kernel, k_kernel);
 				r += static_cast<uint8_t>(line[0] * coeff);
@@ -79,7 +79,7 @@ inline uint32_t applyKernel(const CImageInterpolationKernelBase<float>& kernel, 
 	return (alpha << 24) | (red << 16) | (green << 8) | blue;
 }
 
-std::unique_ptr<ImageAdapter> CImageResizer::bicubicInterpolation(const ImageAdapter& source, const uint32_t newWidth, const uint32_t newHeight, const AspectRatioPolicy aspectRatio)
+std::unique_ptr<ImageAdapter> CImageResizer::bicubicInterpolation(const ImageAdapter& source, const uint32_t newWidth, const uint32_t newHeight, const AspectRatioPolicy /*aspectRatio*/)
 {
 	if (newWidth == source.width() && newHeight == source.height())
 		return source.clone();
