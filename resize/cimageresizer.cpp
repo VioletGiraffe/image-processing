@@ -75,7 +75,7 @@ inline uint32_t applyKernel(const CImageInterpolationKernelBase<float>& kernel, 
 	const uint32_t blue = Math::round<uint32_t>(b);
 	const uint32_t alpha = Math::round<uint32_t>(a);
 
-	assert(red <= 255 && green <= 255 && blue <= 255);
+	assert_debug_only(red <= 255 && green <= 255 && blue <= 255);
 	return (alpha << 24) | (red << 16) | (green << 8) | blue;
 }
 
