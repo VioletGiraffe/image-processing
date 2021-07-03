@@ -17,12 +17,10 @@ template <typename CoeffType>
 class CImageInterpolationKernel : public CImageInterpolationKernelBase<CoeffType>
 {
 public:
-	explicit CImageInterpolationKernel(int s): _size(s) {
-		_kernel.resize(s);
-		for(int i = 0; i < _size; ++i)
-		{
-			_kernel[i].resize(s, CoeffType{0});
-		}
+	explicit CImageInterpolationKernel(const int s):
+		_size(s),
+		_kernel(s, std::vector<CoeffType>(s, CoeffType{ 0 }))
+	{
 	}
 
 	CoeffType coeff(int x, int y) const noexcept override
