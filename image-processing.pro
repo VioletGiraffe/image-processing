@@ -3,7 +3,7 @@ CONFIG += staticlib
 TARGET = image-processing
 
 CONFIG -= qt
-CONFIG += strict_c++ c++2a
+CONFIG += strict_c++ c++latest
 
 mac* | linux* | freebsd{
 	CONFIG(release, debug|release):CONFIG *= Release optimize_full
