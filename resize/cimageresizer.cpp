@@ -21,7 +21,7 @@ struct Size {
 		return {Math::round<uint32_t>((float)width * factor), Math::round<uint32_t>((float)height * factor)};
 	}
 
-	[[nodiscard]] inline const Size scaled(const Size& dest) const {
+	[[nodiscard]] inline Size scaled(const Size& dest) const {
 		const float xScaleFactor = (float)width / (float)dest.width;
 		const float yScaleFactor = (float)height / (float)dest.height;
 
@@ -58,7 +58,7 @@ struct Size {
 	{
 		for (uint32_t k = y, k_kernel = 0; k < y + kernelSize && k < srcHeight; ++k, ++ k_kernel)
 		{
-			const auto* line = (const uint8_t*)source.scanLine(k);
+			const auto* line = reinterpret_cast<const uint8_t*>(source.scanLine(k));
 			for (uint32_t i = x, i_kernel = 0; i < x + kernelSize && i < srcWidth; ++i, ++i_kernel)
 			{
 				const auto coeff = kernel.coeff(i_kernel, k_kernel);

@@ -14,5 +14,5 @@ public:
 		IgnoreAspectRatio
 	};
 
-	static std::unique_ptr<ImageAdapter> bicubicInterpolation(const ImageAdapter& source, const uint32_t newWidth, const uint32_t newHeight, const AspectRatioPolicy aspectRatio = KeepAspectRatio);
+	[[nodiscard]] static std::unique_ptr<ImageAdapter> bicubicInterpolation(const ImageAdapter& source, uint32_t newWidth, uint32_t newHeight, AspectRatioPolicy aspectRatio = KeepAspectRatio);
 };
