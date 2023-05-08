@@ -20,7 +20,7 @@ template <typename CoeffType>
 class CImageInterpolationKernel : public CImageInterpolationKernelBase<CoeffType>
 {
 public:
-	explicit CImageInterpolationKernel(const uint32_t s):
+	explicit CImageInterpolationKernel(const uint32_t s) noexcept :
 		_size(s),
 		_kernel(s, std::vector<CoeffType>(s, CoeffType{ 0 }))
 	{
@@ -53,23 +53,23 @@ protected:
 class CBicubicKernel final : public CImageInterpolationKernel<float>
 {
 public:
-	CBicubicKernel(uint32_t s, float a);
+	CBicubicKernel(uint32_t s, float a) noexcept;
 };
 
 class CTriangularKernel final : public CImageInterpolationKernel<float>
 {
 public:
-	CTriangularKernel();
+	CTriangularKernel() noexcept;
 };
 
 class CBellBicubicKernel final : public CImageInterpolationKernel<float>
 {
 public:
-	explicit CBellBicubicKernel(uint32_t s);
+	explicit CBellBicubicKernel(uint32_t s) noexcept;
 };
 
 class CLanczosKernel final : public CImageInterpolationKernel<float>
 {
 public:
-	CLanczosKernel(uint32_t s, uint32_t a = 2);
+	CLanczosKernel(uint32_t s, uint32_t a = 2) noexcept;
 };

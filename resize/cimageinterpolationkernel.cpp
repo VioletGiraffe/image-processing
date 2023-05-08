@@ -14,7 +14,7 @@ inline float bicubic(uint32_t i, uint32_t size, float a)
 		return 0;
 }
 
-CBicubicKernel::CBicubicKernel(uint32_t s, float a): CImageInterpolationKernel(s)
+CBicubicKernel::CBicubicKernel(uint32_t s, float a) noexcept : CImageInterpolationKernel(s)
 {
 	for (uint32_t i = 0; i < size(); ++i)
 		for (uint32_t k = 0; k < size(); ++k)
@@ -23,7 +23,7 @@ CBicubicKernel::CBicubicKernel(uint32_t s, float a): CImageInterpolationKernel(s
 	normalizeKernel();
 }
 
-inline float triang(uint32_t i, uint32_t size)
+inline constexpr float triang(uint32_t i, uint32_t size)
 {
 	const float x = ((float)i / (float)size - 0.5f) * 2.0f; //[-1;+1]
 	return x <= 0.0f ? x + 1.0f : 1.0f - x;
@@ -59,7 +59,7 @@ inline float lanczos(uint32_t a, uint32_t i, uint32_t size)
 		return 0.0f;
 }
 
-CTriangularKernel::CTriangularKernel(): CImageInterpolationKernel(4)
+CTriangularKernel::CTriangularKernel() noexcept : CImageInterpolationKernel(4)
 {
 	for (uint32_t i = 0; i < size(); ++i)
 		for (uint32_t k = 0; k < size(); ++k)
@@ -68,7 +68,7 @@ CTriangularKernel::CTriangularKernel(): CImageInterpolationKernel(4)
 	normalizeKernel();
 }
 
-CBellBicubicKernel::CBellBicubicKernel(uint32_t s): CImageInterpolationKernel(s)
+CBellBicubicKernel::CBellBicubicKernel(uint32_t s) noexcept : CImageInterpolationKernel(s)
 {
 	for (uint32_t i = 0; i < size(); ++i)
 		for (uint32_t k = 0; k < size(); ++k)
@@ -77,7 +77,7 @@ CBellBicubicKernel::CBellBicubicKernel(uint32_t s): CImageInterpolationKernel(s)
 	normalizeKernel();
 }
 
-CLanczosKernel::CLanczosKernel(uint32_t s, uint32_t a /*= 2*/): CImageInterpolationKernel(s)
+CLanczosKernel::CLanczosKernel(uint32_t s, uint32_t a /*= 2*/) noexcept : CImageInterpolationKernel(s)
 {
 	for (uint32_t i = 0; i < size(); ++i)
 		for (uint32_t k = 0; k < size(); ++k)
