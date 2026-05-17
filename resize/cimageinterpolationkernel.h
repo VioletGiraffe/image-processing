@@ -36,14 +36,16 @@ public:
 
 protected:
 	void normalizeKernel() noexcept {
-		CoeffType sum {0};
+		CoeffType normFactor{0};
 		for (uint32_t i = 0; i < size(); ++i)
 			for (uint32_t k = 0; k < size(); ++k)
-				sum += _kernel[i][k];
+				normFactor += _kernel[i][k];
+
+		normFactor = CoeffType{ 1 } / normFactor;
 
 		for (uint32_t i = 0; i < size(); ++i)
 			for (uint32_t k = 0; k < size(); ++k)
-				_kernel[i][k] /= sum;
+				_kernel[i][k] *= normFactor;
 	}
 
 	uint32_t _size;

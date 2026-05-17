@@ -1,9 +1,7 @@
 HEADERS += \
 	$$PWD/cimageinterpolationkernel.h \
-	$$PWD/cimageresizer.h \
-    $$PWD/imageadapter.hpp
+	$$PWD/cimageresizer.h
 
 SOURCES += \
 	$$PWD/cimageinterpolationkernel.cpp \
-	$$PWD/cimageresizer.cpp \
-    $$PWD/imageadapter.cpp
+	$$PWD/cimageresizer.cpp

@@ -1,10 +1,34 @@
 #pragma once
 
-#include "imageadapter.hpp"
+#include <type_traits>
 
 class CImageResizer
 {
 public:
+	template <bool ConstView = true>
+	struct ImageView
+	{
+		using DataPtr = std::conditional_t<ConstView, const void*, void*>;
+
+		uint32_t width;
+		uint32_t height;
+		uint8_t channels;
+		uint8_t bytesPerChannel;
+		uint8_t channelStride;
+		size_t bytesPerLine;
+
+		DataPtr data;
+
+		template <class T>
+		inline auto* scanLine(uint32_t line) const noexcept
+		{
+			if constexpr (ConstView)
+				return reinterpret_cast<const T*>(reinterpret_cast<const uint8_t*>(data) + line * bytesPerLine);
+			else
+				return reinterpret_cast<T*>(reinterpret_cast<uint8_t*>(data) + line * bytesPerLine);
+		}
+	};
+
 	enum ResizeMethod {
 		Bicubic
 	};
@@ -14,5 +38,5 @@ public:
 		IgnoreAspectRatio
 	};
 
-	[[nodiscard]] static std::unique_ptr<ImageAdapter> bicubicInterpolation(const ImageAdapter& source, uint32_t newWidth, uint32_t newHeight, AspectRatioPolicy aspectRatio = KeepAspectRatio);
+	static void resize(ImageView<false>& dest, const ImageView<true>& source, ResizeMethod method = Bicubic);
 };

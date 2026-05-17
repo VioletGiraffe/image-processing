@@ -3,68 +3,44 @@
 #include "assert/advanced_assert.h"
 #include "math/math.hpp"
 
-#include <algorithm>
 #include <math.h>
 #include <stdint.h>
-#include <time.h>
 
-struct Size {
-	uint32_t width;
-	uint32_t height;
-
-	[[nodiscard]] inline Size scaledTo(const Size& target) const {
-		const float scaleFactor = std::min((float)target.width / (float)width, (float)target.height / (float)height);
-		return *this * scaleFactor;
-	}
-
-	[[nodiscard]] inline Size operator*(const float factor) const {
-		return {Math::round<uint32_t>((float)width * factor), Math::round<uint32_t>((float)height * factor)};
-	}
-
-	[[nodiscard]] inline Size scaled(const Size& dest) const {
-		const float xScaleFactor = (float)width / (float)dest.width;
-		const float yScaleFactor = (float)height / (float)dest.height;
-
-		const float actualFactor = (xScaleFactor > 1.0f && yScaleFactor > 1.0f) ? std::max(xScaleFactor, yScaleFactor) : std::min(xScaleFactor, yScaleFactor);
-
-		return *this * (1.0f / actualFactor);
-	}
-};
-
-[[nodiscard]] inline uint32_t applyKernel(const CImageInterpolationKernelBase<float>& kernel, const ImageAdapter& source, uint32_t x, uint32_t y)
+[[nodiscard]] inline uint32_t applyKernel(const CImageInterpolationKernelBase<float>& kernel, const CImageResizer::ImageView<>& source, uint32_t x, uint32_t y)
 {
 	float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.0f;
 
-	const uint32_t srcHeight = source.height(), srcWidth = source.width();
+	const uint32_t srcHeight = source.height, srcWidth = source.width;
 	const uint32_t kernelSize = kernel.size();
-	const auto nChannels = source.numChannels();
-	if (nChannels == 4)
+	if (source.channels == 4)
 	{
-		for (uint32_t k = y, k_kernel = 0; k < y + kernelSize && k < srcHeight; ++k, ++ k_kernel)
+		for (uint32_t k = y, k_kernel = 0; k < y + kernelSize && k < srcHeight; ++k, ++k_kernel)
 		{
 			// TODO: strict aliasing violation!!!
-			const auto* line = reinterpret_cast<const uint32_t*>(source.scanLine(k));
+			const uint32_t* line = source.scanLine<uint32_t>(k);
 			for (uint32_t i = x, i_kernel = 0; i < x + kernelSize && i < srcWidth; ++i, ++i_kernel)
 			{
+				const uint32_t pixel = line[i];
 				const auto coeff = kernel.coeff(i_kernel, k_kernel);
-				a += static_cast<decltype(coeff)>(line[i] >> 24) * coeff;
-				r += static_cast<decltype(coeff)>((line[i] >> 16) & 0xFF) * coeff;
-				g += static_cast<decltype(coeff)>((line[i] >> 8) & 0xFF)  * coeff;
-				b += static_cast<decltype(coeff)>(line[i] & 0xFF)  * coeff;
+				a += static_cast<decltype(coeff)>(pixel >> 24) * coeff;
+				r += static_cast<decltype(coeff)>((pixel >> 16) & 0xFF) * coeff;
+				g += static_cast<decltype(coeff)>((pixel >> 8) & 0xFF)  * coeff;
+				b += static_cast<decltype(coeff)>(pixel & 0xFF)  * coeff;
 			}
 		}
 	}
-	else if (nChannels == 3)
+	else if (source.channels == 3)
 	{
 		for (uint32_t k = y, k_kernel = 0; k < y + kernelSize && k < srcHeight; ++k, ++ k_kernel)
 		{
-			const auto* line = reinterpret_cast<const uint8_t*>(source.scanLine(k));
+			const uint8_t* line = source.scanLine<uint8_t>(k);
 			for (uint32_t i = x, i_kernel = 0; i < x + kernelSize && i < srcWidth; ++i, ++i_kernel)
 			{
+				const uint8_t* pixel = line + i * source.channelStride;
 				const auto coeff = kernel.coeff(i_kernel, k_kernel);
-				r += static_cast<decltype(coeff)>(line[0]) * coeff;
-				g += static_cast<decltype(coeff)>(line[1]) * coeff;
-				b += static_cast<decltype(coeff)>(line[2]) * coeff;
+				b += static_cast<decltype(coeff)>(pixel[0]) * coeff;
+				g += static_cast<decltype(coeff)>(pixel[1]) * coeff;
+				r += static_cast<decltype(coeff)>(pixel[2]) * coeff;
 			}
 		}
 	}
@@ -80,42 +56,64 @@ struct Size {
 	return (alpha << 24) | (red << 16) | (green << 8) | blue;
 }
 
-[[nodiscard]] std::unique_ptr<ImageAdapter> CImageResizer::bicubicInterpolation(const ImageAdapter& source, const uint32_t newWidth, const uint32_t newHeight, const AspectRatioPolicy /*aspectRatio*/)
+void CImageResizer::resize(ImageView<false>& dest, const ImageView<>& source, ResizeMethod method)
 {
-	if (newWidth == source.width() && newHeight == source.height())
-		return source.clone();
-	else if (source.numChannels() != 4 && source.numChannels() != 3)
-		return source.clone();
-	else if (source.bytesPerChannel() != 1)
-		return source.clone();
-
-	const Size sourceSize{source.width(), source.height()};
-
-	const Size actualTargetSize{newWidth, newHeight};
-	auto dest = source.createSameFormat(actualTargetSize.width, actualTargetSize.height);
-
-	// TODO: refactor this. There's no need to create all the kernels, we're only going to use one.
-	//const CLanczosKernel lanczosKernel(sourceSize.width / actualTargetSize.width, 3);
-	const CBicubicKernel bicubicKernel(Math::floor<uint32_t>((float)sourceSize.width / (float)actualTargetSize.width), 0.5f);
-
-	const CImageInterpolationKernelBase<float>& kernel = bicubicKernel;
+	const CBicubicKernel kernel(Math::floor<uint32_t>((float)source.width / (float)dest.width), 0.5f);
 
 	const uint32_t kernelSize = kernel.size();
 
-	const auto nChannels = source.numChannels();
-	for (uint32_t y = 0; y < actualTargetSize.height; ++y)
+	assert_and_return_r(source.channels == dest.channels && source.bytesPerChannel == dest.bytesPerChannel, );
+	assert_and_return_r(source.channelStride == dest.channelStride, );
+	assert_and_return_r(source.bytesPerChannel == 1, );
+
+	if (source.channels == 3 && source.channelStride == 4)
 	{
-		auto *currentPixel = static_cast<uint8_t*>(dest->scanLine(y));
-		for (uint32_t x = 0; x < actualTargetSize.width; ++x, currentPixel += nChannels)
+		for (uint32_t y = 0; y < dest.height; ++y)
 		{
-			const uint32_t pixel = applyKernel(kernel, source, x * kernelSize, y * kernelSize);
-			*currentPixel = pixel & 0xFF;
-			*(currentPixel + 1) = (pixel >> 8) & 0xFF;
-			*(currentPixel + 2) = (pixel >> 16) & 0xFF;
-			if (nChannels == 4)
-				*(currentPixel + 3) = (pixel >> 24) & 0xFF;
+			uint32_t* currentPixel = dest.scanLine<uint32_t>(y);
+			for (uint32_t x = 0; x < dest.width; ++x, currentPixel += 1)
+			{
+				const uint32_t pixel = applyKernel(kernel, source, x * kernelSize, y * kernelSize);
+				::memcpy(currentPixel, &pixel, 3);
+			}
 		}
 	}
-
-	return dest;
+	else if (source.channels == 4)
+	{
+		for (uint32_t y = 0; y < dest.height; ++y)
+		{
+			uint32_t* currentPixel = dest.scanLine<uint32_t>(y);
+			for (uint32_t x = 0; x < dest.width; ++x, currentPixel += 1)
+			{
+				const uint32_t pixel = applyKernel(kernel, source, x * kernelSize, y * kernelSize);
+				::memcpy(currentPixel, &pixel, 4);
+			}
+		}
+	}
+	else if (source.channels == 3 && source.channelStride == 3)
+	{
+		for (uint32_t y = 0; y < dest.height; ++y)
+		{
+			std::byte* currentPixel = dest.scanLine<std::byte>(y);
+			for (uint32_t x = 0; x < dest.width; ++x, currentPixel += 3)
+			{
+				const uint32_t pixel = applyKernel(kernel, source, x * kernelSize, y * kernelSize);
+				::memcpy(currentPixel, &pixel, 3);
+			}
+		}
+	}
+	else if (source.channels == 1)
+	{
+		for (uint32_t y = 0; y < dest.height; ++y)
+		{
+			uint8_t* currentPixel = dest.scanLine<uint8_t>(y);
+			for (uint32_t x = 0; x < dest.width; ++x, currentPixel += source.channelStride)
+			{
+				const uint32_t pixel = applyKernel(kernel, source, x * kernelSize, y * kernelSize);
+				*currentPixel = static_cast<uint8_t>(pixel & 0xFF);
+			}
+		}
+	}
+	else
+		assert_and_return_unconditional_r("Unsupported number of channels", );
 }
