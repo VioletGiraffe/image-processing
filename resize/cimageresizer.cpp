@@ -232,14 +232,30 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 			for (size_t c = 0; c < 4; ++c)
 				accum[c] = 0.0f;
 
-			for (size_t t = 0; t < wy.indices.size(); ++t)
+			if (dest.channels == 3) [[likely]]
 			{
-				const float* tempPixel = temp.data()
-					+ (static_cast<size_t>(wy.indices[t]) * dest.width + dx) * pixelStride;
-				const float weight = wy.weights[t];
+				for (size_t t = 0; t < wy.indices.size(); ++t)
+				{
+					const float* tempPixel = temp.data()
+						+ (static_cast<size_t>(wy.indices[t]) * dest.width + dx) * pixelStride;
+					const float weight = wy.weights[t];
 
-				for (size_t c = 0; c < numChannels; ++c)
-					accum[c] += tempPixel[c] * weight;
+					accum[0] += tempPixel[0] * weight;
+					accum[1] += tempPixel[1] * weight;
+					accum[2] += tempPixel[2] * weight;
+				}
+			}
+			else
+			{
+				for (size_t t = 0; t < wy.indices.size(); ++t)
+				{
+					const float* tempPixel = temp.data()
+						+ (static_cast<size_t>(wy.indices[t]) * dest.width + dx) * pixelStride;
+					const float weight = wy.weights[t];
+
+					for (size_t c = 0; c < numChannels; ++c)
+						accum[c] += tempPixel[c] * weight;
+				}
 			}
 
 			uint8_t* dstPixel = dstRow + static_cast<size_t>(dx) * pixelStride;
