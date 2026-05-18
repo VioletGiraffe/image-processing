@@ -2,9 +2,8 @@
 
 #include <type_traits>
 
-class CImageResizer
+namespace ImageProcessing
 {
-public:
 	template <bool ConstView = true>
 	struct ImageView
 	{
@@ -29,14 +28,5 @@ public:
 		}
 	};
 
-	enum ResizeMethod {
-		Bicubic
-	};
-
-	enum AspectRatioPolicy {
-		KeepAspectRatio,
-		IgnoreAspectRatio
-	};
-
-	static void resize(ImageView<false>& dest, const ImageView<true>& source, ResizeMethod method = Bicubic);
+	void resize(ImageView<false>& dest, const ImageView<true>& source);
 };
