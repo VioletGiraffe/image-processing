@@ -2,19 +2,28 @@
 #include "assert/advanced_assert.h"
 #include "math/math.hpp"
 
-#include <math.h>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <numbers>
-#include <stdint.h>
+#include <utility>
 #include <vector>
 
 using namespace ImageProcessing;
 
 namespace
 {
+	struct Tap
+	{
+		size_t offset;
+		float weight;
+	};
+
 	struct AxisWeights
 	{
-		std::vector<int> indices;
-		std::vector<float> weights;
+		std::vector<Tap> taps;
 	};
 
 	[[nodiscard]] inline float sinc(float x) noexcept
@@ -63,8 +72,11 @@ namespace
 		}
 	};
 
-	template <class Kernel>
-	[[nodiscard]] inline std::vector<AxisWeights> buildAxisWeights(uint32_t srcSize, uint32_t dstSize)
+	template <class Kernel, class OffsetBuilder>
+	[[nodiscard]] inline std::vector<AxisWeights> buildAxisWeights(
+		uint32_t srcSize,
+		uint32_t dstSize,
+		OffsetBuilder&& offsetBuilder)
 	{
 		std::vector<AxisWeights> result;
 		result.reserve(dstSize);
@@ -74,8 +86,7 @@ namespace
 			for (uint32_t d = 0; d < dstSize; ++d)
 			{
 				AxisWeights w;
-				w.indices.push_back(0);
-				w.weights.push_back(1.0f);
+				w.taps.push_back(Tap{offsetBuilder(0), 1.0f});
 				result.push_back(std::move(w));
 			}
 			return result;
@@ -95,8 +106,7 @@ namespace
 			const int right = static_cast<int>(std::ceil(srcPos + support));
 			const int count = std::max(1, right - left + 1);
 
-			w.indices.reserve(static_cast<size_t>(count));
-			w.weights.reserve(static_cast<size_t>(count));
+			w.taps.reserve(static_cast<size_t>(count));
 
 			float sum = 0.0f;
 
@@ -109,23 +119,23 @@ namespace
 					? Kernel::evaluate(distance * scale) * scale
 					: Kernel::evaluate(distance);
 
-				w.indices.push_back(clamped);
-				w.weights.push_back(weight);
+				w.taps.push_back(Tap{offsetBuilder(static_cast<uint32_t>(clamped)), weight});
 				sum += weight;
 			}
 
 			if (sum != 0.0f)
 			{
 				const float invSum = 1.0f / sum;
-				for (float& weight : w.weights)
-					weight *= invSum;
+				for (Tap& tap : w.taps)
+					tap.weight *= invSum;
 			}
 			else
 			{
-				w.indices.clear();
-				w.weights.clear();
-				w.indices.push_back(std::clamp(static_cast<int>(std::lround(srcPos)), 0, srcMax));
-				w.weights.push_back(1.0f);
+				w.taps.clear();
+				w.taps.push_back(Tap{offsetBuilder(static_cast<uint32_t>(std::clamp(
+					static_cast<int>(std::lround(srcPos)),
+					0,
+					srcMax))), 1.0f});
 			}
 
 			result.push_back(std::move(w));
@@ -138,6 +148,378 @@ namespace
 	{
 		const int rounded = (int)::roundf(value);
 		return static_cast<uint8_t>(std::clamp<long>(rounded, 0, 255));
+	}
+
+	template <size_t Channels, size_t PixelStride>
+	inline void resizeImpl(ImageView<false>& dest, const ImageView<true>& source)
+	{
+		static_assert(Channels >= 1);
+		static_assert(PixelStride >= Channels);
+
+		assert_debug_only(source.width > 0 && source.height > 0);
+		assert_debug_only(dest.width > 0 && dest.height > 0);
+
+		assert_debug_only(source.channels == Channels);
+		assert_debug_only(dest.channels == Channels);
+		assert_debug_only(source.bytesPerChannel == 1);
+		assert_debug_only(dest.bytesPerChannel == 1);
+		assert_debug_only(source.channelStride == PixelStride);
+		assert_debug_only(dest.channelStride == PixelStride);
+
+		if (source.width == dest.width && source.height == dest.height)
+		{
+			for (uint32_t y = 0; y < dest.height; ++y)
+			{
+				const auto* srcRow = source.scanLine<uint8_t>(y);
+				auto* dstRow = dest.scanLine<uint8_t>(y);
+				::memcpy(dstRow, srcRow, dest.bytesPerLine);
+			}
+			return;
+		}
+
+		const bool scaleUpX = dest.width >= source.width;
+		const bool scaleUpY = dest.height >= source.height;
+
+		const size_t tempPixelStride = Channels;
+		const size_t tempRowStride = static_cast<size_t>(dest.width) * tempPixelStride;
+
+		const auto xWeights = scaleUpX
+			? buildAxisWeights<BicubicKernel>(source.width, dest.width, [](uint32_t sx) noexcept -> size_t
+				{
+					return static_cast<size_t>(sx) * PixelStride;
+				})
+			: buildAxisWeights<Lanczos3Kernel>(source.width, dest.width, [](uint32_t sx) noexcept -> size_t
+				{
+					return static_cast<size_t>(sx) * PixelStride;
+				});
+
+		const auto yWeights = scaleUpY
+			? buildAxisWeights<BicubicKernel>(source.height, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
+				{
+					return static_cast<size_t>(sy) * tempRowStride;
+				})
+			: buildAxisWeights<Lanczos3Kernel>(source.height, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
+				{
+					return static_cast<size_t>(sy) * tempRowStride;
+				});
+
+		std::vector<float> temp(
+			static_cast<size_t>(source.height) * tempRowStride);
+
+		for (uint32_t sy = 0; sy < source.height; ++sy)
+		{
+			const auto* srcRow = source.scanLine<uint8_t>(sy);
+			float* tempRow = temp.data() + static_cast<size_t>(sy) * tempRowStride;
+
+			for (uint32_t dx = 0; dx < dest.width; ++dx)
+			{
+				const auto& wx = xWeights[dx];
+				float* outPixel = tempRow + static_cast<size_t>(dx) * tempPixelStride;
+
+				if constexpr (Channels == 1)
+				{
+					float c0 = 0.0f;
+
+					for (const Tap& tap : wx.taps)
+					{
+						const auto* srcPixel = srcRow + tap.offset;
+						c0 += static_cast<float>(srcPixel[0]) * tap.weight;
+					}
+
+					outPixel[0] = c0;
+				}
+				else if constexpr (Channels == 3)
+				{
+					float c0 = 0.0f;
+					float c1 = 0.0f;
+					float c2 = 0.0f;
+
+					for (const Tap& tap : wx.taps)
+					{
+						const auto* srcPixel = srcRow + tap.offset;
+						const float weight = tap.weight;
+
+						c0 += static_cast<float>(srcPixel[0]) * weight;
+						c1 += static_cast<float>(srcPixel[1]) * weight;
+						c2 += static_cast<float>(srcPixel[2]) * weight;
+					}
+
+					outPixel[0] = c0;
+					outPixel[1] = c1;
+					outPixel[2] = c2;
+				}
+				else if constexpr (Channels == 4)
+				{
+					float c0 = 0.0f;
+					float c1 = 0.0f;
+					float c2 = 0.0f;
+					float c3 = 0.0f;
+
+					for (const Tap& tap : wx.taps)
+					{
+						const auto* srcPixel = srcRow + tap.offset;
+						const float weight = tap.weight;
+
+						c0 += static_cast<float>(srcPixel[0]) * weight;
+						c1 += static_cast<float>(srcPixel[1]) * weight;
+						c2 += static_cast<float>(srcPixel[2]) * weight;
+						c3 += static_cast<float>(srcPixel[3]) * weight;
+					}
+
+					outPixel[0] = c0;
+					outPixel[1] = c1;
+					outPixel[2] = c2;
+					outPixel[3] = c3;
+				}
+				else
+				{
+					std::array<float, Channels> accum{};
+
+					for (const Tap& tap : wx.taps)
+					{
+						const auto* srcPixel = srcRow + tap.offset;
+						const float weight = tap.weight;
+
+						for (size_t c = 0; c < Channels; ++c)
+							accum[c] += static_cast<float>(srcPixel[c]) * weight;
+					}
+
+					for (size_t c = 0; c < Channels; ++c)
+						outPixel[c] = accum[c];
+				}
+			}
+		}
+
+		for (uint32_t dy = 0; dy < dest.height; ++dy)
+		{
+			auto* dstRow = dest.scanLine<uint8_t>(dy);
+			const auto& wy = yWeights[dy];
+
+			for (uint32_t dx = 0; dx < dest.width; ++dx)
+			{
+				if constexpr (Channels == 1)
+				{
+					float c0 = 0.0f;
+
+					for (const Tap& tap : wy.taps)
+					{
+						const auto* tempPixel = temp.data() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
+						c0 += tempPixel[0] * tap.weight;
+					}
+
+					auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
+					dstPixel[0] = clampToByte(c0);
+				}
+				else if constexpr (Channels == 3)
+				{
+					float c0 = 0.0f;
+					float c1 = 0.0f;
+					float c2 = 0.0f;
+
+					for (const Tap& tap : wy.taps)
+					{
+						const auto* tempPixel = temp.data() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
+						const float weight = tap.weight;
+
+						c0 += tempPixel[0] * weight;
+						c1 += tempPixel[1] * weight;
+						c2 += tempPixel[2] * weight;
+					}
+
+					auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
+					dstPixel[0] = clampToByte(c0);
+					dstPixel[1] = clampToByte(c1);
+					dstPixel[2] = clampToByte(c2);
+				}
+				else if constexpr (Channels == 4)
+				{
+					float c0 = 0.0f;
+					float c1 = 0.0f;
+					float c2 = 0.0f;
+					float c3 = 0.0f;
+
+					for (const Tap& tap : wy.taps)
+					{
+						const auto* tempPixel = temp.data() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
+						const float weight = tap.weight;
+
+						c0 += tempPixel[0] * weight;
+						c1 += tempPixel[1] * weight;
+						c2 += tempPixel[2] * weight;
+						c3 += tempPixel[3] * weight;
+					}
+
+					auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
+					dstPixel[0] = clampToByte(c0);
+					dstPixel[1] = clampToByte(c1);
+					dstPixel[2] = clampToByte(c2);
+					dstPixel[3] = clampToByte(c3);
+				}
+				else
+				{
+					std::array<float, Channels> accum{};
+
+					for (const Tap& tap : wy.taps)
+					{
+						const auto* tempPixel = temp.data() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
+						const float weight = tap.weight;
+
+						for (size_t c = 0; c < Channels; ++c)
+							accum[c] += tempPixel[c] * weight;
+					}
+
+					auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
+					for (size_t c = 0; c < Channels; ++c)
+						dstPixel[c] = clampToByte(accum[c]);
+				}
+			}
+		}
+	}
+
+	inline void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source)
+	{
+		assert_debug_only(source.width > 0 && source.height > 0);
+		assert_debug_only(dest.width > 0 && dest.height > 0);
+
+		assert_debug_only(source.channels == dest.channels);
+		assert_debug_only(source.bytesPerChannel == 1);
+		assert_debug_only(dest.bytesPerChannel == 1);
+		assert_debug_only(source.channelStride == dest.channelStride);
+
+		if (source.width == dest.width && source.height == dest.height)
+		{
+			for (uint32_t y = 0; y < dest.height; ++y)
+			{
+				const auto* srcRow = source.scanLine<uint8_t>(y);
+				auto* dstRow = dest.scanLine<uint8_t>(y);
+				::memcpy(dstRow, srcRow, dest.bytesPerLine);
+			}
+			return;
+		}
+
+		const bool scaleUpX = dest.width >= source.width;
+		const bool scaleUpY = dest.height >= source.height;
+		const size_t numChannels = dest.channels;
+		const size_t pixelStride = dest.channelStride;
+		const size_t tempRowStride = static_cast<size_t>(dest.width) * numChannels;
+
+		const auto xWeights = scaleUpX
+			? buildAxisWeights<BicubicKernel>(source.width, dest.width, [pixelStride](uint32_t sx) noexcept -> size_t
+				{
+					return static_cast<size_t>(sx) * pixelStride;
+				})
+			: buildAxisWeights<Lanczos3Kernel>(source.width, dest.width, [pixelStride](uint32_t sx) noexcept -> size_t
+				{
+					return static_cast<size_t>(sx) * pixelStride;
+				});
+
+		const auto yWeights = scaleUpY
+			? buildAxisWeights<BicubicKernel>(source.height, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
+				{
+					return static_cast<size_t>(sy) * tempRowStride;
+				})
+			: buildAxisWeights<Lanczos3Kernel>(source.height, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
+				{
+					return static_cast<size_t>(sy) * tempRowStride;
+				});
+
+		std::vector<float> temp(
+			static_cast<size_t>(source.height) * tempRowStride);
+
+		for (uint32_t sy = 0; sy < source.height; ++sy)
+		{
+			const auto* srcRow = source.scanLine<uint8_t>(sy);
+			float* tempRow = temp.data() + static_cast<size_t>(sy) * tempRowStride;
+
+			for (uint32_t dx = 0; dx < dest.width; ++dx)
+			{
+				const auto& wx = xWeights[dx];
+				float* outPixel = tempRow + static_cast<size_t>(dx) * numChannels;
+
+				for (size_t c = 0; c < numChannels; ++c)
+					outPixel[c] = 0.0f;
+
+				for (const Tap& tap : wx.taps)
+				{
+					const auto* srcPixel = srcRow + tap.offset;
+					const float weight = tap.weight;
+
+					for (size_t c = 0; c < numChannels; ++c)
+						outPixel[c] += static_cast<float>(srcPixel[c]) * weight;
+				}
+			}
+		}
+
+		std::vector<float> accum(numChannels, 0.0f);
+
+		for (uint32_t dy = 0; dy < dest.height; ++dy)
+		{
+			auto* dstRow = dest.scanLine<uint8_t>(dy);
+			const auto& wy = yWeights[dy];
+
+			for (uint32_t dx = 0; dx < dest.width; ++dx)
+			{
+				std::fill(accum.begin(), accum.end(), 0.0f);
+
+				for (const Tap& tap : wy.taps)
+				{
+					const auto* tempPixel = temp.data() + tap.offset + static_cast<size_t>(dx) * numChannels;
+					const float weight = tap.weight;
+
+					for (size_t c = 0; c < numChannels; ++c)
+						accum[c] += tempPixel[c] * weight;
+				}
+
+				auto* dstPixel = dstRow + static_cast<size_t>(dx) * pixelStride;
+				for (size_t c = 0; c < numChannels; ++c)
+					dstPixel[c] = clampToByte(accum[c]);
+			}
+		}
+	}
+
+	template <size_t Channels>
+	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source)
+	{
+		switch (source.channelStride)
+		{
+			case 1:
+				if constexpr (Channels == 1)
+					resizeImpl<1, 1>(dest, source);
+				else
+					resizeImplRuntime(dest, source);
+				return;
+
+			case 2:
+				if constexpr (Channels == 1)
+					resizeImpl<1, 2>(dest, source);
+				else
+					resizeImplRuntime(dest, source);
+				return;
+
+			case 3:
+				if constexpr (Channels == 1)
+					resizeImpl<1, 3>(dest, source);
+				else if constexpr (Channels == 3)
+					resizeImpl<3, 3>(dest, source);
+				else
+					resizeImplRuntime(dest, source);
+				return;
+
+			case 4:
+				if constexpr (Channels == 1)
+					resizeImpl<1, 4>(dest, source);
+				else if constexpr (Channels == 3)
+					resizeImpl<3, 4>(dest, source);
+				else if constexpr (Channels == 4)
+					resizeImpl<4, 4>(dest, source);
+				else
+					resizeImplRuntime(dest, source);
+				return;
+
+			default:
+				resizeImplRuntime(dest, source);
+				return;
+		}
 	}
 }
 
@@ -152,115 +534,11 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 
 	assert_and_return_r(source.bytesPerChannel == 1, );
 
-	if (source.width == dest.width && source.height == dest.height) // Just copy the image
+	switch (source.channels)
 	{
-		for (uint32_t y = 0; y < dest.height; ++y)
-		{
-			const auto* srcRow = source.scanLine<uint8_t>(y);
-			auto* dstRow = dest.scanLine<uint8_t>(y);
-
-			::memcpy(dstRow, srcRow, dest.bytesPerLine);
-		}
-		return;
-	}
-
-	const bool scaleUpX = dest.width >= source.width;
-	const bool scaleUpY = dest.height >= source.height;
-
-	const auto xWeights = scaleUpX
-		? buildAxisWeights<BicubicKernel>(source.width, dest.width)
-		: buildAxisWeights<Lanczos3Kernel>(source.width, dest.width);
-
-	const auto yWeights = scaleUpY
-		? buildAxisWeights<BicubicKernel>(source.height, dest.height)
-		: buildAxisWeights<Lanczos3Kernel>(source.height, dest.height);
-
-	const size_t pixelStride = dest.channelStride;
-	const size_t numChannels = dest.channels;
-
-	std::vector<float> temp(
-		static_cast<size_t>(source.height) * static_cast<size_t>(dest.width) * pixelStride);
-
-	for (uint32_t sy = 0; sy < source.height; ++sy)
-	{
-		const auto* srcRow = source.scanLine<uint8_t>(sy);
-		float* tempRow = temp.data() + static_cast<size_t>(sy) * dest.width * pixelStride;
-
-		for (uint32_t dx = 0; dx < dest.width; ++dx)
-		{
-			const auto& wx = xWeights[dx];
-			float* outPixel = tempRow + static_cast<size_t>(dx) * pixelStride;
-
-			for (size_t c = 0; c < numChannels; ++c)
-				outPixel[c] = 0.0f;
-
-			if (dest.channels == 3) [[likely]]
-			{
-				for (size_t t = 0; t < wx.indices.size(); ++t)
-				{
-					const auto* srcPixel = srcRow + static_cast<size_t>(wx.indices[t]) * pixelStride;
-					const float weight = wx.weights[t];
-
-					outPixel[0] += static_cast<float>(srcPixel[0]) * weight;
-					outPixel[1] += static_cast<float>(srcPixel[1]) * weight;
-					outPixel[2] += static_cast<float>(srcPixel[2]) * weight;
-				}
-			}
-			else
-			{
-				for (size_t t = 0; t < wx.indices.size(); ++t)
-				{
-					const auto* srcPixel = srcRow + static_cast<size_t>(wx.indices[t]) * pixelStride;
-					const float weight = wx.weights[t];
-
-					for (size_t c = 0; c < numChannels; ++c)
-						outPixel[c] += static_cast<float>(srcPixel[c]) * weight;
-				}
-			}
-		}
-	}
-
-	float accum[4];
-
-	for (uint32_t dy = 0; dy < dest.height; ++dy)
-	{
-		auto* dstRow = dest.scanLine<uint8_t>(dy);
-		const auto& wy = yWeights[dy];
-
-		for (uint32_t dx = 0; dx < dest.width; ++dx)
-		{
-			for (size_t c = 0; c < 4; ++c)
-				accum[c] = 0.0f;
-
-			if (dest.channels == 3) [[likely]]
-			{
-				for (size_t t = 0; t < wy.indices.size(); ++t)
-				{
-					const float* tempPixel = temp.data()
-						+ (static_cast<size_t>(wy.indices[t]) * dest.width + dx) * pixelStride;
-					const float weight = wy.weights[t];
-
-					accum[0] += tempPixel[0] * weight;
-					accum[1] += tempPixel[1] * weight;
-					accum[2] += tempPixel[2] * weight;
-				}
-			}
-			else
-			{
-				for (size_t t = 0; t < wy.indices.size(); ++t)
-				{
-					const float* tempPixel = temp.data()
-						+ (static_cast<size_t>(wy.indices[t]) * dest.width + dx) * pixelStride;
-					const float weight = wy.weights[t];
-
-					for (size_t c = 0; c < numChannels; ++c)
-						accum[c] += tempPixel[c] * weight;
-				}
-			}
-
-			uint8_t* dstPixel = dstRow + static_cast<size_t>(dx) * pixelStride;
-			for (size_t c = 0; c < numChannels; ++c)
-				dstPixel[c] = clampToByte(accum[c]);
-		}
+		case 1: resizeDispatchStride<1>(dest, source); return;
+		case 3: resizeDispatchStride<3>(dest, source); return;
+		case 4: resizeDispatchStride<4>(dest, source); return;
+		default: resizeImplRuntime(dest, source); return;
 	}
 }

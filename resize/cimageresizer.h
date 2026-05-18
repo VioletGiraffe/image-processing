@@ -19,14 +19,14 @@ namespace ImageProcessing
 		DataPtr data;
 
 		template <class T>
-		inline auto* scanLine(uint32_t line) const noexcept
+		[[nodiscard]] inline auto* scanLine(uint32_t line) const noexcept
 		{
 			if constexpr (ConstView)
-				return reinterpret_cast<const T*>(reinterpret_cast<const uint8_t*>(data) + line * bytesPerLine);
+				return reinterpret_cast<const T*>(reinterpret_cast<const uint8_t*>(data) + static_cast<size_t>(line) * bytesPerLine);
 			else
-				return reinterpret_cast<T*>(reinterpret_cast<uint8_t*>(data) + line * bytesPerLine);
+				return reinterpret_cast<T*>(reinterpret_cast<uint8_t*>(data) + static_cast<size_t>(line) * bytesPerLine);
 		}
 	};
 
 	void resize(ImageView<false>& dest, const ImageView<true>& source);
-};
+}
