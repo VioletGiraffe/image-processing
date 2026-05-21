@@ -28,5 +28,10 @@ namespace ImageProcessing
 		}
 	};
 
-	void resize(ImageView<false>& dest, const ImageView<true>& source);
+	struct Rect {
+		uint32_t top = 0, left = 0;
+		uint32_t w = 0, h = 0;
+	};
+
+	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {});
 }

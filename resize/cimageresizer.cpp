@@ -151,7 +151,7 @@ namespace
 	}
 
 	template <size_t Channels, size_t PixelStride>
-	inline void resizeImpl(ImageView<false>& dest, const ImageView<true>& source)
+	inline void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 	{
 		static_assert(Channels >= 1);
 		static_assert(PixelStride >= Channels);
@@ -376,7 +376,7 @@ namespace
 		}
 	}
 
-	inline void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source)
+	inline void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 	{
 		assert_debug_only(source.width > 0 && source.height > 0);
 		assert_debug_only(dest.width > 0 && dest.height > 0);
@@ -386,7 +386,13 @@ namespace
 		assert_debug_only(dest.bytesPerChannel == 1);
 		assert_debug_only(source.channelStride == dest.channelStride);
 
-		if (source.width == dest.width && source.height == dest.height)
+		// Rect validation
+		if (srcRect.h == 0 || srcRect.w == 0)
+			srcRect = Rect{ 0, 0, source.width, source.height };
+		else if (srcRect.left + srcRect.w > source.width || srcRect.top + srcRect.h > source.height)
+			srcRect = Rect{ 0, 0, source.width, source.height };
+
+		if (srcRect.w == dest.width && srcRect.h == dest.height)
 		{
 			for (uint32_t y = 0; y < dest.height; ++y)
 			{
@@ -397,39 +403,42 @@ namespace
 			return;
 		}
 
-		const bool scaleUpX = dest.width >= source.width;
-		const bool scaleUpY = dest.height >= source.height;
+		const bool scaleUpX = dest.width >= srcRect.w;
+		const bool scaleUpY = dest.height >= srcRect.h;
 		const size_t numChannels = dest.channels;
 		const size_t pixelStride = dest.channelStride;
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * numChannels;
 
 		const auto xWeights = scaleUpX
-			? buildAxisWeights<BicubicKernel>(source.width, dest.width, [pixelStride](uint32_t sx) noexcept -> size_t
+			? buildAxisWeights<BicubicKernel>(srcRect.w, dest.width, [pixelStride](uint32_t sx) noexcept -> size_t
 				{
 					return static_cast<size_t>(sx) * pixelStride;
 				})
-			: buildAxisWeights<Lanczos3Kernel>(source.width, dest.width, [pixelStride](uint32_t sx) noexcept -> size_t
+			: buildAxisWeights<Lanczos3Kernel>(srcRect.w, dest.width, [pixelStride](uint32_t sx) noexcept -> size_t
 				{
 					return static_cast<size_t>(sx) * pixelStride;
 				});
 
 		const auto yWeights = scaleUpY
-			? buildAxisWeights<BicubicKernel>(source.height, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
+			? buildAxisWeights<BicubicKernel>(srcRect.h, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
 				{
 					return static_cast<size_t>(sy) * tempRowStride;
 				})
-			: buildAxisWeights<Lanczos3Kernel>(source.height, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
+			: buildAxisWeights<Lanczos3Kernel>(srcRect.h, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
 				{
 					return static_cast<size_t>(sy) * tempRowStride;
 				});
 
-		std::vector<float> temp(
-			static_cast<size_t>(source.height) * tempRowStride);
+		std::vector<float> temp(static_cast<size_t>(srcRect.h) * tempRowStride);
 
-		for (uint32_t sy = 0; sy < source.height; ++sy)
+		const uint32_t srcRight = srcRect.left + srcRect.w;
+		const uint32_t srcBottom = srcRect.top + srcRect.h;
+
+		for (uint32_t ty = 0; ty < srcRect.h; ++ty)
 		{
+			const uint32_t sy = srcRect.top + ty;
 			const auto* srcRow = source.scanLine<uint8_t>(sy);
-			float* tempRow = temp.data() + static_cast<size_t>(sy) * tempRowStride;
+			float* tempRow = temp.data() + static_cast<size_t>(ty) * tempRowStride;
 
 			for (uint32_t dx = 0; dx < dest.width; ++dx)
 			{
@@ -450,7 +459,7 @@ namespace
 			}
 		}
 
-		std::vector<float> accum(numChannels, 0.0f);
+		alignas(16) float accum[4];
 
 		for (uint32_t dy = 0; dy < dest.height; ++dy)
 		{
@@ -459,7 +468,7 @@ namespace
 
 			for (uint32_t dx = 0; dx < dest.width; ++dx)
 			{
-				std::fill(accum.begin(), accum.end(), 0.0f);
+				accum[0] = 0.0f; accum[1] = 0.0f; accum[2] = 0.0f; accum[3] = 0.0f;
 
 				for (const Tap& tap : wy.taps)
 				{
@@ -478,52 +487,52 @@ namespace
 	}
 
 	template <size_t Channels>
-	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source)
+	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 	{
 		switch (source.channelStride)
 		{
 			case 1:
 				if constexpr (Channels == 1)
-					resizeImpl<1, 1>(dest, source);
+					resizeImpl<1, 1>(dest, source, srcRect);
 				else
-					resizeImplRuntime(dest, source);
+					resizeImplRuntime(dest, source, srcRect);
 				return;
 
 			case 2:
 				if constexpr (Channels == 1)
-					resizeImpl<1, 2>(dest, source);
+					resizeImpl<1, 2>(dest, source, srcRect);
 				else
-					resizeImplRuntime(dest, source);
+					resizeImplRuntime(dest, source, srcRect);
 				return;
 
 			case 3:
 				if constexpr (Channels == 1)
-					resizeImpl<1, 3>(dest, source);
+					resizeImpl<1, 3>(dest, source, srcRect);
 				else if constexpr (Channels == 3)
-					resizeImpl<3, 3>(dest, source);
+					resizeImpl<3, 3>(dest, source, srcRect);
 				else
-					resizeImplRuntime(dest, source);
+					resizeImplRuntime(dest, source, srcRect);
 				return;
 
 			case 4:
 				if constexpr (Channels == 1)
-					resizeImpl<1, 4>(dest, source);
+					resizeImpl<1, 4>(dest, source, srcRect);
 				else if constexpr (Channels == 3)
-					resizeImpl<3, 4>(dest, source);
+					resizeImpl<3, 4>(dest, source, srcRect);
 				else if constexpr (Channels == 4)
-					resizeImpl<4, 4>(dest, source);
+					resizeImpl<4, 4>(dest, source, srcRect);
 				else
-					resizeImplRuntime(dest, source);
+					resizeImplRuntime(dest, source, srcRect);
 				return;
 
 			default:
-				resizeImplRuntime(dest, source);
+				resizeImplRuntime(dest, source, srcRect);
 				return;
 		}
 	}
 }
 
-void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source)
+void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 {
 	assert_debug_only(source.width > 0 && source.height > 0);
 	assert_debug_only(dest.width > 0 && dest.height > 0);
@@ -534,11 +543,13 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 
 	assert_and_return_r(source.bytesPerChannel == 1, );
 
+	resizeImplRuntime(dest, source, srcRect); return;
+
 	switch (source.channels)
 	{
-		case 1: resizeDispatchStride<1>(dest, source); return;
-		case 3: resizeDispatchStride<3>(dest, source); return;
-		case 4: resizeDispatchStride<4>(dest, source); return;
-		default: resizeImplRuntime(dest, source); return;
+		case 1: resizeDispatchStride<1>(dest, source, srcRect); return;
+		case 3: resizeDispatchStride<3>(dest, source, srcRect); return;
+		case 4: resizeDispatchStride<4>(dest, source, srcRect); return;
+		default: resizeImplRuntime(dest, source, srcRect); return;
 	}
 }
