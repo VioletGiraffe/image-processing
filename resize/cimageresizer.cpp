@@ -74,8 +74,8 @@ namespace
 
 	template <class Kernel, class OffsetBuilder>
 	[[nodiscard]] inline std::vector<AxisWeights> buildAxisWeights(
-		uint32_t srcSize,
-		uint32_t dstSize,
+		uint64_t srcSize,
+		uint64_t dstSize,
 		OffsetBuilder&& offsetBuilder)
 	{
 		std::vector<AxisWeights> result;
@@ -83,7 +83,7 @@ namespace
 
 		if (srcSize == 1)
 		{
-			for (uint32_t d = 0; d < dstSize; ++d)
+			for (uint64_t d = 0; d < dstSize; ++d)
 			{
 				AxisWeights w;
 				w.taps.push_back(Tap{offsetBuilder(0), 1.0f});
@@ -95,31 +95,31 @@ namespace
 		const float scale = static_cast<float>(dstSize) / static_cast<float>(srcSize);
 		const bool downscale = scale < 1.0f;
 		const float support = downscale ? (Kernel::radius / scale) : Kernel::radius;
-		const int srcMax = static_cast<int>(srcSize) - 1;
+		const int64_t srcMax = static_cast<int64_t>(srcSize) - 1;
 
-		for (uint32_t d = 0; d < dstSize; ++d)
+		for (uint64_t d = 0; d < dstSize; ++d)
 		{
 			AxisWeights w;
 
 			const float srcPos = (static_cast<float>(d) + 0.5f) / scale - 0.5f;
-			const int left = static_cast<int>(std::floor(srcPos - support));
-			const int right = static_cast<int>(std::ceil(srcPos + support));
-			const int count = std::max(1, right - left + 1);
+			const int64_t left = static_cast<int64_t>(std::floor(srcPos - support));
+			const int64_t right = static_cast<int64_t>(std::ceil(srcPos + support));
+			const int64_t count = std::max(1LL, right - left + 1);
 
 			w.taps.reserve(static_cast<size_t>(count));
 
 			float sum = 0.0f;
 
-			for (int s = left; s <= right; ++s)
+			for (int64_t s = left; s <= right; ++s)
 			{
-				const int clamped = std::clamp(s, 0, srcMax);
+				const int64_t clamped = std::clamp(s, 0LL, srcMax);
 				const float distance = srcPos - static_cast<float>(s);
 
 				const float weight = downscale
 					? Kernel::evaluate(distance * scale) * scale
 					: Kernel::evaluate(distance);
 
-				w.taps.push_back(Tap{offsetBuilder(static_cast<uint32_t>(clamped)), weight});
+				w.taps.push_back(Tap{offsetBuilder(static_cast<uint64_t>(clamped)), weight});
 				sum += weight;
 			}
 
@@ -132,9 +132,9 @@ namespace
 			else
 			{
 				w.taps.clear();
-				w.taps.push_back(Tap{offsetBuilder(static_cast<uint32_t>(std::clamp(
-					static_cast<int>(std::lround(srcPos)),
-					0,
+				w.taps.push_back(Tap{offsetBuilder(static_cast<uint64_t>(std::clamp(
+					static_cast<int64_t>(std::lround(srcPos)),
+					0LL,
 					srcMax))), 1.0f});
 			}
 
@@ -146,8 +146,8 @@ namespace
 
 	[[nodiscard]] inline uint8_t clampToByte(float value) noexcept
 	{
-		const int rounded = (int)::roundf(value);
-		return static_cast<uint8_t>(std::clamp<long>(rounded, 0, 255));
+		const int64_t rounded = (int64_t)::roundf(value);
+		return static_cast<uint8_t>(std::clamp<int64_t>(rounded, 0LL, 255LL));
 	}
 
 	template <size_t Channels, size_t PixelStride>
@@ -168,7 +168,7 @@ namespace
 
 		if (source.width == dest.width && source.height == dest.height)
 		{
-			for (uint32_t y = 0; y < dest.height; ++y)
+			for (uint64_t y = 0; y < dest.height; ++y)
 			{
 				const auto* srcRow = source.scanLine<uint8_t>(y);
 				auto* dstRow = dest.scanLine<uint8_t>(y);
@@ -184,21 +184,21 @@ namespace
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * tempPixelStride;
 
 		const auto xWeights = scaleUpX
-			? buildAxisWeights<BicubicKernel>(source.width, dest.width, [](uint32_t sx) noexcept -> size_t
+			? buildAxisWeights<BicubicKernel>(source.width, dest.width, [](uint64_t sx) noexcept -> size_t
 				{
 					return static_cast<size_t>(sx) * PixelStride;
 				})
-			: buildAxisWeights<Lanczos3Kernel>(source.width, dest.width, [](uint32_t sx) noexcept -> size_t
+			: buildAxisWeights<Lanczos3Kernel>(source.width, dest.width, [](uint64_t sx) noexcept -> size_t
 				{
 					return static_cast<size_t>(sx) * PixelStride;
 				});
 
 		const auto yWeights = scaleUpY
-			? buildAxisWeights<BicubicKernel>(source.height, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
+			? buildAxisWeights<BicubicKernel>(source.height, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
 				{
 					return static_cast<size_t>(sy) * tempRowStride;
 				})
-			: buildAxisWeights<Lanczos3Kernel>(source.height, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
+			: buildAxisWeights<Lanczos3Kernel>(source.height, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
 				{
 					return static_cast<size_t>(sy) * tempRowStride;
 				});
@@ -206,12 +206,12 @@ namespace
 		std::vector<float> temp(
 			static_cast<size_t>(source.height) * tempRowStride);
 
-		for (uint32_t sy = 0; sy < source.height; ++sy)
+		for (uint64_t sy = 0; sy < source.height; ++sy)
 		{
 			const auto* srcRow = source.scanLine<uint8_t>(sy);
 			float* tempRow = temp.data() + static_cast<size_t>(sy) * tempRowStride;
 
-			for (uint32_t dx = 0; dx < dest.width; ++dx)
+			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
 				const auto& wx = xWeights[dx];
 				float* outPixel = tempRow + static_cast<size_t>(dx) * tempPixelStride;
@@ -290,12 +290,12 @@ namespace
 			}
 		}
 
-		for (uint32_t dy = 0; dy < dest.height; ++dy)
+		for (uint64_t dy = 0; dy < dest.height; ++dy)
 		{
 			auto* dstRow = dest.scanLine<uint8_t>(dy);
 			const auto& wy = yWeights[dy];
 
-			for (uint32_t dx = 0; dx < dest.width; ++dx)
+			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
 				if constexpr (Channels == 1)
 				{
@@ -394,7 +394,7 @@ namespace
 
 		if (srcRect.w == dest.width && srcRect.h == dest.height)
 		{
-			for (uint32_t y = 0; y < dest.height; ++y)
+			for (uint64_t y = 0; y < dest.height; ++y)
 			{
 				const auto* srcRow = source.scanLine<uint8_t>(y);
 				auto* dstRow = dest.scanLine<uint8_t>(y);
@@ -410,37 +410,37 @@ namespace
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * numChannels;
 
 		const auto xWeights = scaleUpX
-			? buildAxisWeights<BicubicKernel>(srcRect.w, dest.width, [pixelStride](uint32_t sx) noexcept -> size_t
+			? buildAxisWeights<BicubicKernel>(srcRect.w, dest.width, [pixelStride](uint64_t sx) noexcept -> size_t
 				{
 					return static_cast<size_t>(sx) * pixelStride;
 				})
-			: buildAxisWeights<Lanczos3Kernel>(srcRect.w, dest.width, [pixelStride](uint32_t sx) noexcept -> size_t
+			: buildAxisWeights<Lanczos3Kernel>(srcRect.w, dest.width, [pixelStride](uint64_t sx) noexcept -> size_t
 				{
 					return static_cast<size_t>(sx) * pixelStride;
 				});
 
 		const auto yWeights = scaleUpY
-			? buildAxisWeights<BicubicKernel>(srcRect.h, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
+			? buildAxisWeights<BicubicKernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
 				{
 					return static_cast<size_t>(sy) * tempRowStride;
 				})
-			: buildAxisWeights<Lanczos3Kernel>(srcRect.h, dest.height, [tempRowStride](uint32_t sy) noexcept -> size_t
+			: buildAxisWeights<Lanczos3Kernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
 				{
 					return static_cast<size_t>(sy) * tempRowStride;
 				});
 
 		std::vector<float> temp(static_cast<size_t>(srcRect.h) * tempRowStride);
 
-		const uint32_t srcRight = srcRect.left + srcRect.w;
-		const uint32_t srcBottom = srcRect.top + srcRect.h;
+		const uint64_t srcRight = srcRect.left + srcRect.w;
+		const uint64_t srcBottom = srcRect.top + srcRect.h;
 
-		for (uint32_t ty = 0; ty < srcRect.h; ++ty)
+		for (uint64_t ty = 0; ty < srcRect.h; ++ty)
 		{
-			const uint32_t sy = srcRect.top + ty;
+			const uint64_t sy = srcRect.top + ty;
 			const auto* srcRow = source.scanLine<uint8_t>(sy);
 			float* tempRow = temp.data() + static_cast<size_t>(ty) * tempRowStride;
 
-			for (uint32_t dx = 0; dx < dest.width; ++dx)
+			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
 				const auto& wx = xWeights[dx];
 				float* outPixel = tempRow + static_cast<size_t>(dx) * numChannels;
@@ -461,12 +461,12 @@ namespace
 
 		alignas(16) float accum[4];
 
-		for (uint32_t dy = 0; dy < dest.height; ++dy)
+		for (uint64_t dy = 0; dy < dest.height; ++dy)
 		{
 			auto* dstRow = dest.scanLine<uint8_t>(dy);
 			const auto& wy = yWeights[dy];
 
-			for (uint32_t dx = 0; dx < dest.width; ++dx)
+			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
 				accum[0] = 0.0f; accum[1] = 0.0f; accum[2] = 0.0f; accum[3] = 0.0f;
 
