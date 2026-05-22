@@ -104,7 +104,7 @@ namespace
 			const float srcPos = (static_cast<float>(d) + 0.5f) / scale - 0.5f;
 			const int64_t left = static_cast<int64_t>(std::floor(srcPos - support));
 			const int64_t right = static_cast<int64_t>(std::ceil(srcPos + support));
-			const int64_t count = std::max(1LL, right - left + 1);
+			const int64_t count = std::max(1LL, right - left + 1LL);
 
 			w.taps.reserve(static_cast<size_t>(count));
 
@@ -112,7 +112,7 @@ namespace
 
 			for (int64_t s = left; s <= right; ++s)
 			{
-				const int64_t clamped = std::clamp(s, 0LL, srcMax);
+				const int64_t clamped = std::clamp(s, int64_t{0}, srcMax);
 				const float distance = srcPos - static_cast<float>(s);
 
 				const float weight = downscale
@@ -134,7 +134,7 @@ namespace
 				w.taps.clear();
 				w.taps.push_back(Tap{offsetBuilder(static_cast<uint64_t>(std::clamp(
 					static_cast<int64_t>(std::lround(srcPos)),
-					0LL,
+					int64_t{0},
 					srcMax))), 1.0f});
 			}
 
