@@ -31,7 +31,7 @@ namespace
 		if (x == 0.0f)
 			return 1.0f;
 
-		const float px = std::numbers::pi_v<float> * x;
+		const float px = std::numbers::pi_v<float> *x;
 		return std::sin(px) / px;
 	}
 
@@ -86,7 +86,7 @@ namespace
 			for (uint64_t d = 0; d < dstSize; ++d)
 			{
 				AxisWeights w;
-				w.taps.push_back(Tap{offsetBuilder(0), 1.0f});
+				w.taps.push_back(Tap{ offsetBuilder(0), 1.0f });
 				result.push_back(std::move(w));
 			}
 			return result;
@@ -112,14 +112,14 @@ namespace
 
 			for (int64_t s = left; s <= right; ++s)
 			{
-				const int64_t clamped = std::clamp(s, int64_t{0}, srcMax);
+				const int64_t clamped = std::clamp(s, int64_t{ 0 }, srcMax);
 				const float distance = srcPos - static_cast<float>(s);
 
 				const float weight = downscale
 					? Kernel::evaluate(distance * scale) * scale
 					: Kernel::evaluate(distance);
 
-				w.taps.push_back(Tap{offsetBuilder(static_cast<uint64_t>(clamped)), weight});
+				w.taps.push_back(Tap{ offsetBuilder(static_cast<uint64_t>(clamped)), weight });
 				sum += weight;
 			}
 
@@ -132,10 +132,10 @@ namespace
 			else
 			{
 				w.taps.clear();
-				w.taps.push_back(Tap{offsetBuilder(static_cast<uint64_t>(std::clamp(
+				w.taps.push_back(Tap{ offsetBuilder(static_cast<uint64_t>(std::clamp(
 					static_cast<int64_t>(std::lround(srcPos)),
 					int64_t{0},
-					srcMax))), 1.0f});
+					srcMax))), 1.0f });
 			}
 
 			result.push_back(std::move(w));
@@ -166,49 +166,62 @@ namespace
 		assert_debug_only(source.channelStride == PixelStride);
 		assert_debug_only(dest.channelStride == PixelStride);
 
-		if (source.width == dest.width && source.height == dest.height)
+		// Rect validation
+		if (srcRect.h == 0 || srcRect.w == 0)
+			srcRect = Rect{ 0, 0, source.width, source.height };
+		else if (srcRect.left + srcRect.w > source.width || srcRect.top + srcRect.h > source.height)
+		{
+			// Keep the size at (w, h) if possible, but move the window so that it doesn't overrun the image
+			srcRect = Rect{
+				source.width > srcRect.w ? source.width - srcRect.w : 0,
+				source.height > srcRect.h ? source.height - srcRect.h : 0,
+				std::min(srcRect.w, source.width),
+				std::min(srcRect.h, source.height)
+			};
+		}
+
+		if (srcRect.w == dest.width && srcRect.h == dest.height)
 		{
 			for (uint64_t y = 0; y < dest.height; ++y)
 			{
-				const auto* srcRow = source.scanLine<uint8_t>(y);
+				const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + y) + srcRect.left * PixelStride;
 				auto* dstRow = dest.scanLine<uint8_t>(y);
 				::memcpy(dstRow, srcRow, dest.bytesPerLine);
 			}
 			return;
 		}
 
-		const bool scaleUpX = dest.width >= source.width;
-		const bool scaleUpY = dest.height >= source.height;
+		const bool scaleUpX = dest.width >= srcRect.w;
+		const bool scaleUpY = dest.height >= srcRect.h;
 
 		const size_t tempPixelStride = Channels;
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * tempPixelStride;
 
 		const auto xWeights = scaleUpX
-			? buildAxisWeights<BicubicKernel>(source.width, dest.width, [](uint64_t sx) noexcept -> size_t
+			? buildAxisWeights<BicubicKernel>(srcRect.w, dest.width, [](uint64_t sx) noexcept -> size_t
 				{
 					return static_cast<size_t>(sx) * PixelStride;
 				})
-			: buildAxisWeights<Lanczos3Kernel>(source.width, dest.width, [](uint64_t sx) noexcept -> size_t
+			: buildAxisWeights<Lanczos3Kernel>(srcRect.w, dest.width, [](uint64_t sx) noexcept -> size_t
 				{
 					return static_cast<size_t>(sx) * PixelStride;
 				});
 
 		const auto yWeights = scaleUpY
-			? buildAxisWeights<BicubicKernel>(source.height, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
+			? buildAxisWeights<BicubicKernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
 				{
 					return static_cast<size_t>(sy) * tempRowStride;
 				})
-			: buildAxisWeights<Lanczos3Kernel>(source.height, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
+			: buildAxisWeights<Lanczos3Kernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
 				{
 					return static_cast<size_t>(sy) * tempRowStride;
 				});
 
-		std::vector<float> temp(
-			static_cast<size_t>(source.height) * tempRowStride);
+		std::vector<float> temp(static_cast<size_t>(srcRect.h) * tempRowStride);
 
-		for (uint64_t sy = 0; sy < source.height; ++sy)
+		for (uint64_t sy = 0; sy < srcRect.h; ++sy)
 		{
-			const auto* srcRow = source.scanLine<uint8_t>(sy);
+			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + sy) + srcRect.left * PixelStride;
 			float* tempRow = temp.data() + static_cast<size_t>(sy) * tempRowStride;
 
 			for (uint64_t dx = 0; dx < dest.width; ++dx)
@@ -496,43 +509,43 @@ namespace
 	{
 		switch (source.channelStride)
 		{
-			case 1:
-				if constexpr (Channels == 1)
-					resizeImpl<1, 1>(dest, source, srcRect);
-				else
-					resizeImplRuntime(dest, source, srcRect);
-				return;
-
-			case 2:
-				if constexpr (Channels == 1)
-					resizeImpl<1, 2>(dest, source, srcRect);
-				else
-					resizeImplRuntime(dest, source, srcRect);
-				return;
-
-			case 3:
-				if constexpr (Channels == 1)
-					resizeImpl<1, 3>(dest, source, srcRect);
-				else if constexpr (Channels == 3)
-					resizeImpl<3, 3>(dest, source, srcRect);
-				else
-					resizeImplRuntime(dest, source, srcRect);
-				return;
-
-			case 4:
-				if constexpr (Channels == 1)
-					resizeImpl<1, 4>(dest, source, srcRect);
-				else if constexpr (Channels == 3)
-					resizeImpl<3, 4>(dest, source, srcRect);
-				else if constexpr (Channels == 4)
-					resizeImpl<4, 4>(dest, source, srcRect);
-				else
-					resizeImplRuntime(dest, source, srcRect);
-				return;
-
-			default:
+		case 1:
+			if constexpr (Channels == 1)
+				resizeImpl<1, 1>(dest, source, srcRect);
+			else
 				resizeImplRuntime(dest, source, srcRect);
-				return;
+			return;
+
+		case 2:
+			if constexpr (Channels == 1)
+				resizeImpl<1, 2>(dest, source, srcRect);
+			else
+				resizeImplRuntime(dest, source, srcRect);
+			return;
+
+		case 3:
+			if constexpr (Channels == 1)
+				resizeImpl<1, 3>(dest, source, srcRect);
+			else if constexpr (Channels == 3)
+				resizeImpl<3, 3>(dest, source, srcRect);
+			else
+				resizeImplRuntime(dest, source, srcRect);
+			return;
+
+		case 4:
+			if constexpr (Channels == 1)
+				resizeImpl<1, 4>(dest, source, srcRect);
+			else if constexpr (Channels == 3)
+				resizeImpl<3, 4>(dest, source, srcRect);
+			else if constexpr (Channels == 4)
+				resizeImpl<4, 4>(dest, source, srcRect);
+			else
+				resizeImplRuntime(dest, source, srcRect);
+			return;
+
+		default:
+			resizeImplRuntime(dest, source, srcRect);
+			return;
 		}
 	}
 }
@@ -548,14 +561,11 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 
 	assert_and_return_r(source.bytesPerChannel == 1, );
 
-	resizeImplRuntime(dest, source, srcRect);
-	return;
-
 	switch (source.channels)
 	{
-		case 1: resizeDispatchStride<1>(dest, source, srcRect); return;
-		case 3: resizeDispatchStride<3>(dest, source, srcRect); return;
-		case 4: resizeDispatchStride<4>(dest, source, srcRect); return;
-		default: resizeImplRuntime(dest, source, srcRect); return;
+	case 1: resizeDispatchStride<1>(dest, source, srcRect); return;
+	case 3: resizeDispatchStride<3>(dest, source, srcRect); return;
+	case 4: resizeDispatchStride<4>(dest, source, srcRect); return;
+	default: resizeImplRuntime(dest, source, srcRect); return;
 	}
 }
