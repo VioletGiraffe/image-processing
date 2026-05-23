@@ -151,7 +151,7 @@ namespace
 	}
 
 	template <size_t Channels, size_t PixelStride>
-	inline void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
+	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 	{
 		static_assert(Channels >= 1);
 		static_assert(PixelStride >= Channels);
@@ -376,7 +376,7 @@ namespace
 		}
 	}
 
-	inline void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
+	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 	{
 		assert_debug_only(source.width > 0 && source.height > 0);
 		assert_debug_only(dest.width > 0 && dest.height > 0);
@@ -386,17 +386,27 @@ namespace
 		assert_debug_only(dest.bytesPerChannel == 1);
 		assert_debug_only(source.channelStride == dest.channelStride);
 
+		const size_t pixelStride = dest.channelStride;
+
 		// Rect validation
 		if (srcRect.h == 0 || srcRect.w == 0)
 			srcRect = Rect{ 0, 0, source.width, source.height };
 		else if (srcRect.left + srcRect.w > source.width || srcRect.top + srcRect.h > source.height)
-			srcRect = Rect{ 0, 0, source.width, source.height };
+		{
+			// Keep the size at (w, h) if possible, but move the window so that it doesn't overrun the image
+			srcRect = Rect{
+				source.width > srcRect.w ? source.width - srcRect.w : 0,
+				source.height > srcRect.h ? source.height - srcRect.h : 0,
+				std::min(srcRect.w, source.width),
+				std::min(srcRect.h, source.height)
+			};
+		}
 
 		if (srcRect.w == dest.width && srcRect.h == dest.height)
 		{
 			for (uint64_t y = 0; y < dest.height; ++y)
 			{
-				const auto* srcRow = source.scanLine<uint8_t>(y);
+				const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + y) + srcRect.left * pixelStride;
 				auto* dstRow = dest.scanLine<uint8_t>(y);
 				::memcpy(dstRow, srcRow, dest.bytesPerLine);
 			}
@@ -406,7 +416,6 @@ namespace
 		const bool scaleUpX = dest.width >= srcRect.w;
 		const bool scaleUpY = dest.height >= srcRect.h;
 		const size_t numChannels = dest.channels;
-		const size_t pixelStride = dest.channelStride;
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * numChannels;
 
 		const auto xWeights = scaleUpX
@@ -431,13 +440,9 @@ namespace
 
 		std::vector<float> temp(static_cast<size_t>(srcRect.h) * tempRowStride);
 
-		const uint64_t srcRight = srcRect.left + srcRect.w;
-		const uint64_t srcBottom = srcRect.top + srcRect.h;
-
 		for (uint64_t ty = 0; ty < srcRect.h; ++ty)
 		{
-			const uint64_t sy = srcRect.top + ty;
-			const auto* srcRow = source.scanLine<uint8_t>(sy);
+			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + ty) + srcRect.left * pixelStride;
 			float* tempRow = temp.data() + static_cast<size_t>(ty) * tempRowStride;
 
 			for (uint64_t dx = 0; dx < dest.width; ++dx)
@@ -543,7 +548,8 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 
 	assert_and_return_r(source.bytesPerChannel == 1, );
 
-	resizeImplRuntime(dest, source, srcRect); return;
+	resizeImplRuntime(dest, source, srcRect);
+	return;
 
 	switch (source.channels)
 	{

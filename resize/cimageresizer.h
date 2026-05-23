@@ -30,7 +30,7 @@ namespace ImageProcessing
 		}
 	};
 	struct Rect {
-		uint64_t top = 0, left = 0;
+		uint64_t left = 0, top = 0;
 		uint64_t w = 0, h = 0;
 	};
 
