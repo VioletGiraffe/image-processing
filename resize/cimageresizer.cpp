@@ -6,8 +6,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <numbers>
+#include <string.h>
 #include <utility>
 #include <vector>
 
