@@ -150,6 +150,13 @@ namespace
 		return static_cast<uint8_t>(std::clamp<int64_t>(rounded, 0LL, 255LL));
 	}
 
+	inline void copyPixelTail(uint8_t* destPixel, const uint8_t* sourcePixel, size_t channels, size_t pixelStride) noexcept
+	{
+		// Bytes outside the logical channels can still carry pixel-format invariants, such as RGB32's required 0xff byte.
+		assert_debug_only(pixelStride > channels);
+		::memcpy(destPixel + channels, sourcePixel + channels, pixelStride - channels);
+	}
+
 	template <size_t Channels, size_t PixelStride>
 	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 	{
@@ -303,6 +310,7 @@ namespace
 			}
 		}
 
+		[[maybe_unused]] const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
 		for (uint64_t dy = 0; dy < dest.height; ++dy)
 		{
 			auto* dstRow = dest.scanLine<uint8_t>(dy);
@@ -310,6 +318,8 @@ namespace
 
 			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
+				auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
+
 				if constexpr (Channels == 1)
 				{
 					float c0 = 0.0f;
@@ -320,7 +330,6 @@ namespace
 						c0 += tempPixel[0] * tap.weight;
 					}
 
-					auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
 					dstPixel[0] = clampToByte(c0);
 				}
 				else if constexpr (Channels == 3)
@@ -339,7 +348,6 @@ namespace
 						c2 += tempPixel[2] * weight;
 					}
 
-					auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
 					dstPixel[0] = clampToByte(c0);
 					dstPixel[1] = clampToByte(c1);
 					dstPixel[2] = clampToByte(c2);
@@ -362,7 +370,6 @@ namespace
 						c3 += tempPixel[3] * weight;
 					}
 
-					auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
 					dstPixel[0] = clampToByte(c0);
 					dstPixel[1] = clampToByte(c1);
 					dstPixel[2] = clampToByte(c2);
@@ -381,10 +388,12 @@ namespace
 							accum[c] += tempPixel[c] * weight;
 					}
 
-					auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
 					for (size_t c = 0; c < Channels; ++c)
 						dstPixel[c] = clampToByte(accum[c]);
 				}
+
+				if constexpr (PixelStride > Channels)
+					copyPixelTail(dstPixel, pixelTailSource, Channels, PixelStride);
 			}
 		}
 	}
@@ -478,6 +487,7 @@ namespace
 		}
 
 		alignas(16) float accum[4];
+		const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * pixelStride;
 
 		for (uint64_t dy = 0; dy < dest.height; ++dy)
 		{
@@ -500,6 +510,9 @@ namespace
 				auto* dstPixel = dstRow + static_cast<size_t>(dx) * pixelStride;
 				for (size_t c = 0; c < numChannels; ++c)
 					dstPixel[c] = clampToByte(accum[c]);
+
+				if (pixelStride > numChannels)
+					copyPixelTail(dstPixel, pixelTailSource, numChannels, pixelStride);
 			}
 		}
 	}
