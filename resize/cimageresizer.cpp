@@ -156,6 +156,17 @@ namespace
 		::memcpy(destPixel + channels, sourcePixel + channels, pixelStride - channels);
 	}
 
+	inline void copyUnscaledCrop(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, size_t pixelStride)
+	{
+		const size_t logicalRowBytes = static_cast<size_t>(dest.width) * pixelStride;
+		for (uint64_t y = 0; y < dest.height; ++y)
+		{
+			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + y) + srcRect.left * pixelStride;
+			auto* dstRow = dest.scanLine<uint8_t>(y);
+			::memcpy(dstRow, srcRow, logicalRowBytes);
+		}
+	}
+
 	template <size_t Channels, size_t PixelStride>
 	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 	{
@@ -174,12 +185,7 @@ namespace
 
 		if (srcRect.w == dest.width && srcRect.h == dest.height)
 		{
-			for (uint64_t y = 0; y < dest.height; ++y)
-			{
-				const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + y) + srcRect.left * PixelStride;
-				auto* dstRow = dest.scanLine<uint8_t>(y);
-				::memcpy(dstRow, srcRow, dest.bytesPerLine);
-			}
+			copyUnscaledCrop(dest, source, srcRect, PixelStride);
 			return;
 		}
 
@@ -397,12 +403,7 @@ namespace
 
 		if (srcRect.w == dest.width && srcRect.h == dest.height)
 		{
-			for (uint64_t y = 0; y < dest.height; ++y)
-			{
-				const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + y) + srcRect.left * pixelStride;
-				auto* dstRow = dest.scanLine<uint8_t>(y);
-				::memcpy(dstRow, srcRow, dest.bytesPerLine);
-			}
+			copyUnscaledCrop(dest, source, srcRect, pixelStride);
 			return;
 		}
 
