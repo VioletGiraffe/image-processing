@@ -1,6 +1,5 @@
 #include "cimageresizer.h"
 #include "assert/advanced_assert.h"
-#include "math/math.hpp"
 
 #include <algorithm>
 #include <array>
@@ -170,22 +169,8 @@ namespace
 		assert_debug_only(dest.channels == Channels);
 		assert_debug_only(source.bytesPerChannel == 1);
 		assert_debug_only(dest.bytesPerChannel == 1);
-		assert_debug_only(source.channelStride == PixelStride);
-		assert_debug_only(dest.channelStride == PixelStride);
-
-		// Rect validation
-		if (srcRect.h == 0 || srcRect.w == 0)
-			srcRect = Rect{ 0, 0, source.width, source.height };
-		else if (srcRect.left + srcRect.w > source.width || srcRect.top + srcRect.h > source.height)
-		{
-			// Keep the size at (w, h) if possible, but move the window so that it doesn't overrun the image
-			srcRect = Rect{
-				source.width > srcRect.w ? source.width - srcRect.w : 0,
-				source.height > srcRect.h ? source.height - srcRect.h : 0,
-				std::min(srcRect.w, source.width),
-				std::min(srcRect.h, source.height)
-			};
-		}
+		assert_debug_only(source.pixelStrideBytes == PixelStride);
+		assert_debug_only(dest.pixelStrideBytes == PixelStride);
 
 		if (srcRect.w == dest.width && srcRect.h == dest.height)
 		{
@@ -406,23 +391,9 @@ namespace
 		assert_debug_only(source.channels == dest.channels);
 		assert_debug_only(source.bytesPerChannel == 1);
 		assert_debug_only(dest.bytesPerChannel == 1);
-		assert_debug_only(source.channelStride == dest.channelStride);
+		assert_debug_only(source.pixelStrideBytes == dest.pixelStrideBytes);
 
-		const size_t pixelStride = dest.channelStride;
-
-		// Rect validation
-		if (srcRect.h == 0 || srcRect.w == 0)
-			srcRect = Rect{ 0, 0, source.width, source.height };
-		else if (srcRect.left + srcRect.w > source.width || srcRect.top + srcRect.h > source.height)
-		{
-			// Keep the size at (w, h) if possible, but move the window so that it doesn't overrun the image
-			srcRect = Rect{
-				source.width > srcRect.w ? source.width - srcRect.w : 0,
-				source.height > srcRect.h ? source.height - srcRect.h : 0,
-				std::min(srcRect.w, source.width),
-				std::min(srcRect.h, source.height)
-			};
-		}
+		const size_t pixelStride = dest.pixelStrideBytes;
 
 		if (srcRect.w == dest.width && srcRect.h == dest.height)
 		{
@@ -520,7 +491,7 @@ namespace
 	template <size_t Channels>
 	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 	{
-		switch (source.channelStride)
+		switch (source.pixelStrideBytes)
 		{
 		case 1:
 			if constexpr (Channels == 1)
@@ -570,9 +541,20 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 
 	assert_debug_only(source.channels == dest.channels);
 	assert_debug_only(source.bytesPerChannel == dest.bytesPerChannel);
-	assert_debug_only(source.channelStride == dest.channelStride);
+	assert_debug_only(source.pixelStrideBytes == dest.pixelStrideBytes);
 
 	assert_and_return_r(source.bytesPerChannel == 1, );
+
+	if (srcRect.w == 0 || srcRect.h == 0)
+		srcRect = Rect{ 0, 0, source.width, source.height };
+	else
+	{
+		// Preserve the requested size where possible, shifting each axis independently to keep the rectangle inside the source.
+		srcRect.w = std::min(srcRect.w, source.width);
+		srcRect.h = std::min(srcRect.h, source.height);
+		srcRect.left = std::min(srcRect.left, source.width - srcRect.w);
+		srcRect.top = std::min(srcRect.top, source.height - srcRect.h);
+	}
 
 	switch (source.channels)
 	{

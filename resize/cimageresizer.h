@@ -15,7 +15,7 @@ namespace ImageProcessing
 		uint64_t height;
 		uint8_t channels;
 		uint8_t bytesPerChannel;
-		uint8_t channelStride;
+		uint8_t pixelStrideBytes;
 		size_t bytesPerLine;
 
 		DataPtr data;
