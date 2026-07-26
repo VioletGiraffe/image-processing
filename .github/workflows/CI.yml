@@ -1,0 +1,75 @@
+name: CI
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  test:
+    name: Build and test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: 6.10.*
+        target: desktop
+        archives: 'qtbase icu'
+
+    - name: Set up MSVC environment
+      if: startsWith(matrix.os, 'windows')
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: Checkout dependencies
+      run: |
+        git clone --depth 1 https://github.com/VioletGiraffe/cpp-template-utils ../cpp-template-utils
+        git clone --depth 1 https://github.com/VioletGiraffe/cpputils ../cpputils
+
+    - name: Build tests on Windows
+      if: startsWith(matrix.os, 'windows')
+      shell: cmd
+      working-directory: tests
+      run: |
+        %QT_ROOT_DIR%\bin\qmake.exe -v
+        %QT_ROOT_DIR%\bin\qmake.exe -tp vc image-processing-tests.pro
+        msbuild image-processing-tests.vcxproj /t:Build /p:Configuration=Release
+
+    - name: Build tests on macOS
+      if: startsWith(matrix.os, 'macos')
+      working-directory: tests
+      run: |
+        clang --version
+        $QT_ROOT_DIR/bin/qmake image-processing-tests.pro -config release CONFIG+=release
+        make -j
+
+    - name: Build tests on Linux
+      if: startsWith(matrix.os, 'ubuntu')
+      working-directory: tests
+      run: |
+        sudo apt update -y
+        sudo apt install -qq gcc-14 g++-14
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 50
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 50
+        g++ --version
+        $QT_ROOT_DIR/bin/qmake image-processing-tests.pro -config release CONFIG+=release
+        make -j
+
+    - name: Run tests on Windows
+      if: startsWith(matrix.os, 'windows')
+      run: ./tests/bin/release/image-processing-tests.exe
+
+    - name: Run tests on macOS
+      if: startsWith(matrix.os, 'macos')
+      run: ./tests/bin/release/image-processing-tests.app/Contents/MacOS/image-processing-tests
+
+    - name: Run tests on Linux
+      if: startsWith(matrix.os, 'ubuntu')
+      run: ./tests/bin/release/image-processing-tests

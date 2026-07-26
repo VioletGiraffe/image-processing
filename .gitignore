@@ -11,3 +11,5 @@
 *.suo
 *.opensdf 
 Makefile
+tests/bin/
+tests/build/
