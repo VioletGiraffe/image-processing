@@ -543,6 +543,7 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 	assert_debug_only(source.bytesPerChannel == dest.bytesPerChannel);
 	assert_debug_only(source.pixelStrideBytes == dest.pixelStrideBytes);
 
+	assert_and_return_r(source.channels <= 4 && dest.channels <= 4, );
 	assert_and_return_r(source.bytesPerChannel == 1, );
 
 	if (srcRect.w == 0 || srcRect.h == 0)
