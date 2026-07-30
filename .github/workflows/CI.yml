@@ -81,18 +81,24 @@ jobs:
 
     - name: Run benchmarks on Windows
       if: startsWith(matrix.os, 'windows')
+      env:
+        QT_NO_GUI_THREADPOOL: 1
       run: |
         ./tests/bin/release/image-processing-tests.exe "[!benchmark]" --benchmark-samples 10 --benchmark-no-analysis --reporter xml --out benchmark-results.xml
         python ./tests/report_benchmark_ratios.py benchmark-results.xml
 
     - name: Run benchmarks on macOS
       if: startsWith(matrix.os, 'macos')
+      env:
+        QT_NO_GUI_THREADPOOL: 1
       run: |
         ./tests/bin/release/image-processing-tests.app/Contents/MacOS/image-processing-tests "[!benchmark]" --benchmark-samples 10 --benchmark-no-analysis --reporter xml --out benchmark-results.xml
         python ./tests/report_benchmark_ratios.py benchmark-results.xml
 
     - name: Run benchmarks on Linux
       if: startsWith(matrix.os, 'ubuntu')
+      env:
+        QT_NO_GUI_THREADPOOL: 1
       run: |
         ./tests/bin/release/image-processing-tests "[!benchmark]" --benchmark-samples 10 --benchmark-no-analysis --reporter xml --out benchmark-results.xml
         python ./tests/report_benchmark_ratios.py benchmark-results.xml
