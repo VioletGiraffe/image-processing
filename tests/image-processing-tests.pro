@@ -29,6 +29,10 @@ linux* | mac* | freebsd {
 	QMAKE_CXXFLAGS_WARN_ON = -Wall
 }
 
+mac*:contains(QT_ARCH, arm64) {
+	QMAKE_CXXFLAGS += -include arm_acle.h
+}
+
 INCLUDEPATH += \
 	$$PWD/.. \
 	$$PWD/../../cpp-template-utils \
