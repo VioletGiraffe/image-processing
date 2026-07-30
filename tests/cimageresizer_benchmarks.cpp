@@ -72,8 +72,7 @@ namespace
 			qImageFormat);
 		REQUIRE(!qImageSource.isNull());
 
-		const std::string resizerBenchmarkName = std::string("CImageResizer | ") + name;
-		BENCHMARK(resizerBenchmarkName)
+		BENCHMARK(std::string("CImageResizer | ") + name)
 		{
 			BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
 			auto destView = dest.mutableView();
@@ -83,8 +82,7 @@ namespace
 
 		if (sourceWidth == destWidth && sourceHeight == destHeight)
 		{
-			const std::string qImageBenchmarkName = std::string("QImage::copy | ") + name;
-			BENCHMARK(qImageBenchmarkName)
+			BENCHMARK(std::string("QImage::copy | ") + name)
 			{
 				const QImage dest = qImageSource.copy();
 				return dest.constBits()[dest.sizeInBytes() / 2];
@@ -92,8 +90,7 @@ namespace
 		}
 		else
 		{
-			const std::string qImageBenchmarkName = std::string("QImage::scaled | ") + name;
-			BENCHMARK(qImageBenchmarkName)
+			BENCHMARK(std::string("QImage::scaled | ") + name)
 			{
 				const QImage dest = qImageSource.scaled(
 					static_cast<int>(destWidth),
