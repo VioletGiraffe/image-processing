@@ -7,8 +7,8 @@
 #include <cstdint>
 #include <memory>
 #include <numbers>
+#include <span>
 #include <string.h>
-#include <utility>
 #include <vector>
 
 using namespace ImageProcessing;
@@ -21,9 +21,22 @@ namespace
 		float weight;
 	};
 
+	struct TapRange
+	{
+		size_t firstTap;
+		size_t tapCount;
+	};
+
 	struct AxisWeights
 	{
+		[[nodiscard]] std::span<const Tap> tapsFor(size_t coordinate) const noexcept
+		{
+			const TapRange& range = ranges[coordinate];
+			return { taps.data() + range.firstTap, range.tapCount };
+		}
+
 		std::vector<Tap> taps;
+		std::vector<TapRange> ranges;
 	};
 
 	[[nodiscard]] inline float sinc(float x) noexcept
@@ -73,24 +86,22 @@ namespace
 	};
 
 	template <class Kernel, class OffsetBuilder>
-	[[nodiscard]] inline std::vector<AxisWeights> buildAxisWeights(
+	[[nodiscard]] inline AxisWeights buildAxisWeights(
 		uint64_t srcSize,
 		uint64_t dstSize,
 		OffsetBuilder&& offsetBuilder)
 	{
-		std::vector<AxisWeights> result;
-		result.reserve(dstSize);
+		AxisWeights result;
+		result.ranges.reserve(dstSize);
 
 		if (srcSize == 1)
 		{
-			for (uint64_t d = 0; d < dstSize; ++d)
-			{
-				AxisWeights w;
-				w.taps.push_back(Tap{ offsetBuilder(0), 1.0f });
-				result.push_back(std::move(w));
-			}
+			result.taps.push_back(Tap{ offsetBuilder(0), 1.0f });
+			result.ranges.resize(dstSize, TapRange{ 0, 1 });
 			return result;
 		}
+
+		result.taps.reserve(dstSize);
 
 		const float scale = static_cast<float>(dstSize) / static_cast<float>(srcSize);
 		const bool downscale = scale < 1.0f;
@@ -99,15 +110,10 @@ namespace
 
 		for (uint64_t d = 0; d < dstSize; ++d)
 		{
-			AxisWeights w;
-
 			const float srcPos = (static_cast<float>(d) + 0.5f) / scale - 0.5f;
 			const int64_t left = static_cast<int64_t>(std::floor(srcPos - support));
 			const int64_t right = static_cast<int64_t>(std::ceil(srcPos + support));
-			const int64_t count = std::max(1LL, right - left + 1LL);
-
-			w.taps.reserve(static_cast<size_t>(count));
-
+			const size_t firstTap = result.taps.size();
 			float sum = 0.0f;
 
 			for (int64_t s = left; s <= right; ++s)
@@ -122,26 +128,26 @@ namespace
 					continue;
 
 				const int64_t clamped = std::clamp(s, int64_t{ 0 }, srcMax);
-				w.taps.push_back(Tap{ offsetBuilder(static_cast<uint64_t>(clamped)), weight });
+				result.taps.push_back(Tap{ offsetBuilder(static_cast<uint64_t>(clamped)), weight });
 				sum += weight;
 			}
 
 			if (sum != 0.0f)
 			{
 				const float invSum = 1.0f / sum;
-				for (Tap& tap : w.taps)
-					tap.weight *= invSum;
+				for (size_t tapIndex = firstTap; tapIndex < result.taps.size(); ++tapIndex)
+					result.taps[tapIndex].weight *= invSum;
 			}
 			else
 			{
-				w.taps.clear();
-				w.taps.push_back(Tap{ offsetBuilder(static_cast<uint64_t>(std::clamp(
+				result.taps.resize(firstTap);
+				result.taps.push_back(Tap{ offsetBuilder(static_cast<uint64_t>(std::clamp(
 					static_cast<int64_t>(std::lround(srcPos)),
 					int64_t{0},
 					srcMax))), 1.0f });
 			}
 
-			result.push_back(std::move(w));
+			result.ranges.push_back(TapRange{ firstTap, result.taps.size() - firstTap });
 		}
 
 		return result;
@@ -233,11 +239,11 @@ namespace
 
 			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
-				const auto& wx = xWeights[dx];
+				const auto wx = xWeights.tapsFor(dx);
 				float* outPixel = tempRow + static_cast<size_t>(dx) * tempPixelStride;
 				std::array<float, Channels> accum{};
 
-				for (const Tap& tap : wx.taps)
+				for (const Tap& tap : wx)
 				{
 					const auto* srcPixel = srcRow + tap.offset;
 					const float weight = tap.weight;
@@ -255,14 +261,14 @@ namespace
 		for (uint64_t dy = 0; dy < dest.height; ++dy)
 		{
 			auto* dstRow = dest.scanLine<uint8_t>(dy);
-			const auto& wy = yWeights[dy];
+			const auto wy = yWeights.tapsFor(dy);
 
 			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
 				auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
 				std::array<float, Channels> accum{};
 
-				for (const Tap& tap : wy.taps)
+				for (const Tap& tap : wy)
 				{
 					const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
 					const float weight = tap.weight;
@@ -332,13 +338,13 @@ namespace
 
 			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
-				const auto& wx = xWeights[dx];
+				const auto wx = xWeights.tapsFor(dx);
 				float* outPixel = tempRow + static_cast<size_t>(dx) * numChannels;
 
 				for (size_t c = 0; c < numChannels; ++c)
 					outPixel[c] = 0.0f;
 
-				for (const Tap& tap : wx.taps)
+				for (const Tap& tap : wx)
 				{
 					const auto* srcPixel = srcRow + tap.offset;
 					const float weight = tap.weight;
@@ -355,13 +361,13 @@ namespace
 		for (uint64_t dy = 0; dy < dest.height; ++dy)
 		{
 			auto* dstRow = dest.scanLine<uint8_t>(dy);
-			const auto& wy = yWeights[dy];
+			const auto wy = yWeights.tapsFor(dy);
 
 			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
 				accum[0] = 0.0f; accum[1] = 0.0f; accum[2] = 0.0f; accum[3] = 0.0f;
 
-				for (const Tap& tap : wy.taps)
+				for (const Tap& tap : wy)
 				{
 					const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * numChannels;
 					const float weight = tap.weight;
