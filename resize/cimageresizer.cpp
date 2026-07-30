@@ -112,13 +112,16 @@ namespace
 
 			for (int64_t s = left; s <= right; ++s)
 			{
-				const int64_t clamped = std::clamp(s, int64_t{ 0 }, srcMax);
 				const float distance = srcPos - static_cast<float>(s);
 
 				const float weight = downscale
 					? Kernel::evaluate(distance * scale) * scale
 					: Kernel::evaluate(distance);
 
+				if (weight == 0.0f)
+					continue;
+
+				const int64_t clamped = std::clamp(s, int64_t{ 0 }, srcMax);
 				w.taps.push_back(Tap{ offsetBuilder(static_cast<uint64_t>(clamped)), weight });
 				sum += weight;
 			}
