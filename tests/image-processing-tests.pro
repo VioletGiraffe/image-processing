@@ -29,8 +29,10 @@ linux* | mac* | freebsd {
 	QMAKE_CXXFLAGS_WARN_ON = -Wall
 }
 
-mac*:contains(QT_ARCH, arm64) {
-	QMAKE_CXXFLAGS += -include arm_acle.h
+macx {
+	contains(QMAKE_HOST.arch, arm64)|contains(QMAKE_APPLE_DEVICE_ARCHS, arm64) {
+		QMAKE_CXXFLAGS += -include arm_acle.h
+	}
 }
 
 INCLUDEPATH += \
