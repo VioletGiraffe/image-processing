@@ -149,8 +149,13 @@ namespace
 
 	[[nodiscard]] inline uint8_t clampToByte(float value) noexcept
 	{
-		const int64_t rounded = (int64_t)::roundf(value);
-		return static_cast<uint8_t>(std::clamp<int64_t>(rounded, 0LL, 255LL));
+		if (value <= 0.0f)
+			return 0;
+
+		if (value >= 255.0f)
+			return 255;
+
+		return static_cast<uint8_t>(value + 0.5f);
 	}
 
 	inline void copyPixelTail(uint8_t* destPixel, const uint8_t* sourcePixel, size_t channels, size_t pixelStride) noexcept
