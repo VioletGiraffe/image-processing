@@ -4,7 +4,7 @@ TARGET = image-processing-tests
 CONFIG += console testcase strict_c++ c++2b
 CONFIG -= c++17 c++2a
 
-CONFIG(release, debug|release):CONFIG += optimize_full
+CONFIG(release, debug|release):CONFIG += optimize_full ltcg
 
 QT += gui
 
