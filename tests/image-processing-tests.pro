@@ -5,6 +5,8 @@ CONFIG += console testcase strict_c++ c++2b
 CONFIG -= qt
 CONFIG -= c++17 c++2a
 
+DEFINES += CATCH_CONFIG_ENABLE_BENCHMARKING
+
 CONFIG(debug, debug|release) {
 	OUTPUT_DIR=debug
 	DEFINES += _DEBUG
@@ -36,6 +38,7 @@ HEADERS += \
 
 SOURCES += \
 	main.cpp \
+	cimageresizer_benchmarks.cpp \
 	cimageresizer_tests.cpp \
 	../resize/cimageresizer.cpp \
 	../../cpputils/assert/advanced_assert.cpp \

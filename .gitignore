@@ -10,6 +10,7 @@
 *.sdf
 *.suo
 *.opensdf 
+.qtc_clangd/
 Makefile
 tests/bin/
 tests/build/

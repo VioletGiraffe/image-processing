@@ -2,11 +2,14 @@
 #include "resize/cimageresizer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <numbers>
 #include <random>
+#include <utility>
 #include <vector>
 
 namespace
@@ -184,6 +187,172 @@ namespace
 		}
 		return image;
 	}
+
+	struct ReferenceTap
+	{
+		uint64_t coordinate;
+		double weight;
+	};
+
+	using ReferenceAxisWeights = std::vector<std::vector<ReferenceTap>>;
+
+	[[nodiscard]] double referenceSinc(double x) noexcept
+	{
+		if (x == 0.0)
+			return 1.0;
+
+		const double px = std::numbers::pi * x;
+		return std::sin(px) / px;
+	}
+
+	[[nodiscard]] double evaluateReferenceBicubic(double x) noexcept
+	{
+		x = std::abs(x);
+		constexpr double a = -0.5;
+		if (x < 1.0)
+			return ((a + 2.0) * x - (a + 3.0)) * x * x + 1.0;
+		if (x < 2.0)
+			return (((a * x - 5.0 * a) * x + 8.0 * a) * x - 4.0 * a);
+
+		return 0.0;
+	}
+
+	[[nodiscard]] double evaluateReferenceLanczos3(double x) noexcept
+	{
+		x = std::abs(x);
+		constexpr double radius = 3.0;
+		if (x == 0.0)
+			return 1.0;
+		if (x >= radius)
+			return 0.0;
+
+		return referenceSinc(x) * referenceSinc(x / radius);
+	}
+
+	[[nodiscard]] ReferenceAxisWeights buildReferenceAxisWeights(uint64_t sourceSize, uint64_t destSize)
+	{
+		ReferenceAxisWeights result;
+		result.reserve(destSize);
+
+		if (sourceSize == 1)
+		{
+			for (uint64_t destCoordinate = 0; destCoordinate < destSize; ++destCoordinate)
+				result.push_back({ ReferenceTap{ 0, 1.0 } });
+			return result;
+		}
+
+		const double scale = static_cast<double>(destSize) / static_cast<double>(sourceSize);
+		const bool downscale = scale < 1.0;
+		const double radius = downscale ? 3.0 : 2.0;
+		const double support = downscale ? radius / scale : radius;
+		const int64_t sourceMax = static_cast<int64_t>(sourceSize) - 1;
+
+		for (uint64_t destCoordinate = 0; destCoordinate < destSize; ++destCoordinate)
+		{
+			std::vector<ReferenceTap> taps;
+			const double sourcePosition = (static_cast<double>(destCoordinate) + 0.5) / scale - 0.5;
+			const int64_t left = static_cast<int64_t>(std::floor(sourcePosition - support));
+			const int64_t right = static_cast<int64_t>(std::ceil(sourcePosition + support));
+			taps.reserve(static_cast<size_t>(right - left + 1));
+
+			double weightSum = 0.0;
+			for (int64_t sourceCoordinate = left; sourceCoordinate <= right; ++sourceCoordinate)
+			{
+				const double distance = sourcePosition - static_cast<double>(sourceCoordinate);
+				const double weight = downscale
+					? evaluateReferenceLanczos3(distance * scale) * scale
+					: evaluateReferenceBicubic(distance);
+				taps.push_back({ static_cast<uint64_t>(std::clamp(sourceCoordinate, int64_t{ 0 }, sourceMax)), weight });
+				weightSum += weight;
+			}
+
+			if (weightSum != 0.0)
+			{
+				for (ReferenceTap& tap : taps)
+					tap.weight /= weightSum;
+			}
+			else
+			{
+				taps.clear();
+				taps.push_back({ static_cast<uint64_t>(std::clamp(static_cast<int64_t>(std::lround(sourcePosition)), int64_t{ 0 }, sourceMax)), 1.0 });
+			}
+
+			result.push_back(std::move(taps));
+		}
+
+		return result;
+	}
+
+	// A direct 2D convolution keeps the test oracle structurally independent from the production two-pass implementation.
+	[[nodiscard]] std::vector<double> referenceResizeGrayscale(const TestImage& source, uint64_t destWidth, uint64_t destHeight)
+	{
+		const ReferenceAxisWeights xWeights = buildReferenceAxisWeights(source.width, destWidth);
+		const ReferenceAxisWeights yWeights = buildReferenceAxisWeights(source.height, destHeight);
+		std::vector<double> result(static_cast<size_t>(destWidth) * destHeight);
+
+		for (uint64_t destY = 0; destY < destHeight; ++destY)
+		{
+			for (uint64_t destX = 0; destX < destWidth; ++destX)
+			{
+				double value = 0.0;
+				for (const ReferenceTap& yTap : yWeights[destY])
+				{
+					for (const ReferenceTap& xTap : xWeights[destX])
+						value += static_cast<double>(source.pixel(xTap.coordinate, yTap.coordinate)[0]) * xTap.weight * yTap.weight;
+				}
+				result[static_cast<size_t>(destY) * destWidth + destX] = value;
+			}
+		}
+
+		return result;
+	}
+
+	[[nodiscard]] uint8_t roundReferenceToByte(double value) noexcept
+	{
+		const int64_t rounded = static_cast<int64_t>(std::round(value));
+		return static_cast<uint8_t>(std::clamp(rounded, int64_t{ 0 }, int64_t{ 255 }));
+	}
+
+	void requireGrayscaleResizeMatchesReference(const TestImage& actual, const TestImage& source)
+	{
+		const std::vector<double> reference = referenceResizeGrayscale(source, actual.width, actual.height);
+
+		for (uint64_t y = 0; y < actual.height; ++y)
+		{
+			for (uint64_t x = 0; x < actual.width; ++x)
+			{
+				const double referenceValue = reference[static_cast<size_t>(y) * actual.width + x];
+				const uint8_t expected = roundReferenceToByte(referenceValue);
+				const uint8_t actualValue = actual.pixel(x, y)[0];
+				const double distanceToRoundingBoundary = std::abs(referenceValue - (std::floor(referenceValue) + 0.5));
+				const int difference = static_cast<int>(actualValue) - static_cast<int>(expected);
+				const int absoluteDifference = std::max(difference, -difference);
+				const int allowedDifference = distanceToRoundingBoundary < 0.01 ? 1 : 0;
+
+				if (absoluteDifference > allowedDifference)
+				{
+					CAPTURE(source.width, source.height, actual.width, actual.height, x, y, referenceValue, expected, actualValue, distanceToRoundingBoundary);
+					FAIL("Resize result differs from the double-precision reference");
+				}
+			}
+		}
+
+		SUCCEED();
+	}
+
+	void requireNearUnityResizeMatchesReference(uint64_t sourceWidth, uint64_t sourceHeight, uint64_t destWidth, uint64_t destHeight)
+	{
+		TestImage source(sourceWidth, sourceHeight, 1, 1);
+		for (uint64_t y = 0; y < source.height; ++y)
+		{
+			for (uint64_t x = 0; x < source.width; ++x)
+				source.pixel(x, y)[0] = static_cast<uint8_t>((x * 37 + y * 71 + (x * y % 251) * 19 + 23) & 0xff);
+		}
+
+		TestImage actual(destWidth, destHeight, 1, 1);
+		resize(actual, source);
+		requireGrayscaleResizeMatchesReference(actual, source);
+	}
 }
 
 TEST_CASE("Bicubic upscaling matches independently generated golden pixels", "[resize][bicubic][golden]")
@@ -206,6 +375,7 @@ TEST_CASE("Bicubic upscaling matches independently generated golden pixels", "[r
 		167, 156, 133, 122, 125, 126,
 		251, 232, 190, 147, 103, 83
 	});
+	requireGrayscaleResizeMatchesReference(dest, source);
 }
 
 TEST_CASE("Lanczos downscaling matches independently generated golden pixels", "[resize][lanczos][golden]")
@@ -230,6 +400,7 @@ TEST_CASE("Lanczos downscaling matches independently generated golden pixels", "
 		101, 102, 185,
 		105, 115, 124
 	});
+	requireGrayscaleResizeMatchesReference(dest, source);
 }
 
 TEST_CASE("Constant images remain constant when resized", "[resize]")
@@ -493,6 +664,24 @@ TEST_CASE("A one-pixel source image replicates every pixel byte", "[resize][pixe
 	{
 		for (uint64_t x = 0; x < dest.width; ++x)
 			requirePixel(dest, x, y, { 17, 83, 201, 0xa5, 0x5a, 0xff });
+	}
+}
+
+TEST_CASE("Near-unity scaling matches a direct double-precision reference", "[resize][reference]")
+{
+	SECTION("255 to 256 upscale")
+	{
+		requireNearUnityResizeMatchesReference(255, 31, 256, 31);
+	}
+
+	SECTION("256 to 255 downscale")
+	{
+		requireNearUnityResizeMatchesReference(256, 31, 255, 31);
+	}
+
+	SECTION("Mixed-axis upscale and downscale")
+	{
+		requireNearUnityResizeMatchesReference(255, 256, 256, 255);
 	}
 }
 
