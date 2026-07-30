@@ -17,3 +17,4 @@ tests/bin/
 tests/build/
 /tests/debug/
 /tests/release/
+/tests/target_wrapper.bat

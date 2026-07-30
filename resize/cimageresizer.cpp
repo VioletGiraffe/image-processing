@@ -227,78 +227,19 @@ namespace
 			{
 				const auto& wx = xWeights[dx];
 				float* outPixel = tempRow + static_cast<size_t>(dx) * tempPixelStride;
+				std::array<float, Channels> accum{};
 
-				if constexpr (Channels == 1)
+				for (const Tap& tap : wx.taps)
 				{
-					float c0 = 0.0f;
-
-					for (const Tap& tap : wx.taps)
-					{
-						const auto* srcPixel = srcRow + tap.offset;
-						c0 += static_cast<float>(srcPixel[0]) * tap.weight;
-					}
-
-					outPixel[0] = c0;
-				}
-				else if constexpr (Channels == 3)
-				{
-					float c0 = 0.0f;
-					float c1 = 0.0f;
-					float c2 = 0.0f;
-
-					for (const Tap& tap : wx.taps)
-					{
-						const auto* srcPixel = srcRow + tap.offset;
-						const float weight = tap.weight;
-
-						c0 += static_cast<float>(srcPixel[0]) * weight;
-						c1 += static_cast<float>(srcPixel[1]) * weight;
-						c2 += static_cast<float>(srcPixel[2]) * weight;
-					}
-
-					outPixel[0] = c0;
-					outPixel[1] = c1;
-					outPixel[2] = c2;
-				}
-				else if constexpr (Channels == 4)
-				{
-					float c0 = 0.0f;
-					float c1 = 0.0f;
-					float c2 = 0.0f;
-					float c3 = 0.0f;
-
-					for (const Tap& tap : wx.taps)
-					{
-						const auto* srcPixel = srcRow + tap.offset;
-						const float weight = tap.weight;
-
-						c0 += static_cast<float>(srcPixel[0]) * weight;
-						c1 += static_cast<float>(srcPixel[1]) * weight;
-						c2 += static_cast<float>(srcPixel[2]) * weight;
-						c3 += static_cast<float>(srcPixel[3]) * weight;
-					}
-
-					outPixel[0] = c0;
-					outPixel[1] = c1;
-					outPixel[2] = c2;
-					outPixel[3] = c3;
-				}
-				else
-				{
-					std::array<float, Channels> accum{};
-
-					for (const Tap& tap : wx.taps)
-					{
-						const auto* srcPixel = srcRow + tap.offset;
-						const float weight = tap.weight;
-
-						for (size_t c = 0; c < Channels; ++c)
-							accum[c] += static_cast<float>(srcPixel[c]) * weight;
-					}
+					const auto* srcPixel = srcRow + tap.offset;
+					const float weight = tap.weight;
 
 					for (size_t c = 0; c < Channels; ++c)
-						outPixel[c] = accum[c];
+						accum[c] += static_cast<float>(srcPixel[c]) * weight;
 				}
+
+				for (size_t c = 0; c < Channels; ++c)
+					outPixel[c] = accum[c];
 			}
 		}
 
@@ -311,78 +252,19 @@ namespace
 			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
 				auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
+				std::array<float, Channels> accum{};
 
-				if constexpr (Channels == 1)
+				for (const Tap& tap : wy.taps)
 				{
-					float c0 = 0.0f;
-
-					for (const Tap& tap : wy.taps)
-					{
-						const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
-						c0 += tempPixel[0] * tap.weight;
-					}
-
-					dstPixel[0] = clampToByte(c0);
-				}
-				else if constexpr (Channels == 3)
-				{
-					float c0 = 0.0f;
-					float c1 = 0.0f;
-					float c2 = 0.0f;
-
-					for (const Tap& tap : wy.taps)
-					{
-						const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
-						const float weight = tap.weight;
-
-						c0 += tempPixel[0] * weight;
-						c1 += tempPixel[1] * weight;
-						c2 += tempPixel[2] * weight;
-					}
-
-					dstPixel[0] = clampToByte(c0);
-					dstPixel[1] = clampToByte(c1);
-					dstPixel[2] = clampToByte(c2);
-				}
-				else if constexpr (Channels == 4)
-				{
-					float c0 = 0.0f;
-					float c1 = 0.0f;
-					float c2 = 0.0f;
-					float c3 = 0.0f;
-
-					for (const Tap& tap : wy.taps)
-					{
-						const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
-						const float weight = tap.weight;
-
-						c0 += tempPixel[0] * weight;
-						c1 += tempPixel[1] * weight;
-						c2 += tempPixel[2] * weight;
-						c3 += tempPixel[3] * weight;
-					}
-
-					dstPixel[0] = clampToByte(c0);
-					dstPixel[1] = clampToByte(c1);
-					dstPixel[2] = clampToByte(c2);
-					dstPixel[3] = clampToByte(c3);
-				}
-				else
-				{
-					std::array<float, Channels> accum{};
-
-					for (const Tap& tap : wy.taps)
-					{
-						const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
-						const float weight = tap.weight;
-
-						for (size_t c = 0; c < Channels; ++c)
-							accum[c] += tempPixel[c] * weight;
-					}
+					const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
+					const float weight = tap.weight;
 
 					for (size_t c = 0; c < Channels; ++c)
-						dstPixel[c] = clampToByte(accum[c]);
+						accum[c] += tempPixel[c] * weight;
 				}
+
+				for (size_t c = 0; c < Channels; ++c)
+					dstPixel[c] = clampToByte(accum[c]);
 
 				if constexpr (PixelStride > Channels)
 					copyPixelTail(dstPixel, pixelTailSource, Channels, PixelStride);
