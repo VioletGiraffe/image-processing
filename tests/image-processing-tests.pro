@@ -2,8 +2,9 @@ TEMPLATE = app
 TARGET = image-processing-tests
 
 CONFIG += console testcase strict_c++ c++2b
-CONFIG -= qt
 CONFIG -= c++17 c++2a
+
+QT += gui
 
 DEFINES += CATCH_CONFIG_ENABLE_BENCHMARKING
 

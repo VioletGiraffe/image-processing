@@ -15,6 +15,11 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.13'
+
     - name: Install Qt
       uses: jurplel/install-qt-action@v4
       with:
@@ -73,3 +78,21 @@ jobs:
     - name: Run tests on Linux
       if: startsWith(matrix.os, 'ubuntu')
       run: ./tests/bin/release/image-processing-tests
+
+    - name: Run benchmarks on Windows
+      if: startsWith(matrix.os, 'windows')
+      run: |
+        ./tests/bin/release/image-processing-tests.exe "[!benchmark]" --benchmark-samples 10 --benchmark-no-analysis --reporter xml --out benchmark-results.xml
+        python ./tests/report_benchmark_ratios.py benchmark-results.xml
+
+    - name: Run benchmarks on macOS
+      if: startsWith(matrix.os, 'macos')
+      run: |
+        ./tests/bin/release/image-processing-tests.app/Contents/MacOS/image-processing-tests "[!benchmark]" --benchmark-samples 10 --benchmark-no-analysis --reporter xml --out benchmark-results.xml
+        python ./tests/report_benchmark_ratios.py benchmark-results.xml
+
+    - name: Run benchmarks on Linux
+      if: startsWith(matrix.os, 'ubuntu')
+      run: |
+        ./tests/bin/release/image-processing-tests "[!benchmark]" --benchmark-samples 10 --benchmark-no-analysis --reporter xml --out benchmark-results.xml
+        python ./tests/report_benchmark_ratios.py benchmark-results.xml
