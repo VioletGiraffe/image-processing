@@ -12,5 +12,8 @@
 *.opensdf 
 .qtc_clangd/
 Makefile
+.vs/
 tests/bin/
 tests/build/
+/tests/debug/
+/tests/release/

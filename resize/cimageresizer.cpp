@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <numbers>
 #include <string.h>
 #include <utility>
@@ -215,12 +216,12 @@ namespace
 					return static_cast<size_t>(sy) * tempRowStride;
 				});
 
-		std::vector<float> temp(static_cast<size_t>(srcRect.h) * tempRowStride);
+		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
 
 		for (uint64_t sy = 0; sy < srcRect.h; ++sy)
 		{
 			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + sy) + srcRect.left * PixelStride;
-			float* tempRow = temp.data() + static_cast<size_t>(sy) * tempRowStride;
+			float* tempRow = temp.get() + static_cast<size_t>(sy) * tempRowStride;
 
 			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
@@ -317,7 +318,7 @@ namespace
 
 					for (const Tap& tap : wy.taps)
 					{
-						const auto* tempPixel = temp.data() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
+						const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
 						c0 += tempPixel[0] * tap.weight;
 					}
 
@@ -331,7 +332,7 @@ namespace
 
 					for (const Tap& tap : wy.taps)
 					{
-						const auto* tempPixel = temp.data() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
+						const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
 						const float weight = tap.weight;
 
 						c0 += tempPixel[0] * weight;
@@ -352,7 +353,7 @@ namespace
 
 					for (const Tap& tap : wy.taps)
 					{
-						const auto* tempPixel = temp.data() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
+						const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
 						const float weight = tap.weight;
 
 						c0 += tempPixel[0] * weight;
@@ -372,7 +373,7 @@ namespace
 
 					for (const Tap& tap : wy.taps)
 					{
-						const auto* tempPixel = temp.data() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
+						const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
 						const float weight = tap.weight;
 
 						for (size_t c = 0; c < Channels; ++c)
@@ -432,12 +433,12 @@ namespace
 					return static_cast<size_t>(sy) * tempRowStride;
 				});
 
-		std::vector<float> temp(static_cast<size_t>(srcRect.h) * tempRowStride);
+		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
 
 		for (uint64_t ty = 0; ty < srcRect.h; ++ty)
 		{
 			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + ty) + srcRect.left * pixelStride;
-			float* tempRow = temp.data() + static_cast<size_t>(ty) * tempRowStride;
+			float* tempRow = temp.get() + static_cast<size_t>(ty) * tempRowStride;
 
 			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
@@ -472,7 +473,7 @@ namespace
 
 				for (const Tap& tap : wy.taps)
 				{
-					const auto* tempPixel = temp.data() + tap.offset + static_cast<size_t>(dx) * numChannels;
+					const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * numChannels;
 					const float weight = tap.weight;
 
 					for (size_t c = 0; c < numChannels; ++c)
