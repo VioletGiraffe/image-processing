@@ -57,10 +57,4 @@ linux*|mac*|freebsd{
 	Release:DEFINES += NDEBUG=1
 	Debug:DEFINES += _DEBUG
 }
-
-
-INCLUDEPATH += \
-	../cpp-template-utils \
-	../cpputils
-
 include (resize/resize.pri)

@@ -39,8 +39,7 @@ macx {
 
 INCLUDEPATH += \
 	$$PWD/.. \
-	$$PWD/../../cpp-template-utils \
-	$$PWD/../../cpputils
+	$$PWD/../../cpp-template-utils
 
 HEADERS += \
 	../resize/cimageresizer.h
@@ -49,6 +48,4 @@ SOURCES += \
 	main.cpp \
 	cimageresizer_benchmarks.cpp \
 	cimageresizer_tests.cpp \
-	../resize/cimageresizer.cpp \
-	../../cpputils/assert/advanced_assert.cpp \
-	../../cpputils/debugger/debugger_is_attached.cpp
+	../resize/cimageresizer.cpp

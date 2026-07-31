@@ -1,9 +1,9 @@
 #include "cimageresizer.h"
 #include "simd_support.h"
-#include "assert/advanced_assert.h"
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -168,7 +168,7 @@ namespace
 	inline void copyPixelTail(uint8_t* destPixel, const uint8_t* sourcePixel, size_t channels, size_t pixelStride) noexcept
 	{
 		// Bytes outside the logical channels can still carry pixel-format invariants, such as RGB32's required 0xff byte.
-		assert_debug_only(pixelStride > channels);
+		assert(pixelStride > channels);
 		::memcpy(destPixel + channels, sourcePixel + channels, pixelStride - channels);
 	}
 
@@ -376,15 +376,15 @@ namespace
 		static_assert(Channels >= 1);
 		static_assert(PixelStride >= Channels);
 
-		assert_debug_only(source.width > 0 && source.height > 0);
-		assert_debug_only(dest.width > 0 && dest.height > 0);
+		assert(source.width > 0 && source.height > 0);
+		assert(dest.width > 0 && dest.height > 0);
 
-		assert_debug_only(source.channels == Channels);
-		assert_debug_only(dest.channels == Channels);
-		assert_debug_only(source.bytesPerChannel == 1);
-		assert_debug_only(dest.bytesPerChannel == 1);
-		assert_debug_only(source.pixelStrideBytes == PixelStride);
-		assert_debug_only(dest.pixelStrideBytes == PixelStride);
+		assert(source.channels == Channels);
+		assert(dest.channels == Channels);
+		assert(source.bytesPerChannel == 1);
+		assert(dest.bytesPerChannel == 1);
+		assert(source.pixelStrideBytes == PixelStride);
+		assert(dest.pixelStrideBytes == PixelStride);
 
 		if (srcRect.w == dest.width && srcRect.h == dest.height)
 		{
@@ -473,13 +473,13 @@ namespace
 
 	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 	{
-		assert_debug_only(source.width > 0 && source.height > 0);
-		assert_debug_only(dest.width > 0 && dest.height > 0);
+		assert(source.width > 0 && source.height > 0);
+		assert(dest.width > 0 && dest.height > 0);
 
-		assert_debug_only(source.channels == dest.channels);
-		assert_debug_only(source.bytesPerChannel == 1);
-		assert_debug_only(dest.bytesPerChannel == 1);
-		assert_debug_only(source.pixelStrideBytes == dest.pixelStrideBytes);
+		assert(source.channels == dest.channels);
+		assert(source.bytesPerChannel == 1);
+		assert(dest.bytesPerChannel == 1);
+		assert(source.pixelStrideBytes == dest.pixelStrideBytes);
 
 		const size_t pixelStride = dest.pixelStrideBytes;
 
@@ -607,15 +607,24 @@ namespace
 
 void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 {
-	assert_debug_only(source.width > 0 && source.height > 0);
-	assert_debug_only(dest.width > 0 && dest.height > 0);
+	assert(source.width > 0 && source.height > 0);
+	assert(dest.width > 0 && dest.height > 0);
 
-	assert_debug_only(source.channels == dest.channels);
-	assert_debug_only(source.bytesPerChannel == dest.bytesPerChannel);
-	assert_debug_only(source.pixelStrideBytes == dest.pixelStrideBytes);
+	assert(source.channels == dest.channels);
+	assert(source.bytesPerChannel == dest.bytesPerChannel);
+	assert(source.pixelStrideBytes == dest.pixelStrideBytes);
 
-	assert_and_return_r(source.channels <= 4 && dest.channels <= 4, );
-	assert_and_return_r(source.bytesPerChannel == 1, );
+	if (source.channels > 4 || dest.channels > 4)
+	{
+		assert(false && "Images with more than four channels are unsupported");
+		return;
+	}
+
+	if (source.bytesPerChannel != 1)
+	{
+		assert(false && "Only one-byte image channels are supported");
+		return;
+	}
 
 	if (srcRect.w == 0 || srcRect.h == 0)
 		srcRect = Rect{ 0, 0, source.width, source.height };
