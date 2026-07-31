@@ -182,6 +182,33 @@ namespace
 		}
 	}
 
+	template <class RowWriter>
+	void filterVerticalRows(
+		const AxisWeights& yWeights,
+		const float* temp,
+		size_t rowElementCount,
+		uint64_t destHeight,
+		RowWriter&& writeRow)
+	{
+		const auto accumRow = std::make_unique_for_overwrite<float[]>(rowElementCount);
+
+		for (uint64_t dy = 0; dy < destHeight; ++dy)
+		{
+			std::fill_n(accumRow.get(), rowElementCount, 0.0f);
+
+			for (const Tap& tap : yWeights.tapsFor(dy))
+			{
+				const float* tempRow = temp + tap.offset;
+				const float weight = tap.weight;
+
+				for (size_t element = 0; element < rowElementCount; ++element)
+					accumRow[element] += tempRow[element] * weight;
+			}
+
+			writeRow(dy, accumRow.get());
+		}
+	}
+
 	template <size_t Channels, size_t PixelStride>
 	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
 	{
@@ -258,32 +285,22 @@ namespace
 		}
 
 		[[maybe_unused]] const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
-		for (uint64_t dy = 0; dy < dest.height; ++dy)
-		{
-			auto* dstRow = dest.scanLine<uint8_t>(dy);
-			const auto wy = yWeights.tapsFor(dy);
-
-			for (uint64_t dx = 0; dx < dest.width; ++dx)
+		filterVerticalRows(yWeights, temp.get(), tempRowStride, dest.height,
+			[&dest, pixelTailSource](uint64_t dy, const float* accumRow)
 			{
-				auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
-				std::array<float, Channels> accum{};
-
-				for (const Tap& tap : wy)
+				auto* dstRow = dest.scanLine<uint8_t>(dy);
+				for (uint64_t dx = 0; dx < dest.width; ++dx)
 				{
-					const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * tempPixelStride;
-					const float weight = tap.weight;
+					auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
+					const float* accumPixel = accumRow + static_cast<size_t>(dx) * Channels;
 
 					for (size_t c = 0; c < Channels; ++c)
-						accum[c] += tempPixel[c] * weight;
+						dstPixel[c] = clampToByte(accumPixel[c]);
+
+					if constexpr (PixelStride > Channels)
+						copyPixelTail(dstPixel, pixelTailSource, Channels, PixelStride);
 				}
-
-				for (size_t c = 0; c < Channels; ++c)
-					dstPixel[c] = clampToByte(accum[c]);
-
-				if constexpr (PixelStride > Channels)
-					copyPixelTail(dstPixel, pixelTailSource, Channels, PixelStride);
-			}
-		}
+			});
 	}
 
 	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
@@ -355,35 +372,23 @@ namespace
 			}
 		}
 
-		alignas(16) float accum[4];
 		const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * pixelStride;
-
-		for (uint64_t dy = 0; dy < dest.height; ++dy)
-		{
-			auto* dstRow = dest.scanLine<uint8_t>(dy);
-			const auto wy = yWeights.tapsFor(dy);
-
-			for (uint64_t dx = 0; dx < dest.width; ++dx)
+		filterVerticalRows(yWeights, temp.get(), tempRowStride, dest.height,
+			[&dest, numChannels, pixelStride, pixelTailSource](uint64_t dy, const float* accumRow)
 			{
-				accum[0] = 0.0f; accum[1] = 0.0f; accum[2] = 0.0f; accum[3] = 0.0f;
-
-				for (const Tap& tap : wy)
+				auto* dstRow = dest.scanLine<uint8_t>(dy);
+				for (uint64_t dx = 0; dx < dest.width; ++dx)
 				{
-					const auto* tempPixel = temp.get() + tap.offset + static_cast<size_t>(dx) * numChannels;
-					const float weight = tap.weight;
+					auto* dstPixel = dstRow + static_cast<size_t>(dx) * pixelStride;
+					const float* accumPixel = accumRow + static_cast<size_t>(dx) * numChannels;
 
 					for (size_t c = 0; c < numChannels; ++c)
-						accum[c] += tempPixel[c] * weight;
+						dstPixel[c] = clampToByte(accumPixel[c]);
+
+					if (pixelStride > numChannels)
+						copyPixelTail(dstPixel, pixelTailSource, numChannels, pixelStride);
 				}
-
-				auto* dstPixel = dstRow + static_cast<size_t>(dx) * pixelStride;
-				for (size_t c = 0; c < numChannels; ++c)
-					dstPixel[c] = clampToByte(accum[c]);
-
-				if (pixelStride > numChannels)
-					copyPixelTail(dstPixel, pixelTailSource, numChannels, pixelStride);
-			}
-		}
+			});
 	}
 
 	template <size_t Channels>
