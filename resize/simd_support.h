@@ -1,26 +1,58 @@
 #pragma once
 
 #if defined(_M_X64) || defined(__x86_64__)
-	#include <immintrin.h>
-	#if defined(_MSC_VER)
-		#include <intrin.h>
-	#endif
 	#define IMAGE_PROCESSING_X64 1
 #else
 	#define IMAGE_PROCESSING_X64 0
 #endif
 
+#if defined(_M_ARM64) || defined(__aarch64__)
+	#define IMAGE_PROCESSING_ARM64 1
+#else
+	#define IMAGE_PROCESSING_ARM64 0
+#endif
+
+#define IMAGE_PROCESSING_SIMD (IMAGE_PROCESSING_X64 || IMAGE_PROCESSING_ARM64)
+
+#if IMAGE_PROCESSING_X64
+	#include <immintrin.h>
+	#if defined(_MSC_VER)
+		#include <intrin.h>
+		// MSVC permits AVX2 intrinsics in isolated functions without enabling AVX2 for the entire translation unit.
+		#define SIMDE_X86_AVX2_NATIVE
+	#else
+		// AVX2 is enabled per function, after SIMDe's translation-unit feature detection has run.
+		#define SIMDE_NATURAL_VECTOR_SIZE 256
+	#endif
+#endif
+
+#if IMAGE_PROCESSING_SIMD
+	#include "../3rdparty/simde/x86/avx2.h"
+#endif
+
 #if IMAGE_PROCESSING_X64 && (defined(__GNUC__) || defined(__clang__))
-	#define IMAGE_PROCESSING_AVX2_TARGET __attribute__((target("avx2"), noinline))
+	#define IMAGE_PROCESSING_SIMD_TARGET __attribute__((target("avx2"), noinline))
 #elif IMAGE_PROCESSING_X64 && defined(_MSC_VER)
-	#define IMAGE_PROCESSING_AVX2_TARGET __declspec(noinline)
+	#define IMAGE_PROCESSING_SIMD_TARGET __declspec(noinline)
+#else
+	#define IMAGE_PROCESSING_SIMD_TARGET
 #endif
 
 #if IMAGE_PROCESSING_X64
+	// SIMDe has no wrapper for this x86-only transition instruction.
+	#define IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE() _mm256_zeroupper()
+#else
+	#define IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE() static_cast<void>(0)
+#endif
+
+#if IMAGE_PROCESSING_SIMD
 namespace ImageProcessing::SimdSupport
 {
-	[[nodiscard]] inline bool cpuSupportsAvx2() noexcept
+	[[nodiscard]] inline bool canUseSimd() noexcept
 	{
+#if IMAGE_PROCESSING_ARM64
+		return true;
+#else
 		static const bool supported = []() noexcept
 			{
 #if defined(_MSC_VER)
@@ -47,6 +79,7 @@ namespace ImageProcessing::SimdSupport
 			}();
 
 		return supported;
+#endif
 	}
 }
 #endif

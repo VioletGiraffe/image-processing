@@ -245,9 +245,9 @@ namespace
 		}
 	}
 
-#if IMAGE_PROCESSING_X64
+#if IMAGE_PROCESSING_SIMD
 	template <size_t Channels>
-	IMAGE_PROCESSING_AVX2_TARGET void filterHorizontal4BytePixelsAvx2(
+	IMAGE_PROCESSING_SIMD_TARGET void filterHorizontal4BytePixelsSimd(
 		float* temp,
 		size_t tempRowStride,
 		const ImageView<true>& source,
@@ -264,34 +264,34 @@ namespace
 
 			for (uint64_t dx = 0; dx < destWidth; ++dx)
 			{
-				__m128 accum = _mm_setzero_ps();
+				simde__m128 accum = simde_mm_setzero_ps();
 
 				for (const Tap& tap : xWeights.tapsFor(dx))
 				{
 					int32_t packedPixel;
 					::memcpy(&packedPixel, srcRow + tap.offset, sizeof(packedPixel));
-					const __m128i bytes = _mm_cvtsi32_si128(packedPixel);
-					const __m128 channels = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(bytes));
-					accum = _mm_add_ps(accum, _mm_mul_ps(channels, _mm_set1_ps(tap.weight)));
+					const simde__m128i bytes = simde_mm_cvtsi32_si128(packedPixel);
+					const simde__m128 channels = simde_mm_cvtepi32_ps(simde_mm_cvtepu8_epi32(bytes));
+					accum = simde_mm_add_ps(accum, simde_mm_mul_ps(channels, simde_mm_set1_ps(tap.weight)));
 				}
 
 				float* outPixel = tempRow + static_cast<size_t>(dx) * Channels;
 				if constexpr (Channels == 4)
-					_mm_storeu_ps(outPixel, accum);
+					simde_mm_storeu_ps(outPixel, accum);
 				else
 				{
 					alignas(16) float channels[4];
-					_mm_store_ps(channels, accum);
+					simde_mm_store_ps(channels, accum);
 					::memcpy(outPixel, channels, Channels * sizeof(float));
 				}
 			}
 		}
 
-		_mm256_zeroupper();
+		IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE();
 	}
 
 	template <class RowWriter>
-	IMAGE_PROCESSING_AVX2_TARGET void filterVerticalRowsAvx2(
+	IMAGE_PROCESSING_SIMD_TARGET void filterVerticalRowsSimd(
 		const AxisWeights& yWeights,
 		const float* temp,
 		size_t rowElementCount,
@@ -301,7 +301,7 @@ namespace
 		const auto accumRow = std::make_unique_for_overwrite<float[]>(rowElementCount);
 		const size_t vectorizedElementCount = rowElementCount & ~size_t{ 7 };
 		const size_t tailElementCount = rowElementCount - vectorizedElementCount;
-		const __m256i tailMask = _mm256_set_epi32(
+		const simde__m256i tailMask = simde_mm256_set_epi32(
 			tailElementCount > 7 ? -1 : 0,
 			tailElementCount > 6 ? -1 : 0,
 			tailElementCount > 5 ? -1 : 0,
@@ -318,53 +318,53 @@ namespace
 			for (const Tap& tap : yWeights.tapsFor(dy))
 			{
 				const float* tempRow = temp + tap.offset;
-				const __m256 weights = _mm256_set1_ps(tap.weight);
+				const simde__m256 weights = simde_mm256_set1_ps(tap.weight);
 
 				for (size_t element = 0; element < vectorizedElementCount; element += 8)
 				{
-					const __m256 accum = _mm256_loadu_ps(accumRow.get() + element);
-					const __m256 sourceValues = _mm256_loadu_ps(tempRow + element);
-					_mm256_storeu_ps(accumRow.get() + element, _mm256_add_ps(accum, _mm256_mul_ps(sourceValues, weights)));
+					const simde__m256 accum = simde_mm256_loadu_ps(accumRow.get() + element);
+					const simde__m256 sourceValues = simde_mm256_loadu_ps(tempRow + element);
+					simde_mm256_storeu_ps(accumRow.get() + element, simde_mm256_add_ps(accum, simde_mm256_mul_ps(sourceValues, weights)));
 				}
 
 				if (tailElementCount != 0)
 				{
-					const __m256 accum = _mm256_maskload_ps(accumRow.get() + vectorizedElementCount, tailMask);
-					const __m256 sourceValues = _mm256_maskload_ps(tempRow + vectorizedElementCount, tailMask);
-					_mm256_maskstore_ps(
+					const simde__m256 accum = simde_mm256_maskload_ps(accumRow.get() + vectorizedElementCount, tailMask);
+					const simde__m256 sourceValues = simde_mm256_maskload_ps(tempRow + vectorizedElementCount, tailMask);
+					simde_mm256_maskstore_ps(
 						accumRow.get() + vectorizedElementCount,
 						tailMask,
-						_mm256_add_ps(accum, _mm256_mul_ps(sourceValues, weights)));
+						simde_mm256_add_ps(accum, simde_mm256_mul_ps(sourceValues, weights)));
 				}
 			}
 
-			_mm256_zeroupper();
+			IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE();
 			writeRow(dy, accumRow.get());
 		}
 	}
 
-	IMAGE_PROCESSING_AVX2_TARGET void writeRgbaRowAvx2(uint8_t* dest, const float* source, size_t valueCount) noexcept
+	IMAGE_PROCESSING_SIMD_TARGET void writeRgbaRowSimd(uint8_t* dest, const float* source, size_t valueCount) noexcept
 	{
-		const __m256 zero = _mm256_setzero_ps();
-		const __m256 maximum = _mm256_set1_ps(255.0f);
-		const __m256 half = _mm256_set1_ps(0.5f);
-		const __m256i zeroIntegers = _mm256_setzero_si256();
-		const __m256i packedByteOrder = _mm256_setr_epi32(0, 4, 1, 1, 1, 1, 1, 1);
+		const simde__m256 zero = simde_mm256_setzero_ps();
+		const simde__m256 maximum = simde_mm256_set1_ps(255.0f);
+		const simde__m256 half = simde_mm256_set1_ps(0.5f);
+		const simde__m256i zeroIntegers = simde_mm256_setzero_si256();
+		const simde__m256i packedByteOrder = simde_mm256_setr_epi32(0, 4, 1, 1, 1, 1, 1, 1);
 		size_t value = 0;
 
 		for (; value + 8 <= valueCount; value += 8)
 		{
-			__m256 values = _mm256_loadu_ps(source + value);
-			values = _mm256_max_ps(zero, _mm256_min_ps(maximum, values));
-			const __m256i integers = _mm256_cvttps_epi32(_mm256_add_ps(values, half));
-			const __m256i packed16 = _mm256_packus_epi32(integers, zeroIntegers);
-			const __m256i packed8 = _mm256_packus_epi16(packed16, zeroIntegers);
-			const __m256i contiguousBytes = _mm256_permutevar8x32_epi32(packed8, packedByteOrder);
-			const uint64_t pixels = static_cast<uint64_t>(_mm256_extract_epi64(contiguousBytes, 0));
+			simde__m256 values = simde_mm256_loadu_ps(source + value);
+			values = simde_mm256_max_ps(zero, simde_mm256_min_ps(maximum, values));
+			const simde__m256i integers = simde_mm256_cvttps_epi32(simde_mm256_add_ps(values, half));
+			const simde__m256i packed16 = simde_mm256_packus_epi32(integers, zeroIntegers);
+			const simde__m256i packed8 = simde_mm256_packus_epi16(packed16, zeroIntegers);
+			const simde__m256i contiguousBytes = simde_mm256_permutevar8x32_epi32(packed8, packedByteOrder);
+			const uint64_t pixels = static_cast<uint64_t>(simde_mm256_extract_epi64(contiguousBytes, 0));
 			::memcpy(dest + value, &pixels, sizeof(pixels));
 		}
 
-		_mm256_zeroupper();
+		IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE();
 		for (; value < valueCount; ++value)
 			dest[value] = clampToByte(source[value]);
 	}
@@ -420,31 +420,31 @@ namespace
 
 		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
 
-		bool useAvx2 = false;
-#if IMAGE_PROCESSING_X64
+		bool useSimd = false;
+#if IMAGE_PROCESSING_SIMD
 		if constexpr (PixelStride == 4 && (Channels == 3 || Channels == 4))
 		{
-			useAvx2 = SimdSupport::cpuSupportsAvx2();
-			if (useAvx2)
-				filterHorizontal4BytePixelsAvx2<Channels>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights);
+			useSimd = SimdSupport::canUseSimd();
+			if (useSimd)
+				filterHorizontal4BytePixelsSimd<Channels>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights);
 		}
 #endif
 
-		if (!useAvx2)
+		if (!useSimd)
 			filterHorizontalRows<Channels, PixelStride>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights);
 
 		[[maybe_unused]] const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
-		auto writeRow = [&dest, pixelTailSource, useAvx2](uint64_t dy, const float* accumRow)
+		auto writeRow = [&dest, pixelTailSource, useSimd](uint64_t dy, const float* accumRow)
 			{
-				static_cast<void>(useAvx2);
+				static_cast<void>(useSimd);
 				auto* dstRow = dest.scanLine<uint8_t>(dy);
 
-#if IMAGE_PROCESSING_X64
+#if IMAGE_PROCESSING_SIMD
 				if constexpr (Channels == 4 && PixelStride == 4)
 				{
-					if (useAvx2)
+					if (useSimd)
 					{
-						writeRgbaRowAvx2(dstRow, accumRow, static_cast<size_t>(dest.width) * Channels);
+						writeRgbaRowSimd(dstRow, accumRow, static_cast<size_t>(dest.width) * Channels);
 						return;
 					}
 				}
@@ -463,9 +463,9 @@ namespace
 				}
 			};
 
-#if IMAGE_PROCESSING_X64
-		if (useAvx2)
-			filterVerticalRowsAvx2(yWeights, temp.get(), tempRowStride, dest.height, writeRow);
+#if IMAGE_PROCESSING_SIMD
+		if (useSimd)
+			filterVerticalRowsSimd(yWeights, temp.get(), tempRowStride, dest.height, writeRow);
 		else
 #endif
 			filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, dest.height, writeRow);
