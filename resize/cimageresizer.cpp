@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -290,42 +291,91 @@ namespace
 		IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE();
 	}
 
-	template <class RowWriter>
+	IMAGE_PROCESSING_SIMD_INLINE simde__m128i packEightFloatsToBytes(simde__m256 values) noexcept
+	{
+		const simde__m256 zero = simde_mm256_setzero_ps();
+		values = simde_mm256_max_ps(zero, simde_mm256_min_ps(simde_mm256_set1_ps(255.0f), values));
+		const simde__m256i integers = simde_mm256_cvttps_epi32(simde_mm256_add_ps(values, simde_mm256_set1_ps(0.5f)));
+		const simde__m256i zeroIntegers = simde_mm256_setzero_si256();
+		const simde__m256i packed16 = simde_mm256_packus_epi32(integers, zeroIntegers);
+		const simde__m256i packed8 = simde_mm256_packus_epi16(packed16, zeroIntegers);
+		const simde__m256i contiguousBytes = simde_mm256_permutevar8x32_epi32(
+			packed8,
+			simde_mm256_setr_epi32(0, 4, 1, 1, 1, 1, 1, 1));
+		return simde_mm256_castsi256_si128(contiguousBytes);
+	}
+
+	IMAGE_PROCESSING_SIMD_INLINE void writeEightRgbaPixels(
+		uint8_t* dest,
+		simde__m256 values0,
+		simde__m256 values1,
+		simde__m256 values2,
+		simde__m256 values3) noexcept
+	{
+		const simde__m128i bytes0 = packEightFloatsToBytes(values0);
+		const simde__m128i bytes1 = packEightFloatsToBytes(values1);
+		const simde__m128i bytes2 = packEightFloatsToBytes(values2);
+		const simde__m128i bytes3 = packEightFloatsToBytes(values3);
+		simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest), simde_mm_unpacklo_epi64(bytes0, bytes1));
+		simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest + 16), simde_mm_unpacklo_epi64(bytes2, bytes3));
+	}
+
+	IMAGE_PROCESSING_SIMD_INLINE void writeEightRgb32Pixels(
+		uint8_t* dest,
+		simde__m256 values0,
+		simde__m256 values1,
+		simde__m256 values2,
+		simde__m128i pixelTails) noexcept
+	{
+		const simde__m128i bytes0 = packEightFloatsToBytes(values0);
+		const simde__m128i bytes1 = packEightFloatsToBytes(values1);
+		const simde__m128i bytes2 = packEightFloatsToBytes(values2);
+		const simde__m128i firstSixteenRgbBytes = simde_mm_unpacklo_epi64(bytes0, bytes1);
+		const simde__m128i lastTwelveRgbBytes = simde_mm_alignr_epi8(bytes2, firstSixteenRgbBytes, 12);
+		const simde__m128i rgbToRgb32 = simde_mm_setr_epi8(
+			0, 1, 2, -1,
+			3, 4, 5, -1,
+			6, 7, 8, -1,
+			9, 10, 11, -1);
+
+		const simde__m128i pixels0 = simde_mm_or_si128(simde_mm_shuffle_epi8(firstSixteenRgbBytes, rgbToRgb32), pixelTails);
+		const simde__m128i pixels1 = simde_mm_or_si128(simde_mm_shuffle_epi8(lastTwelveRgbBytes, rgbToRgb32), pixelTails);
+		simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest), pixels0);
+		simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest + 16), pixels1);
+	}
+
+	template <size_t Channels>
 	IMAGE_PROCESSING_SIMD_TARGET void filterVerticalRowsSimd(
 		const AxisWeights& yWeights,
 		const float* temp,
-		size_t rowElementCount,
-		uint64_t destHeight,
-		RowWriter&& writeRow)
+		ImageView<false>& dest,
+		[[maybe_unused]] uint8_t pixelTailValue)
 	{
-		const auto accumRow = std::make_unique_for_overwrite<float[]>(rowElementCount);
+		static_assert(Channels == 3 || Channels == 4);
+		constexpr size_t pixelsPerBlock = 8;
 		constexpr size_t elementsPerVector = 8;
-		constexpr size_t vectorsPerBlock = 4;
-		constexpr size_t elementsPerBlock = elementsPerVector * vectorsPerBlock;
-		const size_t blockedElementCount = rowElementCount & ~(elementsPerBlock - 1);
-		const size_t vectorizedElementCount = rowElementCount & ~(elementsPerVector - 1);
-		const size_t tailElementCount = rowElementCount - vectorizedElementCount;
-		const simde__m256i tailMask = simde_mm256_set_epi32(
-			tailElementCount > 7 ? -1 : 0,
-			tailElementCount > 6 ? -1 : 0,
-			tailElementCount > 5 ? -1 : 0,
-			tailElementCount > 4 ? -1 : 0,
-			tailElementCount > 3 ? -1 : 0,
-			tailElementCount > 2 ? -1 : 0,
-			tailElementCount > 1 ? -1 : 0,
-			tailElementCount > 0 ? -1 : 0);
+		const size_t destWidth = static_cast<size_t>(dest.width);
+		const size_t blockedPixelCount = destWidth & ~(pixelsPerBlock - 1);
+		[[maybe_unused]] simde__m128i pixelTails;
+		if constexpr (Channels == 3)
+		{
+			const int32_t packedPixelTail = std::bit_cast<int32_t>(static_cast<uint32_t>(pixelTailValue) << 24);
+			pixelTails = simde_mm_set1_epi32(packedPixelTail);
+		}
 
-		for (uint64_t dy = 0; dy < destHeight; ++dy)
+		for (uint64_t dy = 0; dy < dest.height; ++dy)
 		{
 			const auto taps = yWeights.tapsFor(dy);
-			size_t element = 0;
+			uint8_t* destRow = dest.scanLine<uint8_t>(dy);
+			size_t pixel = 0;
 
-			for (; element < blockedElementCount; element += elementsPerBlock)
+			for (; pixel < blockedPixelCount; pixel += pixelsPerBlock)
 			{
 				simde__m256 accum0 = simde_mm256_setzero_ps();
 				simde__m256 accum1 = simde_mm256_setzero_ps();
 				simde__m256 accum2 = simde_mm256_setzero_ps();
-				simde__m256 accum3 = simde_mm256_setzero_ps();
+				[[maybe_unused]] simde__m256 accum3 = simde_mm256_setzero_ps();
+				const size_t element = pixel * Channels;
 
 				for (const Tap& tap : taps)
 				{
@@ -334,66 +384,36 @@ namespace
 					accum0 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source), weights, accum0);
 					accum1 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector), weights, accum1);
 					accum2 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 2), weights, accum2);
-					accum3 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 3), weights, accum3);
+					if constexpr (Channels == 4)
+						accum3 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 3), weights, accum3);
 				}
 
-				simde_mm256_storeu_ps(accumRow.get() + element, accum0);
-				simde_mm256_storeu_ps(accumRow.get() + element + elementsPerVector, accum1);
-				simde_mm256_storeu_ps(accumRow.get() + element + elementsPerVector * 2, accum2);
-				simde_mm256_storeu_ps(accumRow.get() + element + elementsPerVector * 3, accum3);
+				if constexpr (Channels == 3)
+					writeEightRgb32Pixels(destRow + pixel * 4, accum0, accum1, accum2, pixelTails);
+				else
+					writeEightRgbaPixels(destRow + pixel * 4, accum0, accum1, accum2, accum3);
 			}
 
-			for (; element < vectorizedElementCount; element += elementsPerVector)
+			for (; pixel < destWidth; ++pixel)
 			{
-				simde__m256 accum = simde_mm256_setzero_ps();
+				std::array<float, Channels> accum{};
 				for (const Tap& tap : taps)
 				{
-					const simde__m256 sourceValues = simde_mm256_loadu_ps(temp + tap.offset + element);
-					accum = simde_mm256_fmadd_ps(sourceValues, simde_mm256_set1_ps(tap.weight), accum);
+					const float* source = temp + tap.offset + pixel * Channels;
+					for (size_t channel = 0; channel < Channels; ++channel)
+						accum[channel] = std::fma(source[channel], tap.weight, accum[channel]);
 				}
-				simde_mm256_storeu_ps(accumRow.get() + element, accum);
+
+				uint8_t* destPixel = destRow + pixel * 4;
+				for (size_t channel = 0; channel < Channels; ++channel)
+					destPixel[channel] = clampToByte(accum[channel]);
+
+				if constexpr (Channels == 3)
+					destPixel[3] = pixelTailValue;
 			}
-
-			if (tailElementCount != 0)
-			{
-				simde__m256 accum = simde_mm256_setzero_ps();
-				for (const Tap& tap : taps)
-				{
-					const simde__m256 sourceValues = simde_mm256_maskload_ps(temp + tap.offset + vectorizedElementCount, tailMask);
-					accum = simde_mm256_fmadd_ps(sourceValues, simde_mm256_set1_ps(tap.weight), accum);
-				}
-				simde_mm256_maskstore_ps(accumRow.get() + vectorizedElementCount, tailMask, accum);
-			}
-
-			IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE();
-			writeRow(dy, accumRow.get());
-		}
-	}
-
-	IMAGE_PROCESSING_SIMD_TARGET void writeRgbaRowSimd(uint8_t* dest, const float* source, size_t valueCount) noexcept
-	{
-		const simde__m256 zero = simde_mm256_setzero_ps();
-		const simde__m256 maximum = simde_mm256_set1_ps(255.0f);
-		const simde__m256 half = simde_mm256_set1_ps(0.5f);
-		const simde__m256i zeroIntegers = simde_mm256_setzero_si256();
-		const simde__m256i packedByteOrder = simde_mm256_setr_epi32(0, 4, 1, 1, 1, 1, 1, 1);
-		size_t value = 0;
-
-		for (; value + 8 <= valueCount; value += 8)
-		{
-			simde__m256 values = simde_mm256_loadu_ps(source + value);
-			values = simde_mm256_max_ps(zero, simde_mm256_min_ps(maximum, values));
-			const simde__m256i integers = simde_mm256_cvttps_epi32(simde_mm256_add_ps(values, half));
-			const simde__m256i packed16 = simde_mm256_packus_epi32(integers, zeroIntegers);
-			const simde__m256i packed8 = simde_mm256_packus_epi16(packed16, zeroIntegers);
-			const simde__m256i contiguousBytes = simde_mm256_permutevar8x32_epi32(packed8, packedByteOrder);
-			const uint64_t pixels = static_cast<uint64_t>(simde_mm256_extract_epi64(contiguousBytes, 0));
-			::memcpy(dest + value, &pixels, sizeof(pixels));
 		}
 
 		IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE();
-		for (; value < valueCount; ++value)
-			dest[value] = clampToByte(source[value]);
 	}
 #endif
 
@@ -460,22 +480,22 @@ namespace
 		if (!useSimd)
 			filterHorizontalRows<Channels, PixelStride>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights);
 
-		[[maybe_unused]] const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
-		auto writeRow = [&dest, pixelTailSource, useSimd](uint64_t dy, const float* accumRow)
-			{
-				static_cast<void>(useSimd);
-				auto* dstRow = dest.scanLine<uint8_t>(dy);
-
 #if IMAGE_PROCESSING_SIMD
-				if constexpr (Channels == 4 && PixelStride == 4)
-				{
-					if (useSimd)
-					{
-						writeRgbaRowSimd(dstRow, accumRow, static_cast<size_t>(dest.width) * Channels);
-						return;
-					}
-				}
+		if constexpr (PixelStride == 4 && (Channels == 3 || Channels == 4))
+		{
+			if (useSimd)
+			{
+				const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
+				filterVerticalRowsSimd<Channels>(yWeights, temp.get(), dest, pixelTailSource[3]);
+				return;
+			}
+		}
 #endif
+
+		const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
+		auto writeRow = [&dest, pixelTailSource](uint64_t dy, const float* accumRow)
+			{
+				auto* dstRow = dest.scanLine<uint8_t>(dy);
 
 				for (uint64_t dx = 0; dx < dest.width; ++dx)
 				{
@@ -490,12 +510,7 @@ namespace
 				}
 			};
 
-#if IMAGE_PROCESSING_SIMD
-		if (useSimd)
-			filterVerticalRowsSimd(yWeights, temp.get(), tempRowStride, dest.height, writeRow);
-		else
-#endif
-			filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, dest.height, writeRow);
+		filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, dest.height, writeRow);
 	}
 
 	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)

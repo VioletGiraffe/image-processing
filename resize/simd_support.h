@@ -34,10 +34,13 @@
 
 #if IMAGE_PROCESSING_X64 && (defined(__GNUC__) || defined(__clang__))
 	#define IMAGE_PROCESSING_SIMD_TARGET __attribute__((target("avx2,fma"), noinline))
+	#define IMAGE_PROCESSING_SIMD_INLINE inline __attribute__((target("avx2,fma"), always_inline))
 #elif IMAGE_PROCESSING_X64 && defined(_MSC_VER)
 	#define IMAGE_PROCESSING_SIMD_TARGET __declspec(noinline)
+	#define IMAGE_PROCESSING_SIMD_INLINE __forceinline
 #else
 	#define IMAGE_PROCESSING_SIMD_TARGET
+	#define IMAGE_PROCESSING_SIMD_INLINE inline
 #endif
 
 #if IMAGE_PROCESSING_X64

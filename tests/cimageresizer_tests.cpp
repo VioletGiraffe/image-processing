@@ -444,7 +444,7 @@ TEST_CASE("Constant images remain constant when resized", "[resize]")
 				setPixel(rgbaSource, x, y, { 11, 22, 33, 44 });
 		}
 
-		TestImage dest(3, 5, 4, 4);
+		TestImage dest(11, 5, 4, 4);
 		resize(dest, rgbaSource);
 		for (uint64_t y = 0; y < dest.height; ++y)
 		{
@@ -459,18 +459,32 @@ TEST_CASE("Filtered resize initializes bytes outside the logical channels", "[re
 	SECTION("Specialized RGB32 layout")
 	{
 		TestImage source(2, 2, 3, 4);
+		TestImage packedSource(2, 2, 3, 3);
 		setPixel(source, 0, 0, { 10, 20, 30, 0xff });
 		setPixel(source, 1, 0, { 40, 50, 60, 0xff });
 		setPixel(source, 0, 1, { 70, 80, 90, 0xff });
 		setPixel(source, 1, 1, { 100, 110, 120, 0xff });
+		setPixel(packedSource, 0, 0, { 10, 20, 30 });
+		setPixel(packedSource, 1, 0, { 40, 50, 60 });
+		setPixel(packedSource, 0, 1, { 70, 80, 90 });
+		setPixel(packedSource, 1, 1, { 100, 110, 120 });
 
-		TestImage dest(5, 3, 3, 4, 0, 0);
+		TestImage dest(13, 3, 3, 4, 0, 0);
+		TestImage packedDest(13, 3, 3, 3, 0, 0);
 		resize(dest, source);
+		resize(packedDest, packedSource);
 
 		for (uint64_t y = 0; y < dest.height; ++y)
 		{
 			for (uint64_t x = 0; x < dest.width; ++x)
+			{
+				for (size_t channel = 0; channel < 3; ++channel)
+				{
+					const int difference = static_cast<int>(dest.pixel(x, y)[channel]) - static_cast<int>(packedDest.pixel(x, y)[channel]);
+					CHECK(std::max(difference, -difference) <= 1);
+				}
 				CHECK(dest.pixel(x, y)[3] == 0xff);
+			}
 		}
 	}
 
