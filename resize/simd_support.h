@@ -18,20 +18,22 @@
 	#include <immintrin.h>
 	#if defined(_MSC_VER)
 		#include <intrin.h>
-		// MSVC permits AVX2 intrinsics in isolated functions without enabling AVX2 for the entire translation unit.
+		// MSVC permits AVX2/FMA intrinsics in isolated functions without enabling them for the entire translation unit.
 		#define SIMDE_X86_AVX2_NATIVE
+		#define SIMDE_X86_FMA_NATIVE
 	#else
-		// AVX2 is enabled per function, after SIMDe's translation-unit feature detection has run.
+		// AVX2 and FMA are enabled per function, after SIMDe's translation-unit feature detection has run.
 		#define SIMDE_NATURAL_VECTOR_SIZE 256
 	#endif
 #endif
 
 #if IMAGE_PROCESSING_SIMD
 	#include "../3rdparty/simde/x86/avx2.h"
+	#include "../3rdparty/simde/x86/fma.h"
 #endif
 
 #if IMAGE_PROCESSING_X64 && (defined(__GNUC__) || defined(__clang__))
-	#define IMAGE_PROCESSING_SIMD_TARGET __attribute__((target("avx2"), noinline))
+	#define IMAGE_PROCESSING_SIMD_TARGET __attribute__((target("avx2,fma"), noinline))
 #elif IMAGE_PROCESSING_X64 && defined(_MSC_VER)
 	#define IMAGE_PROCESSING_SIMD_TARGET __declspec(noinline)
 #else
@@ -62,9 +64,11 @@ namespace ImageProcessing::SimdSupport
 					return false;
 
 				__cpuidex(registers, 1, 0);
+				constexpr int fmaBit = 1 << 12;
 				constexpr int osXsaveBit = 1 << 27;
 				constexpr int avxBit = 1 << 28;
-				if ((registers[2] & (osXsaveBit | avxBit)) != (osXsaveBit | avxBit))
+				constexpr int requiredFeatureBits = fmaBit | osXsaveBit | avxBit;
+				if ((registers[2] & requiredFeatureBits) != requiredFeatureBits)
 					return false;
 
 				if ((_xgetbv(0) & 0x6) != 0x6)
@@ -74,7 +78,7 @@ namespace ImageProcessing::SimdSupport
 				constexpr int avx2Bit = 1 << 5;
 				return (registers[1] & avx2Bit) != 0;
 #else
-				return __builtin_cpu_supports("avx2");
+				return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
 #endif
 			}();
 

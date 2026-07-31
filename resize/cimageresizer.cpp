@@ -272,7 +272,7 @@ namespace
 					::memcpy(&packedPixel, srcRow + tap.offset, sizeof(packedPixel));
 					const simde__m128i bytes = simde_mm_cvtsi32_si128(packedPixel);
 					const simde__m128 channels = simde_mm_cvtepi32_ps(simde_mm_cvtepu8_epi32(bytes));
-					accum = simde_mm_add_ps(accum, simde_mm_mul_ps(channels, simde_mm_set1_ps(tap.weight)));
+					accum = simde_mm_fmadd_ps(channels, simde_mm_set1_ps(tap.weight), accum);
 				}
 
 				float* outPixel = tempRow + static_cast<size_t>(dx) * Channels;
@@ -324,7 +324,7 @@ namespace
 				{
 					const simde__m256 accum = simde_mm256_loadu_ps(accumRow.get() + element);
 					const simde__m256 sourceValues = simde_mm256_loadu_ps(tempRow + element);
-					simde_mm256_storeu_ps(accumRow.get() + element, simde_mm256_add_ps(accum, simde_mm256_mul_ps(sourceValues, weights)));
+					simde_mm256_storeu_ps(accumRow.get() + element, simde_mm256_fmadd_ps(sourceValues, weights, accum));
 				}
 
 				if (tailElementCount != 0)
@@ -334,7 +334,7 @@ namespace
 					simde_mm256_maskstore_ps(
 						accumRow.get() + vectorizedElementCount,
 						tailMask,
-						simde_mm256_add_ps(accum, simde_mm256_mul_ps(sourceValues, weights)));
+						simde_mm256_fmadd_ps(sourceValues, weights, accum));
 				}
 			}
 
