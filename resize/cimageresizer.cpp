@@ -299,7 +299,11 @@ namespace
 		RowWriter&& writeRow)
 	{
 		const auto accumRow = std::make_unique_for_overwrite<float[]>(rowElementCount);
-		const size_t vectorizedElementCount = rowElementCount & ~size_t{ 7 };
+		constexpr size_t elementsPerVector = 8;
+		constexpr size_t vectorsPerBlock = 4;
+		constexpr size_t elementsPerBlock = elementsPerVector * vectorsPerBlock;
+		const size_t blockedElementCount = rowElementCount & ~(elementsPerBlock - 1);
+		const size_t vectorizedElementCount = rowElementCount & ~(elementsPerVector - 1);
 		const size_t tailElementCount = rowElementCount - vectorizedElementCount;
 		const simde__m256i tailMask = simde_mm256_set_epi32(
 			tailElementCount > 7 ? -1 : 0,
@@ -313,29 +317,52 @@ namespace
 
 		for (uint64_t dy = 0; dy < destHeight; ++dy)
 		{
-			std::fill_n(accumRow.get(), rowElementCount, 0.0f);
+			const auto taps = yWeights.tapsFor(dy);
+			size_t element = 0;
 
-			for (const Tap& tap : yWeights.tapsFor(dy))
+			for (; element < blockedElementCount; element += elementsPerBlock)
 			{
-				const float* tempRow = temp + tap.offset;
-				const simde__m256 weights = simde_mm256_set1_ps(tap.weight);
+				simde__m256 accum0 = simde_mm256_setzero_ps();
+				simde__m256 accum1 = simde_mm256_setzero_ps();
+				simde__m256 accum2 = simde_mm256_setzero_ps();
+				simde__m256 accum3 = simde_mm256_setzero_ps();
 
-				for (size_t element = 0; element < vectorizedElementCount; element += 8)
+				for (const Tap& tap : taps)
 				{
-					const simde__m256 accum = simde_mm256_loadu_ps(accumRow.get() + element);
-					const simde__m256 sourceValues = simde_mm256_loadu_ps(tempRow + element);
-					simde_mm256_storeu_ps(accumRow.get() + element, simde_mm256_fmadd_ps(sourceValues, weights, accum));
+					const float* source = temp + tap.offset + element;
+					const simde__m256 weights = simde_mm256_set1_ps(tap.weight);
+					accum0 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source), weights, accum0);
+					accum1 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector), weights, accum1);
+					accum2 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 2), weights, accum2);
+					accum3 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 3), weights, accum3);
 				}
 
-				if (tailElementCount != 0)
+				simde_mm256_storeu_ps(accumRow.get() + element, accum0);
+				simde_mm256_storeu_ps(accumRow.get() + element + elementsPerVector, accum1);
+				simde_mm256_storeu_ps(accumRow.get() + element + elementsPerVector * 2, accum2);
+				simde_mm256_storeu_ps(accumRow.get() + element + elementsPerVector * 3, accum3);
+			}
+
+			for (; element < vectorizedElementCount; element += elementsPerVector)
+			{
+				simde__m256 accum = simde_mm256_setzero_ps();
+				for (const Tap& tap : taps)
 				{
-					const simde__m256 accum = simde_mm256_maskload_ps(accumRow.get() + vectorizedElementCount, tailMask);
-					const simde__m256 sourceValues = simde_mm256_maskload_ps(tempRow + vectorizedElementCount, tailMask);
-					simde_mm256_maskstore_ps(
-						accumRow.get() + vectorizedElementCount,
-						tailMask,
-						simde_mm256_fmadd_ps(sourceValues, weights, accum));
+					const simde__m256 sourceValues = simde_mm256_loadu_ps(temp + tap.offset + element);
+					accum = simde_mm256_fmadd_ps(sourceValues, simde_mm256_set1_ps(tap.weight), accum);
 				}
+				simde_mm256_storeu_ps(accumRow.get() + element, accum);
+			}
+
+			if (tailElementCount != 0)
+			{
+				simde__m256 accum = simde_mm256_setzero_ps();
+				for (const Tap& tap : taps)
+				{
+					const simde__m256 sourceValues = simde_mm256_maskload_ps(temp + tap.offset + vectorizedElementCount, tailMask);
+					accum = simde_mm256_fmadd_ps(sourceValues, simde_mm256_set1_ps(tap.weight), accum);
+				}
+				simde_mm256_maskstore_ps(accumRow.get() + vectorizedElementCount, tailMask, accum);
 			}
 
 			IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE();
