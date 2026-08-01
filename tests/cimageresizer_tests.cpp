@@ -861,25 +861,54 @@ TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading
 	CWorkerThreadPool pool(4, "Resize test pool");
 	std::mt19937 randomEngine(20260801);
 
+	struct Job { uint64_t srcWidth, srcHeight, destWidth, destHeight; };
+	constexpr Job jobs[] = {
+		// Downscales
+		{ 5472, 3648, 1620, 1080 },   // 20 MP photo to a viewport
+		{ 3840, 2160, 1920, 1080 },
+		{ 640, 480, 333, 257 },
+		// Upscales
+		{ 1280, 720, 3840, 2160 },
+		{ 640, 480, 1280, 963 },
+		{ 2, 2, 2048, 2048 },
+		{ 1, 1, 2000, 2000 },
+		// Mixed axes
+		{ 3840, 1080, 1920, 2160 },   // X down, Y up
+		{ 640, 480, 900, 200 },       // X up, Y down
+		// Degenerate strips and extreme scale factors
+		{ 8192, 1, 4096, 3 },
+		{ 1, 8192, 3, 4096 },
+		{ 1024, 1024, 1, 1 },
+		// Small enough to fall back to serial despite the pool
+		{ 640, 480, 16, 12 },
+	};
+
 	struct Shape { uint8_t channels; uint8_t pixelStride; };
 	// 4/4 and 3/4 take the SIMD path where available, 1/1 the scalar one, 2/2 the runtime fallback
 	for (const auto [channels, pixelStride] : { Shape{ 4, 4 }, Shape{ 3, 4 }, Shape{ 1, 1 }, Shape{ 2, 2 } })
 	{
 		CAPTURE(+channels, +pixelStride);
-		TestImage source(640, 480, channels, pixelStride);
-		fillLogicalBytes(source, randomEngine);
-
-		// Down/down, up/up, up/down, and small enough to fall back to serial despite the pool
-		for (const auto [destWidth, destHeight] : { std::pair<uint64_t, uint64_t>{ 333, 257 }, { 1280, 963 }, { 900, 200 }, { 16, 12 } })
+		for (const Job& job : jobs)
 		{
-			CAPTURE(destWidth, destHeight);
-			TestImage serialDest(destWidth, destHeight, channels, pixelStride);
+			CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
+			TestImage source(job.srcWidth, job.srcHeight, channels, pixelStride);
+			fillLogicalBytes(source, randomEngine);
+
+			TestImage serialDest(job.destWidth, job.destHeight, channels, pixelStride);
 			resize(serialDest, source);
 
-			TestImage parallelDest(destWidth, destHeight, channels, pixelStride);
-			resize(parallelDest, source, {}, &pool);
+			// Repeated because a race would only manifest probabilistically; the per-pixel sweep runs only to diagnose a mismatch
+			for (int iteration = 0; iteration < 20; ++iteration)
+			{
+				CAPTURE(iteration);
+				TestImage parallelDest(job.destWidth, job.destHeight, channels, pixelStride);
+				resize(parallelDest, source, {}, &pool);
 
-			requirePixelsEqual(parallelDest, serialDest);
+				const bool identical = parallelDest.data == serialDest.data;
+				CHECK(identical);
+				if (!identical)
+					requirePixelsEqual(parallelDest, serialDest);
+			}
 		}
 	}
 }

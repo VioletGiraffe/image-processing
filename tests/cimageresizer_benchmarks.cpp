@@ -1,6 +1,8 @@
 #include "3rdparty/catch2/catch.hpp"
 #include "resize/cimageresizer.h"
 
+#include "threading/cworkerthread.h"
+
 #include <QImage>
 
 #include <algorithm>
@@ -53,7 +55,8 @@ namespace
 		uint64_t destHeight,
 		uint8_t channels,
 		uint8_t pixelStrideBytes,
-		QImage::Format qImageFormat)
+		QImage::Format qImageFormat,
+		CWorkerThreadPool* threadPool = nullptr)
 	{
 		BenchmarkImage source(sourceWidth, sourceHeight, channels, pixelStrideBytes);
 		std::fill_n(source.data.get(), source.dataSize, uint8_t{ 0x7f });
@@ -72,13 +75,17 @@ namespace
 			qImageFormat);
 		REQUIRE(!qImageSource.isNull());
 
-		BENCHMARK(std::string("CImageResizer | ") + name)
+		BENCHMARK(std::string("CImageResizer | ") + name + (threadPool ? " [4 threads]" : ""))
 		{
 			BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
 			auto destView = dest.mutableView();
-			ImageProcessing::resize(destView, sourceView);
+			ImageProcessing::resize(destView, sourceView, {}, threadPool);
 			return dest.data[dest.dataSize / 2];
 		};
+
+		// The serial run of the same scenario provides the QImage control; report_benchmark_ratios.py matches it by stripping the suffix
+		if (threadPool)
+			return;
 
 		if (sourceWidth == destWidth && sourceHeight == destHeight)
 		{
@@ -118,4 +125,15 @@ TEST_CASE("Common pixel layouts", "[!benchmark][resize]")
 	benchmarkResize("4K to 1080p - RGB24", 3840, 2160, 1920, 1080, 3, 3, QImage::Format_RGB888);
 	benchmarkResize("4K to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("4K to 1080p - RGBA32", 3840, 2160, 1920, 1080, 4, 4, QImage::Format_RGBA8888);
+}
+
+TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
+{
+	CWorkerThreadPool pool(4, "Resize benchmark pool");
+	pool.waitUntilStarted();
+
+	benchmarkResize("24 MP photo to 1080p viewport - RGB32", 6000, 4000, 1620, 1080, 3, 4, QImage::Format_RGB32, &pool);
+	benchmarkResize("4K image to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32, &pool);
+	benchmarkResize("720p image to 1080p - RGB32", 1280, 720, 1920, 1080, 3, 4, QImage::Format_RGB32, &pool);
+	benchmarkResize("1080p image to 1440p - RGB32", 1920, 1080, 2560, 1440, 3, 4, QImage::Format_RGB32, &pool);
 }
