@@ -30,6 +30,8 @@ win* {
 linux* | mac* | freebsd {
 	QMAKE_CXXFLAGS += -std=c++2b
 	QMAKE_CXXFLAGS_WARN_ON = -Wall
+	# See the same flag in ../image-processing.pro
+	*-g++*:QMAKE_CXXFLAGS += -Wno-psabi
 }
 
 macx {

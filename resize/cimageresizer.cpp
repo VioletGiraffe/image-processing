@@ -540,7 +540,8 @@ namespace
 #endif
 
 		const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
-		auto writeRow = [&dest, pixelTailSource](uint64_t dy, const float* accumRow)
+		// Capture-default: pixelTailSource is unused when the pixel has no tail bytes, and an explicit capture would then be diagnosed
+		auto writeRow = [&](uint64_t dy, const float* accumRow)
 			{
 				auto* dstRow = dest.scanLine<uint8_t>(dy);
 
