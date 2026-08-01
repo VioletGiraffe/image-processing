@@ -28,8 +28,10 @@
 #endif
 
 #if IMAGE_PROCESSING_SIMD
-	#include "../3rdparty/simde/x86/avx2.h"
-	#include "../3rdparty/simde/x86/fma.h"
+	// Angle brackets are load-bearing: resize.pri puts 3rdparty on the external/system include path, which is
+	// what exempts SIMDe from our warning settings. A quoted relative path resolves before that path is searched.
+	#include <simde/x86/avx2.h>
+	#include <simde/x86/fma.h>
 #endif
 
 #if IMAGE_PROCESSING_X64 && (defined(__GNUC__) || defined(__clang__))
