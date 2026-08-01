@@ -42,47 +42,50 @@ namespace
 			});
 	}
 
-	[[nodiscard]] inline float sinc(float x) noexcept
+	// The tap tables are built in double and stored as float. A float source position loses its sub-pixel phase as
+	// the destination coordinate grows - one ulp at 4K width is already 1.2e-4 - and the kernel slope turns that
+	// straight into weight error. Cost is nil: this runs once per axis, not per pixel.
+	[[nodiscard]] inline double sinc(double x) noexcept
 	{
-		if (x == 0.0f)
-			return 1.0f;
+		if (x == 0.0)
+			return 1.0;
 
-		const float px = std::numbers::pi_v<float> *x;
+		const double px = std::numbers::pi * x;
 		return std::sin(px) / px;
 	}
 
 	struct BicubicKernel
 	{
-		static constexpr float radius = 2.0f;
+		static constexpr double radius = 2.0;
 
-		[[nodiscard]] static inline float evaluate(float x) noexcept
+		[[nodiscard]] static inline double evaluate(double x) noexcept
 		{
 			x = std::abs(x);
 
-			constexpr float a = -0.5f; // Catmull-Rom
-			if (x < 1.0f)
-				return ((a + 2.0f) * x - (a + 3.0f)) * x * x + 1.0f;
+			constexpr double a = -0.5; // Catmull-Rom
+			if (x < 1.0)
+				return ((a + 2.0) * x - (a + 3.0)) * x * x + 1.0;
 
-			if (x < 2.0f)
-				return (((a * x - 5.0f * a) * x + 8.0f * a) * x - 4.0f * a);
+			if (x < 2.0)
+				return (((a * x - 5.0 * a) * x + 8.0 * a) * x - 4.0 * a);
 
-			return 0.0f;
+			return 0.0;
 		}
 	};
 
 	struct Lanczos3Kernel
 	{
-		static constexpr float radius = 3.0f;
+		static constexpr double radius = 3.0;
 
-		[[nodiscard]] static inline float evaluate(float x) noexcept
+		[[nodiscard]] static inline double evaluate(double x) noexcept
 		{
 			x = std::abs(x);
 
-			if (x == 0.0f)
-				return 1.0f;
+			if (x == 0.0)
+				return 1.0;
 
 			if (x >= radius)
-				return 0.0f;
+				return 0.0;
 
 			return sinc(x) * sinc(x / radius);
 		}
@@ -106,40 +109,42 @@ namespace
 
 		result.taps.reserve(dstSize);
 
-		const float scale = static_cast<float>(dstSize) / static_cast<float>(srcSize);
-		const bool downscale = scale < 1.0f;
-		const float support = downscale ? (Kernel::radius / scale) : Kernel::radius;
+		const double scale = static_cast<double>(dstSize) / static_cast<double>(srcSize);
+		const bool downscale = scale < 1.0;
+		const double support = downscale ? (Kernel::radius / scale) : Kernel::radius;
 		const int64_t srcMax = static_cast<int64_t>(srcSize) - 1;
 
 		for (uint64_t d = 0; d < dstSize; ++d)
 		{
-			const float srcPos = (static_cast<float>(d) + 0.5f) / scale - 0.5f;
+			const double srcPos = (static_cast<double>(d) + 0.5) / scale - 0.5;
 			const int64_t left = static_cast<int64_t>(std::floor(srcPos - support));
 			const int64_t right = static_cast<int64_t>(std::ceil(srcPos + support));
 			const size_t firstTap = result.taps.size();
-			float sum = 0.0f;
+			double sum = 0.0;
 
 			for (int64_t s = left; s <= right; ++s)
 			{
-				const float distance = srcPos - static_cast<float>(s);
+				const double distance = srcPos - static_cast<double>(s);
 
-				const float weight = downscale
+				const double weight = downscale
 					? Kernel::evaluate(distance * scale) * scale
 					: Kernel::evaluate(distance);
 
-				if (weight == 0.0f)
+				if (weight == 0.0)
 					continue;
 
 				const int64_t clamped = std::clamp(s, int64_t{ 0 }, srcMax);
-				result.taps.push_back(Tap{ offsetBuilder(static_cast<uint64_t>(clamped)), weight });
-				sum += weight;
+				result.taps.push_back(Tap{ offsetBuilder(static_cast<uint64_t>(clamped)), static_cast<float>(weight) });
+				// Summing the stored floats rather than the doubles makes the normalization below cancel their
+				// rounding, so a row of equal pixels still resolves to exactly that value.
+				sum += result.taps.back().weight;
 			}
 
-			if (sum != 0.0f)
+			if (sum != 0.0)
 			{
-				const float invSum = 1.0f / sum;
+				const double invSum = 1.0 / sum;
 				for (size_t tapIndex = firstTap; tapIndex < result.taps.size(); ++tapIndex)
-					result.taps[tapIndex].weight *= invSum;
+					result.taps[tapIndex].weight = static_cast<float>(result.taps[tapIndex].weight * invSum);
 			}
 			else
 			{

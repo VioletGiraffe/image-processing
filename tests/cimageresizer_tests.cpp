@@ -68,20 +68,21 @@ namespace
 
 	void setPixel(TestImage& image, uint64_t x, uint64_t y, std::initializer_list<uint8_t> values)
 	{
-		REQUIRE(values.size() == image.pixelStrideBytes);
+		REQUIRE(values.size() == static_cast<size_t>(image.pixelStrideBytes));
 		std::copy(values.begin(), values.end(), image.pixel(x, y));
 	}
 
+	// Byte comparisons are promoted with unary + throughout this file: Catch2 renders uint8_t as a character.
 	void requirePixel(const TestImage& image, uint64_t x, uint64_t y, std::initializer_list<uint8_t> expected)
 	{
 		CAPTURE(x, y);
-		REQUIRE(expected.size() == image.pixelStrideBytes);
+		REQUIRE(expected.size() == static_cast<size_t>(image.pixelStrideBytes));
 
 		size_t byte = 0;
 		for (const uint8_t expectedValue : expected)
 		{
 			CAPTURE(byte);
-			CHECK(image.pixel(x, y)[byte] == expectedValue);
+			CHECK(+image.pixel(x, y)[byte] == +expectedValue);
 			++byte;
 		}
 	}
@@ -113,7 +114,7 @@ namespace
 				for (size_t byte = 0; byte < image.pixelStrideBytes; ++byte)
 				{
 					CAPTURE(x, y, byte);
-					CHECK(image.pixel(x, y)[byte] == *expectedValue++);
+					CHECK(+image.pixel(x, y)[byte] == +*expectedValue++);
 				}
 			}
 		}
@@ -123,8 +124,8 @@ namespace
 	{
 		REQUIRE(actual.width == expected.width);
 		REQUIRE(actual.height == expected.height);
-		REQUIRE(actual.channels == expected.channels);
-		REQUIRE(actual.pixelStrideBytes == expected.pixelStrideBytes);
+		REQUIRE(+actual.channels == +expected.channels);
+		REQUIRE(+actual.pixelStrideBytes == +expected.pixelStrideBytes);
 
 		for (uint64_t y = 0; y < actual.height; ++y)
 		{
@@ -133,7 +134,7 @@ namespace
 				for (size_t byte = 0; byte < actual.pixelStrideBytes; ++byte)
 				{
 					CAPTURE(x, y, byte);
-					CHECK(actual.pixel(x, y)[byte] == expected.pixel(x, y)[byte]);
+					CHECK(+actual.pixel(x, y)[byte] == +expected.pixel(x, y)[byte]);
 				}
 			}
 		}
@@ -351,10 +352,11 @@ namespace
 			for (uint64_t x = 0; x < actual.width; ++x)
 			{
 				const double referenceValue = reference[static_cast<size_t>(y) * actual.width + x];
-				const uint8_t expected = roundReferenceToByte(referenceValue);
-				const uint8_t actualValue = actual.pixel(x, y)[channel];
+				// int, not uint8_t: Catch2 prints byte types as characters
+				const int expected = roundReferenceToByte(referenceValue);
+				const int actualValue = actual.pixel(x, y)[channel];
 				const double distanceToRoundingBoundary = std::abs(referenceValue - (std::floor(referenceValue) + 0.5));
-				const int difference = static_cast<int>(actualValue) - static_cast<int>(expected);
+				const int difference = actualValue - expected;
 				const int absoluteDifference = std::max(difference, -difference);
 				const int allowedDifference = distanceToRoundingBoundary < 0.01 ? 1 : 0;
 
@@ -369,7 +371,7 @@ namespace
 
 	void requireResizeMatchesReference(const TestImage& actual, const TestImage& source)
 	{
-		REQUIRE(actual.channels == source.channels);
+		REQUIRE(+actual.channels == +source.channels);
 
 		for (uint8_t channel = 0; channel < source.channels; ++channel)
 			requireChannelMatchesReference(actual, source, channel);
@@ -487,7 +489,7 @@ TEST_CASE("Constant images remain constant when resized", "[resize]")
 				requirePixel(dest, x, y, { 17, 91, 203 });
 
 			for (size_t byte = static_cast<size_t>(dest.width) * dest.pixelStrideBytes; byte < dest.bytesPerLine; ++byte)
-				CHECK(dest.data[static_cast<size_t>(y) * dest.bytesPerLine + byte] == paddingSentinel);
+				CHECK(+dest.data[static_cast<size_t>(y) * dest.bytesPerLine + byte] == +paddingSentinel);
 		}
 	}
 
@@ -546,7 +548,7 @@ TEST_CASE("Filtered resize initializes bytes outside the logical channels", "[re
 					const int difference = static_cast<int>(dest.pixel(x, y)[channel]) - static_cast<int>(packedDest.pixel(x, y)[channel]);
 					CHECK(std::max(difference, -difference) <= 1);
 				}
-				CHECK(dest.pixel(x, y)[3] == 0xff);
+				CHECK(+dest.pixel(x, y)[3] == 0xff);
 			}
 		}
 	}
@@ -650,14 +652,14 @@ TEST_CASE("Identity crops copy only logical row bytes", "[resize][source-rect][p
 			{
 				CAPTURE(x, y, byte);
 				const auto* expectedPixel = sourceData + static_cast<size_t>(y + 1) * sourceBytesPerLine + static_cast<size_t>(x + 2) * pixelStride;
-				CHECK(destData[static_cast<size_t>(y) * destBytesPerLine + static_cast<size_t>(x) * pixelStride + byte] == expectedPixel[byte]);
+				CHECK(+destData[static_cast<size_t>(y) * destBytesPerLine + static_cast<size_t>(x) * pixelStride + byte] == +expectedPixel[byte]);
 			}
 		}
 
 		for (size_t byte = destWidth * pixelStride; byte < destBytesPerLine; ++byte)
 		{
 			CAPTURE(y, byte);
-			CHECK(destData[static_cast<size_t>(y) * destBytesPerLine + byte] == destPadding);
+			CHECK(+destData[static_cast<size_t>(y) * destBytesPerLine + byte] == +destPadding);
 		}
 	}
 
@@ -852,7 +854,7 @@ TEST_CASE("Images with more than four channels are rejected", "[resize][validati
 	resize(dest, source);
 
 	for (const uint8_t value : dest.data)
-		CHECK(value == sentinel);
+		CHECK(+value == +sentinel);
 }
 
 TEST_CASE("Images with 16-bit channels are rejected", "[resize][validation]")
@@ -957,7 +959,7 @@ TEST_CASE("Seeded randomized small images preserve resize properties", "[resize]
 					for (size_t byte = 0; byte < pixelStride; ++byte)
 					{
 						CAPTURE(x, y, byte);
-						CHECK(dest.pixel(x, y)[byte] == pixelValues[byte]);
+						CHECK(+dest.pixel(x, y)[byte] == +pixelValues[byte]);
 					}
 				}
 			}
@@ -991,7 +993,7 @@ TEST_CASE("Seeded randomized small images preserve resize properties", "[resize]
 				{
 					CAPTURE(x, y);
 					for (size_t channel = 0; channel < 3; ++channel)
-						CHECK(rgbDest.pixel(x, y)[channel] == grayscaleDest.pixel(x, y)[0]);
+						CHECK(+rgbDest.pixel(x, y)[channel] == +grayscaleDest.pixel(x, y)[0]);
 				}
 			}
 		}
