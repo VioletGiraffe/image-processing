@@ -6,9 +6,12 @@
 #include <QImage>
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <numbers>
 #include <string>
 
 namespace
@@ -47,6 +50,55 @@ namespace
 		std::unique_ptr<uint8_t[]> data;
 	};
 
+	// Photo-like content: mostly smooth, with hard edges, plus fine detail. A uniform fill leaves the clamp
+	// branches perfectly predicted and every filter tap identical, so it measures a case no real image produces.
+	void fillPhotoLikeContent(BenchmarkImage& image)
+	{
+		constexpr double smoothCycles = 3.5;
+		constexpr int smoothAmplitude = 60;
+		constexpr uint64_t blocksPerAxis = 24;
+		constexpr int blockAmplitude = 48;
+		constexpr int channelOffsets[4] = { 0, -20, 20, 10 };
+
+		// Feature sizes are relative to the image, so every scenario gets comparable structure per unit of output
+		const auto buildAxisTerms = [](uint64_t size)
+			{
+				auto terms = std::make_unique_for_overwrite<int[]>(static_cast<size_t>(size));
+				for (uint64_t i = 0; i < size; ++i)
+				{
+					const double phase = 2.0 * std::numbers::pi * smoothCycles * static_cast<double>(i) / static_cast<double>(size);
+					terms[i] = static_cast<int>(std::lround(smoothAmplitude * std::sin(phase)));
+				}
+				return terms;
+			};
+
+		const auto rowTerms = buildAxisTerms(image.height);
+		const auto columnTerms = buildAxisTerms(image.width);
+
+		// Rounding the block size to a power of two keeps the checkerboard index a shift
+		const int blockShiftX = std::bit_width(std::max<uint64_t>(image.width / blocksPerAxis, 1)) - 1;
+		const int blockShiftY = std::bit_width(std::max<uint64_t>(image.height / blocksPerAxis, 1)) - 1;
+
+		for (uint64_t y = 0; y < image.height; ++y)
+		{
+			uint8_t* row = image.data.get() + static_cast<size_t>(y) * image.bytesPerLine;
+			for (uint64_t x = 0; x < image.width; ++x)
+			{
+				const bool blockRaised = ((x >> blockShiftX) + (y >> blockShiftY)) % 2 == 0;
+				const int detail = static_cast<int>((x * 37 + y * 71) & 15) - 8;
+				const int value = 128 + (rowTerms[y] + columnTerms[x]) / 2 + (blockRaised ? blockAmplitude : -blockAmplitude) + detail;
+
+				uint8_t* pixel = row + static_cast<size_t>(x) * image.pixelStrideBytes;
+				for (size_t channel = 0; channel < image.channels; ++channel)
+					pixel[channel] = static_cast<uint8_t>(std::clamp(value + channelOffsets[channel], 0, 255));
+
+				// Bytes outside the logical channels carry pixel-format invariants, such as RGB32's required 0xff
+				for (size_t byte = image.channels; byte < image.pixelStrideBytes; ++byte)
+					pixel[byte] = 0xff;
+			}
+		}
+	}
+
 	void benchmarkResize(
 		const char* name,
 		uint64_t sourceWidth,
@@ -59,12 +111,7 @@ namespace
 		CWorkerThreadPool* threadPool = nullptr)
 	{
 		BenchmarkImage source(sourceWidth, sourceHeight, channels, pixelStrideBytes);
-		std::fill_n(source.data.get(), source.dataSize, uint8_t{ 0x7f });
-		if (channels == 3 && pixelStrideBytes == 4)
-		{
-			for (size_t byte = 3; byte < source.dataSize; byte += 4)
-				source.data[byte] = 0xff;
-		}
+		fillPhotoLikeContent(source);
 
 		const auto sourceView = source.constView();
 		const QImage qImageSource(

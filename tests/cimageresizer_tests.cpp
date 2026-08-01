@@ -168,6 +168,20 @@ namespace
 		}
 	}
 
+	// Every logical channel gets the same value, so any layout's channel 0 matches the grayscale image of that size
+	void fillDeterministicPattern(TestImage& image)
+	{
+		for (uint64_t y = 0; y < image.height; ++y)
+		{
+			for (uint64_t x = 0; x < image.width; ++x)
+			{
+				uint8_t* pixel = image.pixel(x, y);
+				std::fill_n(pixel, image.channels, static_cast<uint8_t>((x * 37 + y * 71 + (x * y % 251) * 19 + 23) & 0xff));
+				std::fill_n(pixel + image.channels, image.pixelStrideBytes - image.channels, uint8_t{ 0xff });
+			}
+		}
+	}
+
 	TestImage mirrorBothAxes(const TestImage& source)
 	{
 		TestImage result(source.width, source.height, source.channels, source.pixelStrideBytes);
@@ -345,11 +359,7 @@ namespace
 	void requireNearUnityResizeMatchesReference(uint64_t sourceWidth, uint64_t sourceHeight, uint64_t destWidth, uint64_t destHeight)
 	{
 		TestImage source(sourceWidth, sourceHeight, 1, 1);
-		for (uint64_t y = 0; y < source.height; ++y)
-		{
-			for (uint64_t x = 0; x < source.width; ++x)
-				source.pixel(x, y)[0] = static_cast<uint8_t>((x * 37 + y * 71 + (x * y % 251) * 19 + 23) & 0xff);
-		}
+		fillDeterministicPattern(source);
 
 		TestImage actual(destWidth, destHeight, 1, 1);
 		resize(actual, source);
@@ -698,6 +708,67 @@ TEST_CASE("Near-unity scaling matches a direct double-precision reference", "[re
 	SECTION("Mixed-axis upscale and downscale")
 	{
 		requireNearUnityResizeMatchesReference(255, 256, 256, 255);
+	}
+}
+
+// The reference oracle is otherwise only applied at near-unity ratios; these cover the widest Lanczos windows,
+// the bicubic kernel, and the two kernels active on different axes at once.
+TEST_CASE("Extreme scale factors match a direct double-precision reference", "[resize][reference]")
+{
+	struct Job { uint64_t srcWidth, srcHeight, destWidth, destHeight; };
+	const Job jobs[] = {
+		{ 400, 300, 60, 45 },     // heavy downscale: widest Lanczos window
+		{ 320, 240, 160, 120 },   // exact halving
+		{ 96, 72, 300, 220 },     // upscale (bicubic)
+		{ 300, 200, 90, 260 },    // X down, Y up
+	};
+
+	for (const Job& job : jobs)
+	{
+		CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
+		TestImage source(job.srcWidth, job.srcHeight, 1, 1);
+		fillDeterministicPattern(source);
+
+		TestImage actual(job.destWidth, job.destHeight, 1, 1);
+		resize(actual, source);
+		requireGrayscaleResizeMatchesReference(actual, source);
+	}
+}
+
+// The other layout comparisons use two-pixel sources; these sizes cover many blocked SIMD iterations and a
+// different scalar remainder, across the SIMD, scalar and runtime-dispatch paths.
+TEST_CASE("Pixel layouts agree on identical channel data", "[resize][pixel-layout]")
+{
+	constexpr uint64_t sourceWidth = 320, sourceHeight = 240;
+	TestImage grayscaleSource(sourceWidth, sourceHeight, 1, 1);
+	fillDeterministicPattern(grayscaleSource);
+
+	struct Layout { uint8_t channels; uint8_t pixelStride; };
+	for (const auto [destWidth, destHeight] : { std::pair<uint64_t, uint64_t>{ 77, 51 }, { 480, 361 } })
+	{
+		CAPTURE(destWidth, destHeight);
+		TestImage grayscaleDest(destWidth, destHeight, 1, 1);
+		resize(grayscaleDest, grayscaleSource);
+
+		for (const auto [channels, pixelStride] : { Layout{ 3, 4 }, Layout{ 3, 3 }, Layout{ 4, 4 }, Layout{ 2, 2 } })
+		{
+			CAPTURE(+channels, +pixelStride);
+			TestImage source(sourceWidth, sourceHeight, channels, pixelStride);
+			fillDeterministicPattern(source);
+
+			TestImage dest(destWidth, destHeight, channels, pixelStride);
+			resize(dest, source);
+
+			for (uint64_t y = 0; y < destHeight; ++y)
+			{
+				for (uint64_t x = 0; x < destWidth; ++x)
+				{
+					CAPTURE(x, y);
+					const int difference = static_cast<int>(dest.pixel(x, y)[0]) - static_cast<int>(grayscaleDest.pixel(x, y)[0]);
+					CHECK(std::max(difference, -difference) <= 1);
+				}
+			}
+		}
 	}
 }
 
