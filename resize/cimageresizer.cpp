@@ -525,6 +525,12 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 		srcRect.top = std::min(srcRect.top, source.height - srcRect.h);
 	}
 
+	// This file is compiled for the baseline instruction set, so its scalar float code - weight building above
+	// all - is legacy-SSE encoded and stalls on every instruction while the upper YMM state is dirty, as a caller
+	// that used 256-bit AVX without vzeroupper leaves it (~10% of a resize). The check: vzeroupper needs AVX.
+	if (SimdSupport::canUseSimd())
+		IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE();
+
 	switch (source.channels)
 	{
 	case 1: resizeDispatchStride<1>(dest, source, srcRect, threadPool); return;

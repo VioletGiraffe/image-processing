@@ -50,14 +50,14 @@
 	#define IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE() static_cast<void>(0)
 #endif
 
-#if IMAGE_PROCESSING_SIMD
 namespace ImageProcessing::SimdSupport
 {
+	// Answers for every target, so callers need no preprocessor guard: false where no SIMD kernels exist.
 	[[nodiscard]] inline bool canUseSimd() noexcept
 	{
 #if IMAGE_PROCESSING_ARM64
 		return true;
-#else
+#elif IMAGE_PROCESSING_X64
 		static const bool supported = []() noexcept
 			{
 #if defined(_MSC_VER)
@@ -86,7 +86,8 @@ namespace ImageProcessing::SimdSupport
 			}();
 
 		return supported;
+#else
+		return false;
 #endif
 	}
 }
-#endif
