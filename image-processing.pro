@@ -42,7 +42,8 @@ UI_DIR      = ../build/$${OUTPUT_DIR}/$${TARGET}
 RCC_DIR     = ../build/$${OUTPUT_DIR}/$${TARGET}
 
 win*{
-	QMAKE_CXXFLAGS += /MP /Zi /FS /JMC
+	QMAKE_CXXFLAGS += /MP /Zi /FS
+	Debug:QMAKE_CXXFLAGS += /JMC
 	QMAKE_CXXFLAGS += /std:c++latest /permissive- /Zc:__cplusplus
 	DEFINES += WIN32_LEAN_AND_MEAN NOMINMAX
 	QMAKE_CXXFLAGS_WARN_ON = /W4
