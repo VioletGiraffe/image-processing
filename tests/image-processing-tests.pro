@@ -45,14 +45,13 @@ INCLUDEPATH += \
 	$$PWD/../../cpputils \
 	$$PWD/../../cpp-template-utils
 
-HEADERS += \
-	../resize/cimageresizer.h
-
 SOURCES += \
 	main.cpp \
 	cimageresizer_benchmarks.cpp \
 	cimageresizer_tests.cpp \
-	$${PWD}/../resize/cimageresizer.cpp \
 	$${PWD}/../../cpputils/threading/cworkerthread.cpp \
 	$${PWD}/../../cpputils/threading/thread_helpers.cpp \
 	$${PWD}/../../cpputils/assert/advanced_assert.cpp
+
+# Carries the resizer's sources, headers, and the per-file /arch:AVX2 rule its SIMD kernels need
+include(../resize/resize.pri)

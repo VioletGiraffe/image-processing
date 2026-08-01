@@ -53,7 +53,7 @@ jobs:
       run: |
         clang --version
         $QT_ROOT_DIR/bin/qmake image-processing-tests.pro -config release CONFIG+=release
-        make -j
+        make -j4
 
     - name: Build tests on Linux
       if: startsWith(matrix.os, 'ubuntu')
@@ -65,7 +65,7 @@ jobs:
         sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 50
         g++ --version
         $QT_ROOT_DIR/bin/qmake image-processing-tests.pro -config release CONFIG+=release
-        make -j
+        make -j$(nproc)
 
     - name: Run tests on Windows
       if: startsWith(matrix.os, 'windows')
