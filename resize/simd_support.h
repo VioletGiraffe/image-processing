@@ -45,13 +45,6 @@
 	#define IMAGE_PROCESSING_SIMD_INLINE inline
 #endif
 
-#if IMAGE_PROCESSING_X64
-	// SIMDe has no wrapper for this x86-only transition instruction.
-	#define IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE() _mm256_zeroupper()
-#else
-	#define IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE() static_cast<void>(0)
-#endif
-
 namespace ImageProcessing::SimdSupport
 {
 	// Answers for every target, so callers need no preprocessor guard: false where no SIMD kernels exist.
@@ -90,6 +83,15 @@ namespace ImageProcessing::SimdSupport
 		return supported;
 #else
 		return false;
+#endif
+	}
+
+	// SIMDe has no wrapper for this x86-only transition instruction, and GCC and Clang expose it only inside a
+	// target-attributed function - hence a function rather than a macro, reached by a call from baseline callers.
+	IMAGE_PROCESSING_SIMD_TARGET inline void clearAvxUpperState() noexcept
+	{
+#if IMAGE_PROCESSING_X64
+		_mm256_zeroupper();
 #endif
 	}
 }

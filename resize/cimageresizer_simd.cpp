@@ -109,7 +109,7 @@ namespace ImageProcessing::Detail
 			}
 		}
 
-		IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE();
+		SimdSupport::clearAvxUpperState();
 	}
 
 	template <size_t Channels>
@@ -183,7 +183,7 @@ namespace ImageProcessing::Detail
 			}
 		}
 
-		IMAGE_PROCESSING_CLEAR_AVX_UPPER_STATE();
+		SimdSupport::clearAvxUpperState();
 	}
 
 	template void filterHorizontal4BytePixelsSimd<3>(float*, size_t, const ImageView<true>&, Rect, uint64_t, const AxisWeights&, uint64_t, uint64_t);
