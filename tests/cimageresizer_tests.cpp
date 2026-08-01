@@ -193,6 +193,17 @@ namespace
 		return result;
 	}
 
+	TestImage extractChannel(const TestImage& source, uint8_t channel)
+	{
+		TestImage result(source.width, source.height, 1, 1);
+		for (uint64_t y = 0; y < source.height; ++y)
+		{
+			for (uint64_t x = 0; x < source.width; ++x)
+				result.pixel(x, y)[0] = source.pixel(x, y)[channel];
+		}
+		return result;
+	}
+
 	TestImage grayscaleGrid(uint64_t width, uint64_t height)
 	{
 		TestImage image(width, height, 1, 1);
@@ -300,7 +311,7 @@ namespace
 	}
 
 	// A direct 2D convolution keeps the test oracle structurally independent from the production two-pass implementation.
-	[[nodiscard]] std::vector<double> referenceResizeGrayscale(const TestImage& source, uint64_t destWidth, uint64_t destHeight)
+	[[nodiscard]] std::vector<double> referenceResizeSingleChannel(const TestImage& source, uint64_t destWidth, uint64_t destHeight)
 	{
 		const ReferenceAxisWeights xWeights = buildReferenceAxisWeights(source.width, destWidth);
 		const ReferenceAxisWeights yWeights = buildReferenceAxisWeights(source.height, destHeight);
@@ -329,9 +340,11 @@ namespace
 		return static_cast<uint8_t>(std::clamp(rounded, int64_t{ 0 }, int64_t{ 255 }));
 	}
 
-	void requireGrayscaleResizeMatchesReference(const TestImage& actual, const TestImage& source)
+	// Channels are filtered independently, so one extracted channel against the single-channel oracle is a complete check.
+	void requireChannelMatchesReference(const TestImage& actual, const TestImage& source, uint8_t channel)
 	{
-		const std::vector<double> reference = referenceResizeGrayscale(source, actual.width, actual.height);
+		CAPTURE(+channel);
+		const std::vector<double> reference = referenceResizeSingleChannel(extractChannel(source, channel), actual.width, actual.height);
 
 		for (uint64_t y = 0; y < actual.height; ++y)
 		{
@@ -339,7 +352,7 @@ namespace
 			{
 				const double referenceValue = reference[static_cast<size_t>(y) * actual.width + x];
 				const uint8_t expected = roundReferenceToByte(referenceValue);
-				const uint8_t actualValue = actual.pixel(x, y)[0];
+				const uint8_t actualValue = actual.pixel(x, y)[channel];
 				const double distanceToRoundingBoundary = std::abs(referenceValue - (std::floor(referenceValue) + 0.5));
 				const int difference = static_cast<int>(actualValue) - static_cast<int>(expected);
 				const int absoluteDifference = std::max(difference, -difference);
@@ -352,8 +365,14 @@ namespace
 				}
 			}
 		}
+	}
 
-		SUCCEED();
+	void requireResizeMatchesReference(const TestImage& actual, const TestImage& source)
+	{
+		REQUIRE(actual.channels == source.channels);
+
+		for (uint8_t channel = 0; channel < source.channels; ++channel)
+			requireChannelMatchesReference(actual, source, channel);
 	}
 
 	void requireNearUnityResizeMatchesReference(uint64_t sourceWidth, uint64_t sourceHeight, uint64_t destWidth, uint64_t destHeight)
@@ -363,8 +382,40 @@ namespace
 
 		TestImage actual(destWidth, destHeight, 1, 1);
 		resize(actual, source);
-		requireGrayscaleResizeMatchesReference(actual, source);
+		requireResizeMatchesReference(actual, source);
 	}
+
+	struct ResizeJob { uint64_t srcWidth, srcHeight, destWidth, destHeight; };
+
+	// Shared by the reference and threading test cases so both cover the same geometry space
+	constexpr ResizeJob resizeJobs[] = {
+		// Downscales
+		{ 5472, 3648, 1620, 1080 },   // 20 MP photo to a viewport
+		{ 3840, 2160, 1920, 1080 },
+		{ 640, 480, 333, 257 },
+		// Upscales
+		{ 1280, 720, 3840, 2160 },
+		{ 640, 480, 1280, 963 },
+		{ 2, 2, 2048, 2048 },
+		{ 1, 1, 2000, 2000 },
+		// Mixed axes
+		{ 3840, 1080, 1920, 2160 },   // X down, Y up
+		{ 640, 480, 900, 200 },       // X up, Y down
+		// Near-unity, where a one-pixel change in size shifts every tap by a fraction of a pixel
+		{ 1920, 1080, 1921, 1081 },
+		{ 1921, 1081, 1920, 1080 },
+		// Degenerate strips and extreme scale factors
+		{ 8192, 1, 4096, 3 },
+		{ 1, 8192, 3, 4096 },
+		{ 1024, 1024, 1, 1 },
+		// Small enough for the threading test to fall back to serial despite the pool
+		{ 640, 480, 16, 12 },
+	};
+
+	struct PixelLayout { uint8_t channels; uint8_t pixelStride; };
+
+	// 4/4 and 3/4 take the SIMD path where available, 3/3 and 1/1 the scalar one, 2/2 the runtime fallback
+	constexpr PixelLayout pixelLayouts[] = { { 4, 4 }, { 3, 4 }, { 3, 3 }, { 1, 1 }, { 2, 2 } };
 }
 
 TEST_CASE("Bicubic upscaling matches independently generated golden pixels", "[resize][bicubic][golden]")
@@ -387,7 +438,7 @@ TEST_CASE("Bicubic upscaling matches independently generated golden pixels", "[r
 		167, 156, 133, 122, 125, 126,
 		251, 232, 190, 147, 103, 83
 	});
-	requireGrayscaleResizeMatchesReference(dest, source);
+	requireResizeMatchesReference(dest, source);
 }
 
 TEST_CASE("Lanczos downscaling matches independently generated golden pixels", "[resize][lanczos][golden]")
@@ -412,7 +463,7 @@ TEST_CASE("Lanczos downscaling matches independently generated golden pixels", "
 		101, 102, 185,
 		105, 115, 124
 	});
-	requireGrayscaleResizeMatchesReference(dest, source);
+	requireResizeMatchesReference(dest, source);
 }
 
 TEST_CASE("Constant images remain constant when resized", "[resize]")
@@ -711,19 +762,17 @@ TEST_CASE("Near-unity scaling matches a direct double-precision reference", "[re
 	}
 }
 
-// The reference oracle is otherwise only applied at near-unity ratios; these cover the widest Lanczos windows,
-// the bicubic kernel, and the two kernels active on different axes at once.
+// Structured rather than random content, at ratios between the near-unity cases and the degenerate ones.
 TEST_CASE("Extreme scale factors match a direct double-precision reference", "[resize][reference]")
 {
-	struct Job { uint64_t srcWidth, srcHeight, destWidth, destHeight; };
-	const Job jobs[] = {
+	constexpr ResizeJob jobs[] = {
 		{ 400, 300, 60, 45 },     // heavy downscale: widest Lanczos window
 		{ 320, 240, 160, 120 },   // exact halving
 		{ 96, 72, 300, 220 },     // upscale (bicubic)
 		{ 300, 200, 90, 260 },    // X down, Y up
 	};
 
-	for (const Job& job : jobs)
+	for (const ResizeJob& job : jobs)
 	{
 		CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
 		TestImage source(job.srcWidth, job.srcHeight, 1, 1);
@@ -731,7 +780,29 @@ TEST_CASE("Extreme scale factors match a direct double-precision reference", "[r
 
 		TestImage actual(job.destWidth, job.destHeight, 1, 1);
 		resize(actual, source);
-		requireGrayscaleResizeMatchesReference(actual, source);
+		requireResizeMatchesReference(actual, source);
+	}
+}
+
+// The only reference check covering the SIMD kernels, large sources and degenerate aspect ratios. Random bytes
+// give every channel different data, so a channel mix-up cannot hide behind identical values.
+TEST_CASE("Every pixel layout and geometry matches a direct double-precision reference", "[resize][reference]")
+{
+	std::mt19937 randomEngine(20260802);
+
+	for (const auto [channels, pixelStride] : pixelLayouts)
+	{
+		CAPTURE(+channels, +pixelStride);
+		for (const ResizeJob& job : resizeJobs)
+		{
+			CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
+			TestImage source(job.srcWidth, job.srcHeight, channels, pixelStride);
+			fillLogicalBytes(source, randomEngine);
+
+			TestImage dest(job.destWidth, job.destHeight, channels, pixelStride);
+			resize(dest, source);
+			requireResizeMatchesReference(dest, source);
+		}
 	}
 }
 
@@ -932,34 +1003,10 @@ TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading
 	CWorkerThreadPool pool(4, "Resize test pool");
 	std::mt19937 randomEngine(20260801);
 
-	struct Job { uint64_t srcWidth, srcHeight, destWidth, destHeight; };
-	constexpr Job jobs[] = {
-		// Downscales
-		{ 5472, 3648, 1620, 1080 },   // 20 MP photo to a viewport
-		{ 3840, 2160, 1920, 1080 },
-		{ 640, 480, 333, 257 },
-		// Upscales
-		{ 1280, 720, 3840, 2160 },
-		{ 640, 480, 1280, 963 },
-		{ 2, 2, 2048, 2048 },
-		{ 1, 1, 2000, 2000 },
-		// Mixed axes
-		{ 3840, 1080, 1920, 2160 },   // X down, Y up
-		{ 640, 480, 900, 200 },       // X up, Y down
-		// Degenerate strips and extreme scale factors
-		{ 8192, 1, 4096, 3 },
-		{ 1, 8192, 3, 4096 },
-		{ 1024, 1024, 1, 1 },
-		// Small enough to fall back to serial despite the pool
-		{ 640, 480, 16, 12 },
-	};
-
-	struct Shape { uint8_t channels; uint8_t pixelStride; };
-	// 4/4 and 3/4 take the SIMD path where available, 1/1 the scalar one, 2/2 the runtime fallback
-	for (const auto [channels, pixelStride] : { Shape{ 4, 4 }, Shape{ 3, 4 }, Shape{ 1, 1 }, Shape{ 2, 2 } })
+	for (const auto [channels, pixelStride] : pixelLayouts)
 	{
 		CAPTURE(+channels, +pixelStride);
-		for (const Job& job : jobs)
+		for (const ResizeJob& job : resizeJobs)
 		{
 			CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
 			TestImage source(job.srcWidth, job.srcHeight, channels, pixelStride);
