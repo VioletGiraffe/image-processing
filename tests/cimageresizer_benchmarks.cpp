@@ -174,6 +174,12 @@ TEST_CASE("Common pixel layouts", "[!benchmark][resize]")
 	benchmarkResize("4K to 1080p - RGBA32", 3840, 2160, 1920, 1080, 4, 4, QImage::Format_RGBA8888);
 }
 
+// Separate from the common scenarios because of the 404 MB source alone
+TEST_CASE("Very large image downscale", "[!benchmark][resize]")
+{
+	benchmarkResize("101 MP photo to 720p - RGB32", 11608, 8708, 1280, 720, 3, 4, QImage::Format_RGB32);
+}
+
 TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 {
 	CWorkerThreadPool pool(4, "Resize benchmark pool");

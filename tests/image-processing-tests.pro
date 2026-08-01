@@ -52,7 +52,7 @@ SOURCES += \
 	main.cpp \
 	cimageresizer_benchmarks.cpp \
 	cimageresizer_tests.cpp \
-	../resize/cimageresizer.cpp \
-	../../cpputils/threading/cworkerthread.cpp \
-	../../cpputils/threading/thread_helpers.cpp \
-	../../cpputils/assert/advanced_assert.cpp
+	$${PWD}/../resize/cimageresizer.cpp \
+	$${PWD}/../../cpputils/threading/cworkerthread.cpp \
+	$${PWD}/../../cpputils/threading/thread_helpers.cpp \
+	$${PWD}/../../cpputils/assert/advanced_assert.cpp
