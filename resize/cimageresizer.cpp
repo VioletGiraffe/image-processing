@@ -1,6 +1,8 @@
 #include "cimageresizer.h"
 #include "simd_support.h"
 
+#include "threading/cworkerthread.h"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -40,6 +42,31 @@ namespace
 		std::vector<Tap> taps;
 		std::vector<TapRange> ranges;
 	};
+
+	// Runs worker(rowBegin, rowEnd) over [0, rowCount) split into contiguous bands: on the pool when the total
+	// work justifies the dispatch overhead, serially otherwise (or when no pool is given). Blocks until done.
+	template <class Worker>
+	void forEachRowBand(CWorkerThreadPool* threadPool, uint64_t rowCount, size_t elementsPerRow, Worker&& worker)
+	{
+		constexpr uint64_t minElementsPerBand = 32 * 1024;
+		// The band count bounds the concurrency (helpers + the calling thread never outnumber the bands),
+		// and past ~4 threads the vertical pass is memory-bandwidth-bound anyway.
+		constexpr uint64_t maxExecutors = 4;
+		uint64_t bandCount = 1;
+		if (threadPool)
+			bandCount = std::min({ rowCount, rowCount * elementsPerRow / minElementsPerBand, maxExecutors });
+
+		if (bandCount <= 1)
+		{
+			worker(uint64_t{ 0 }, rowCount);
+			return;
+		}
+
+		threadPool->parallelFor(bandCount, [&](size_t band)
+			{
+				worker(rowCount * band / bandCount, rowCount * (band + 1) / bandCount);
+			});
+	}
 
 	[[nodiscard]] inline float sinc(float x) noexcept
 	{
@@ -191,9 +218,11 @@ namespace
 		const ImageView<true>& source,
 		Rect srcRect,
 		uint64_t destWidth,
-		const AxisWeights& xWeights)
+		const AxisWeights& xWeights,
+		uint64_t rowBegin,
+		uint64_t rowEnd)
 	{
-		for (uint64_t sy = 0; sy < srcRect.h; ++sy)
+		for (uint64_t sy = rowBegin; sy < rowEnd; ++sy)
 		{
 			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + sy) + srcRect.left * PixelStride;
 			float* tempRow = temp + static_cast<size_t>(sy) * tempRowStride;
@@ -224,12 +253,13 @@ namespace
 		const AxisWeights& yWeights,
 		const float* temp,
 		size_t rowElementCount,
-		uint64_t destHeight,
+		uint64_t rowBegin,
+		uint64_t rowEnd,
 		RowWriter&& writeRow)
 	{
 		const auto accumRow = std::make_unique_for_overwrite<float[]>(rowElementCount);
 
-		for (uint64_t dy = 0; dy < destHeight; ++dy)
+		for (uint64_t dy = rowBegin; dy < rowEnd; ++dy)
 		{
 			std::fill_n(accumRow.get(), rowElementCount, 0.0f);
 
@@ -254,11 +284,13 @@ namespace
 		const ImageView<true>& source,
 		Rect srcRect,
 		uint64_t destWidth,
-		const AxisWeights& xWeights)
+		const AxisWeights& xWeights,
+		uint64_t rowBegin,
+		uint64_t rowEnd)
 	{
 		static_assert(Channels == 3 || Channels == 4);
 
-		for (uint64_t sy = 0; sy < srcRect.h; ++sy)
+		for (uint64_t sy = rowBegin; sy < rowEnd; ++sy)
 		{
 			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + sy) + srcRect.left * 4;
 			float* tempRow = temp + static_cast<size_t>(sy) * tempRowStride;
@@ -349,7 +381,9 @@ namespace
 		const AxisWeights& yWeights,
 		const float* temp,
 		ImageView<false>& dest,
-		[[maybe_unused]] uint8_t pixelTailValue)
+		[[maybe_unused]] uint8_t pixelTailValue,
+		uint64_t rowBegin,
+		uint64_t rowEnd)
 	{
 		static_assert(Channels == 3 || Channels == 4);
 		constexpr size_t pixelsPerBlock = 8;
@@ -363,7 +397,7 @@ namespace
 			pixelTails = simde_mm_set1_epi32(packedPixelTail);
 		}
 
-		for (uint64_t dy = 0; dy < dest.height; ++dy)
+		for (uint64_t dy = rowBegin; dy < rowEnd; ++dy)
 		{
 			const auto taps = yWeights.tapsFor(dy);
 			uint8_t* destRow = dest.scanLine<uint8_t>(dy);
@@ -418,7 +452,7 @@ namespace
 #endif
 
 	template <size_t Channels, size_t PixelStride>
-	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
+	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool)
 	{
 		static_assert(Channels >= 1);
 		static_assert(PixelStride >= Channels);
@@ -473,12 +507,22 @@ namespace
 		{
 			useSimd = SimdSupport::canUseSimd();
 			if (useSimd)
-				filterHorizontal4BytePixelsSimd<Channels>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights);
+			{
+				forEachRowBand(threadPool, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+					{
+						filterHorizontal4BytePixelsSimd<Channels>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
+					});
+			}
 		}
 #endif
 
 		if (!useSimd)
-			filterHorizontalRows<Channels, PixelStride>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights);
+		{
+			forEachRowBand(threadPool, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+				{
+					filterHorizontalRows<Channels, PixelStride>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
+				});
+		}
 
 #if IMAGE_PROCESSING_SIMD
 		if constexpr (PixelStride == 4 && (Channels == 3 || Channels == 4))
@@ -486,7 +530,10 @@ namespace
 			if (useSimd)
 			{
 				const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
-				filterVerticalRowsSimd<Channels>(yWeights, temp.get(), dest, pixelTailSource[3]);
+				forEachRowBand(threadPool, dest.height, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+					{
+						filterVerticalRowsSimd<Channels>(yWeights, temp.get(), dest, pixelTailSource[3], rowBegin, rowEnd);
+					});
 				return;
 			}
 		}
@@ -510,10 +557,13 @@ namespace
 				}
 			};
 
-		filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, dest.height, writeRow);
+		forEachRowBand(threadPool, dest.height, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+			{
+				filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, rowBegin, rowEnd, writeRow);
+			});
 	}
 
-	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
+	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool)
 	{
 		assert(source.width > 0 && source.height > 0);
 		assert(dest.width > 0 && dest.height > 0);
@@ -558,33 +608,35 @@ namespace
 
 		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
 
-		for (uint64_t ty = 0; ty < srcRect.h; ++ty)
-		{
-			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + ty) + srcRect.left * pixelStride;
-			float* tempRow = temp.get() + static_cast<size_t>(ty) * tempRowStride;
-
-			for (uint64_t dx = 0; dx < dest.width; ++dx)
+		forEachRowBand(threadPool, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
 			{
-				const auto wx = xWeights.tapsFor(dx);
-				float* outPixel = tempRow + static_cast<size_t>(dx) * numChannels;
-
-				for (size_t c = 0; c < numChannels; ++c)
-					outPixel[c] = 0.0f;
-
-				for (const Tap& tap : wx)
+				for (uint64_t ty = rowBegin; ty < rowEnd; ++ty)
 				{
-					const auto* srcPixel = srcRow + tap.offset;
-					const float weight = tap.weight;
+					const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + ty) + srcRect.left * pixelStride;
+					float* tempRow = temp.get() + static_cast<size_t>(ty) * tempRowStride;
 
-					for (size_t c = 0; c < numChannels; ++c)
-						outPixel[c] += static_cast<float>(srcPixel[c]) * weight;
+					for (uint64_t dx = 0; dx < dest.width; ++dx)
+					{
+						const auto wx = xWeights.tapsFor(dx);
+						float* outPixel = tempRow + static_cast<size_t>(dx) * numChannels;
+
+						for (size_t c = 0; c < numChannels; ++c)
+							outPixel[c] = 0.0f;
+
+						for (const Tap& tap : wx)
+						{
+							const auto* srcPixel = srcRow + tap.offset;
+							const float weight = tap.weight;
+
+							for (size_t c = 0; c < numChannels; ++c)
+								outPixel[c] += static_cast<float>(srcPixel[c]) * weight;
+						}
+					}
 				}
-			}
-		}
+			});
 
 		const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * pixelStride;
-		filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, dest.height,
-			[&dest, numChannels, pixelStride, pixelTailSource](uint64_t dy, const float* accumRow)
+		const auto writeRow = [&dest, numChannels, pixelStride, pixelTailSource](uint64_t dy, const float* accumRow)
 			{
 				auto* dstRow = dest.scanLine<uint8_t>(dy);
 				for (uint64_t dx = 0; dx < dest.width; ++dx)
@@ -598,56 +650,61 @@ namespace
 					if (pixelStride > numChannels)
 						copyPixelTail(dstPixel, pixelTailSource, numChannels, pixelStride);
 				}
+			};
+
+		forEachRowBand(threadPool, dest.height, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+			{
+				filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, rowBegin, rowEnd, writeRow);
 			});
 	}
 
 	template <size_t Channels>
-	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
+	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool)
 	{
 		switch (source.pixelStrideBytes)
 		{
 		case 1:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 1>(dest, source, srcRect);
+				resizeImpl<1, 1>(dest, source, srcRect, threadPool);
 			else
-				resizeImplRuntime(dest, source, srcRect);
+				resizeImplRuntime(dest, source, srcRect, threadPool);
 			return;
 
 		case 2:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 2>(dest, source, srcRect);
+				resizeImpl<1, 2>(dest, source, srcRect, threadPool);
 			else
-				resizeImplRuntime(dest, source, srcRect);
+				resizeImplRuntime(dest, source, srcRect, threadPool);
 			return;
 
 		case 3:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 3>(dest, source, srcRect);
+				resizeImpl<1, 3>(dest, source, srcRect, threadPool);
 			else if constexpr (Channels == 3)
-				resizeImpl<3, 3>(dest, source, srcRect);
+				resizeImpl<3, 3>(dest, source, srcRect, threadPool);
 			else
-				resizeImplRuntime(dest, source, srcRect);
+				resizeImplRuntime(dest, source, srcRect, threadPool);
 			return;
 
 		case 4:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 4>(dest, source, srcRect);
+				resizeImpl<1, 4>(dest, source, srcRect, threadPool);
 			else if constexpr (Channels == 3)
-				resizeImpl<3, 4>(dest, source, srcRect);
+				resizeImpl<3, 4>(dest, source, srcRect, threadPool);
 			else if constexpr (Channels == 4)
-				resizeImpl<4, 4>(dest, source, srcRect);
+				resizeImpl<4, 4>(dest, source, srcRect, threadPool);
 			else
-				resizeImplRuntime(dest, source, srcRect);
+				resizeImplRuntime(dest, source, srcRect, threadPool);
 			return;
 
 		default:
-			resizeImplRuntime(dest, source, srcRect);
+			resizeImplRuntime(dest, source, srcRect, threadPool);
 			return;
 		}
 	}
 }
 
-void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect)
+void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool)
 {
 	assert(source.width > 0 && source.height > 0);
 	assert(dest.width > 0 && dest.height > 0);
@@ -681,9 +738,9 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 
 	switch (source.channels)
 	{
-	case 1: resizeDispatchStride<1>(dest, source, srcRect); return;
-	case 3: resizeDispatchStride<3>(dest, source, srcRect); return;
-	case 4: resizeDispatchStride<4>(dest, source, srcRect); return;
-	default: resizeImplRuntime(dest, source, srcRect); return;
+	case 1: resizeDispatchStride<1>(dest, source, srcRect, threadPool); return;
+	case 3: resizeDispatchStride<3>(dest, source, srcRect, threadPool); return;
+	case 4: resizeDispatchStride<4>(dest, source, srcRect, threadPool); return;
+	default: resizeImplRuntime(dest, source, srcRect, threadPool); return;
 	}
 }

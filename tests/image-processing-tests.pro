@@ -24,6 +24,7 @@ OBJECTS_DIR = $$PWD/build/$${OUTPUT_DIR}
 win* {
 	QMAKE_CXXFLAGS += /MP /Zi /FS /std:c++latest /permissive- /Zc:__cplusplus
 	QMAKE_CXXFLAGS_WARN_ON = /W4
+	DEFINES += WIN32_LEAN_AND_MEAN NOMINMAX
 }
 
 linux* | mac* | freebsd {
@@ -39,6 +40,7 @@ macx {
 
 INCLUDEPATH += \
 	$$PWD/.. \
+	$$PWD/../../cpputils \
 	$$PWD/../../cpp-template-utils
 
 HEADERS += \
@@ -48,4 +50,7 @@ SOURCES += \
 	main.cpp \
 	cimageresizer_benchmarks.cpp \
 	cimageresizer_tests.cpp \
-	../resize/cimageresizer.cpp
+	../resize/cimageresizer.cpp \
+	../../cpputils/threading/cworkerthread.cpp \
+	../../cpputils/threading/thread_helpers.cpp \
+	../../cpputils/assert/advanced_assert.cpp

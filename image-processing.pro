@@ -7,6 +7,10 @@ CONFIG += strict_c++
 
 include(../global.pri)
 
+INCLUDEPATH += \
+	../cpputils \
+	../cpp-template-utils
+
 mac* | linux* | freebsd{
 	CONFIG(release, debug|release):CONFIG *= Release optimize_full
 	CONFIG(debug, debug|release):CONFIG *= Debug

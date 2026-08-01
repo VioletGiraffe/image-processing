@@ -1,6 +1,8 @@
 #include "3rdparty/catch2/catch.hpp"
 #include "resize/cimageresizer.h"
 
+#include "threading/cworkerthread.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -57,11 +59,11 @@ namespace
 		std::vector<uint8_t> data;
 	};
 
-	void resize(TestImage& dest, const TestImage& source, Rect sourceRect = {})
+	void resize(TestImage& dest, const TestImage& source, Rect sourceRect = {}, CWorkerThreadPool* threadPool = nullptr)
 	{
 		auto destView = dest.mutableView();
 		const auto sourceView = source.constView();
-		ImageProcessing::resize(destView, sourceView, sourceRect);
+		ImageProcessing::resize(destView, sourceView, sourceRect, threadPool);
 	}
 
 	void setPixel(TestImage& image, uint64_t x, uint64_t y, std::initializer_list<uint8_t> values)
@@ -850,6 +852,34 @@ TEST_CASE("Seeded randomized small images preserve resize properties", "[resize]
 						CHECK(rgbDest.pixel(x, y)[channel] == grayscaleDest.pixel(x, y)[0]);
 				}
 			}
+		}
+	}
+}
+
+TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading]")
+{
+	CWorkerThreadPool pool(4, "Resize test pool");
+	std::mt19937 randomEngine(20260801);
+
+	struct Shape { uint8_t channels; uint8_t pixelStride; };
+	// 4/4 and 3/4 take the SIMD path where available, 1/1 the scalar one, 2/2 the runtime fallback
+	for (const auto [channels, pixelStride] : { Shape{ 4, 4 }, Shape{ 3, 4 }, Shape{ 1, 1 }, Shape{ 2, 2 } })
+	{
+		CAPTURE(+channels, +pixelStride);
+		TestImage source(640, 480, channels, pixelStride);
+		fillLogicalBytes(source, randomEngine);
+
+		// Down/down, up/up, up/down, and small enough to fall back to serial despite the pool
+		for (const auto [destWidth, destHeight] : { std::pair<uint64_t, uint64_t>{ 333, 257 }, { 1280, 963 }, { 900, 200 }, { 16, 12 } })
+		{
+			CAPTURE(destWidth, destHeight);
+			TestImage serialDest(destWidth, destHeight, channels, pixelStride);
+			resize(serialDest, source);
+
+			TestImage parallelDest(destWidth, destHeight, channels, pixelStride);
+			resize(parallelDest, source, {}, &pool);
+
+			requirePixelsEqual(parallelDest, serialDest);
 		}
 	}
 }

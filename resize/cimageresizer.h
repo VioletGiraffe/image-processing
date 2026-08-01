@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <type_traits>
 
+class CWorkerThreadPool;
+
 namespace ImageProcessing
 {
 	template <bool ConstView = true>
@@ -34,5 +36,6 @@ namespace ImageProcessing
 		uint64_t w = 0, h = 0;
 	};
 
-	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {});
+	// threadPool, when given, parallelizes the work across the pool's workers and the calling thread; the call still blocks until done.
+	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, CWorkerThreadPool* threadPool = nullptr);
 }
