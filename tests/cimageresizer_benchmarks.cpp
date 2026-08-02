@@ -10,9 +10,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <memory>
 #include <numbers>
 #include <string>
+#include <thread>
 
 namespace
 {
@@ -122,9 +124,12 @@ namespace
 			qImageFormat);
 		REQUIRE(!qImageSource.isNull());
 
-		BENCHMARK(std::string("CImageResizer | ") + name + (threadPool ? " [4 threads]" : ""))
+		// The destination is reused across iterations: allocating one per iteration would time its first-touch
+		// page faults, and those neither shrink with thread count nor belong to the resize.
+		BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
+
+		BENCHMARK(std::string("CImageResizer | ") + name + (threadPool ? " [multithreaded]" : ""))
 		{
-			BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
 			auto destView = dest.mutableView();
 			ImageProcessing::resize(destView, sourceView, {}, threadPool);
 			return dest.data[dest.dataSize / 2];
@@ -182,8 +187,11 @@ TEST_CASE("Very large image downscale", "[!benchmark][resize]")
 
 TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 {
-	CWorkerThreadPool pool(4, "Resize benchmark pool");
+	// The resizer bands by pool size, so the pool follows the machine: a fixed count would oversubscribe a small runner.
+	CWorkerThreadPool pool(std::max(std::thread::hardware_concurrency(), 2u) - 1, "Resize benchmark pool");
 	pool.waitUntilStarted();
+	// The scenario names carry no thread count, to keep them comparable across machines
+	std::cout << "Parallel resize benchmarks: " << pool.maxWorkersCount() + 1 << " executors\n";
 
 	benchmarkResize("24 MP photo to 1080p viewport - RGB32", 6000, 4000, 1620, 1080, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("4K image to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32, &pool);

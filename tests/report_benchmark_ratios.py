@@ -27,7 +27,7 @@ def build_report(results):
 
         scenario = name[len(RESIZER_PREFIX):]
         # Parallel-resize benchmarks share the QImage control of their serial counterpart
-        control_scenario = scenario.removesuffix(" [4 threads]")
+        control_scenario = scenario.removesuffix(" [multithreaded]")
         matching_controls = [(prefix, results[prefix + control_scenario]) for prefix in CONTROL_PREFIXES if prefix + control_scenario in results]
         if len(matching_controls) != 1:
             raise RuntimeError(f"Expected exactly one QImage control for: {scenario}")
