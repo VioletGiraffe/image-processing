@@ -103,7 +103,8 @@ namespace ImageProcessing::Detail
 				const uint8_t* srcPixel = srcRow + srcStartOffset;
 				const size_t tapCount = weights.size();
 
-				simde__m128 accum = simde_mm_setzero_ps();
+				// Lanes hold [even pixel | odd pixel] partial sums until the single reduction below the blocks
+				simde__m256 accumPairs = simde_mm256_setzero_ps();
 				size_t tap = 0;
 
 				// A run is consecutive pixels, so 8 taps go through four independent FMA chains at two pixels
@@ -130,9 +131,22 @@ namespace ImageProcessing::Detail
 							simde_mm256_permutevar8x32_ps(blockWeights, weightSpread3), accum3);
 					}
 
-					const simde__m256 pairSums = simde_mm256_add_ps(simde_mm256_add_ps(accum0, accum1), simde_mm256_add_ps(accum2, accum3));
-					accum = simde_mm_add_ps(simde_mm256_castps256_ps128(pairSums), simde_mm256_extractf128_ps(pairSums, 1));
+					accumPairs = simde_mm256_add_ps(simde_mm256_add_ps(accum0, accum1), simde_mm256_add_ps(accum2, accum3));
 				}
+
+				// One narrower block covers a whole bicubic run and most of an 8-block remainder
+				if (tap + 4 <= tapCount)
+				{
+					const simde__m128i pixelBytes = simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(srcPixel + tap * 4));
+					const simde__m256 pixels01 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(pixelBytes));
+					const simde__m256 pixels23 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(simde_mm_unpackhi_epi64(pixelBytes, pixelBytes)));
+					const simde__m256 blockWeights = simde_mm256_castps128_ps256(simde_mm_loadu_ps(weights.data() + tap));
+					accumPairs = simde_mm256_fmadd_ps(pixels01, simde_mm256_permutevar8x32_ps(blockWeights, weightSpread0),
+						simde_mm256_fmadd_ps(pixels23, simde_mm256_permutevar8x32_ps(blockWeights, weightSpread1), accumPairs));
+					tap += 4;
+				}
+
+				simde__m128 accum = simde_mm_add_ps(simde_mm256_castps256_ps128(accumPairs), simde_mm256_extractf128_ps(accumPairs, 1));
 
 				for (; tap < tapCount; ++tap)
 				{
