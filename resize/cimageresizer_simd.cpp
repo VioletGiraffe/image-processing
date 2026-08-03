@@ -140,7 +140,12 @@ namespace ImageProcessing::Detail
 					const simde__m128i pixelBytes = simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(srcPixel + tap * 4));
 					const simde__m256 pixels01 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(pixelBytes));
 					const simde__m256 pixels23 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(simde_mm_unpackhi_epi64(pixelBytes, pixelBytes)));
-					const simde__m256 blockWeights = simde_mm256_castps128_ps256(simde_mm_loadu_ps(weights.data() + tap));
+					// 8-float load though only 4 are in play: the spread indices never select the upper lanes, and
+					// the builder pads the weights array to keep the overread in bounds. The natural 4-float load
+					// + castps128_ps256 compiles under MSVC to a 16-byte stack store that the 32-byte vpermps
+					// memory operand then reloads, and a load wider than the store it overlaps cannot be
+					// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
+					const simde__m256 blockWeights = simde_mm256_loadu_ps(weights.data() + tap);
 					accumPairs = simde_mm256_fmadd_ps(pixels01, simde_mm256_permutevar8x32_ps(blockWeights, weightSpread0),
 						simde_mm256_fmadd_ps(pixels23, simde_mm256_permutevar8x32_ps(blockWeights, weightSpread1), accumPairs));
 					tap += 4;

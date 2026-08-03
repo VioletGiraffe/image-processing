@@ -182,6 +182,10 @@ namespace
 			result.runs.push_back(TapRun{ offsetBuilder(static_cast<uint64_t>(runFirst) + runBegin), firstWeight, runEnd - runBegin });
 		}
 
+		// The horizontal kernel's 4-tap block reads a run's weights with one 8-float load; this slack keeps
+		// that read in bounds for the last run.
+		result.weights.resize(result.weights.size() + 4);
+
 		return result;
 	}
 
