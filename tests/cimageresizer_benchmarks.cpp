@@ -179,6 +179,13 @@ TEST_CASE("Common pixel layouts", "[!benchmark][resize]")
 	benchmarkResize("4K to 1080p - RGBA32", 3840, 2160, 1920, 1080, 4, 4, QImage::Format_RGBA8888);
 }
 
+// The two ends of the cost model: hundreds of filter taps per output pixel downscaling, four taps upscaling.
+TEST_CASE("Extreme scale factors", "[!benchmark][resize]")
+{
+	benchmarkResize("4K image to 64x64 - RGB32", 3840, 2160, 64, 64, 3, 4, QImage::Format_RGB32);
+	benchmarkResize("64x64 image to 4K - RGB32", 64, 64, 3840, 2160, 3, 4, QImage::Format_RGB32);
+}
+
 // Separate from the common scenarios because of the 404 MB source alone
 TEST_CASE("Very large image downscale", "[!benchmark][resize]")
 {
@@ -197,5 +204,7 @@ TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 	benchmarkResize("4K image to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("720p image to 1080p - RGB32", 1280, 720, 1920, 1080, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("1080p image to 1440p - RGB32", 1920, 1080, 2560, 1440, 3, 4, QImage::Format_RGB32, &pool);
+	benchmarkResize("4K image to 64x64 - RGB32", 3840, 2160, 64, 64, 3, 4, QImage::Format_RGB32, &pool);
+	benchmarkResize("64x64 image to 4K - RGB32", 64, 64, 3840, 2160, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("101 MP photo to 720p - RGB32", 11608, 8708, 1280, 720, 3, 4, QImage::Format_RGB32, &pool);
 }
