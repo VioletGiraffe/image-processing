@@ -14,8 +14,8 @@ namespace ImageProcessing::Detail
 	{
 		IMAGE_PROCESSING_SIMD_INLINE simde__m128i packEightFloatsToBytes(simde__m256 values) noexcept
 		{
-			const simde__m256 zero = simde_mm256_setzero_ps();
-			values = simde_mm256_max_ps(zero, simde_mm256_min_ps(simde_mm256_set1_ps(255.0f), values));
+			// packus_epi32 saturates negatives to 0; the 255 cap must stay - values past 32767 would wrap negative through the signed-input packus_epi16
+			values = simde_mm256_min_ps(simde_mm256_set1_ps(255.0f), values);
 			const simde__m256i integers = simde_mm256_cvttps_epi32(simde_mm256_add_ps(values, simde_mm256_set1_ps(0.5f)));
 			const simde__m256i zeroIntegers = simde_mm256_setzero_si256();
 			const simde__m256i packed16 = simde_mm256_packus_epi32(integers, zeroIntegers);
