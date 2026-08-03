@@ -25,6 +25,10 @@ win* {
 	QMAKE_CXXFLAGS += /MP /Zi /FS /std:c++latest /permissive- /Zc:__cplusplus
 	QMAKE_CXXFLAGS_WARN_ON = /W4
 	DEFINES += WIN32_LEAN_AND_MEAN NOMINMAX
+
+	# /OPT:REF and /OPT:ICF default to on only while /DEBUG is absent, so they must be restated alongside it.
+	# FULL rather than FASTLINK: a fastlink PDB is unusable to external profilers.
+	CONFIG(release, debug|release):QMAKE_LFLAGS += /DEBUG:FULL /OPT:REF /OPT:ICF
 }
 
 linux* | mac* | freebsd {

@@ -33,7 +33,9 @@ else: QMAKE_CXXFLAGS += -isystem $$shell_quote($$SIMDE_INCLUDE_ROOT)
 	avx2Compiler.dependency_type = TYPE_C
 	avx2Compiler.variable_out = OBJECTS
 	avx2Compiler.output = $${OBJECTS_DIR}/${QMAKE_FILE_BASE}$${first(QMAKE_EXT_OBJ)}
-	avx2Compiler.commands = $$QMAKE_CXX -c $$AVX2_CXXFLAGS ${QMAKE_FILE_IN} -Fo${QMAKE_FILE_OUT}
+	# The generator supplies /Fd to its own compile rules but not to this one, and /Zi without it writes the PDB to
+	# the build's working directory, where the linker will not find it and drops this object's symbols (LNK4099).
+	avx2Compiler.commands = $$QMAKE_CXX -c $$AVX2_CXXFLAGS -Fd$$shell_quote($${OBJECTS_DIR}/) ${QMAKE_FILE_IN} -Fo${QMAKE_FILE_OUT}
 	QMAKE_EXTRA_COMPILERS += avx2Compiler
 
 	AVX2_SOURCES += $$PWD/cimageresizer_simd.cpp
