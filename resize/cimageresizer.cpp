@@ -23,8 +23,7 @@ namespace
 	void forEachRowBand(CWorkerThreadPool* threadPool, uint64_t rowCount, size_t elementsPerRow, Worker&& worker)
 	{
 		constexpr uint64_t minElementsPerBand = 32 * 1024;
-		// The band count bounds the concurrency (helpers + the calling thread never outnumber the bands),
-		// and past ~4 threads the vertical pass is memory-bandwidth-bound anyway.
+		// The band count bounds the concurrency (helpers + the calling thread never outnumber the bands)
 		constexpr uint64_t maxExecutors = 4;
 		uint64_t bandCount = 1;
 		if (threadPool)
@@ -100,14 +99,14 @@ namespace
 		AxisWeights result;
 		result.ranges.reserve(dstSize);
 
-		if (srcSize == 1)
+		if (srcSize == 1) [[unlikely]]
 		{
 			result.taps.push_back(Tap{ offsetBuilder(0), 1.0f });
 			result.ranges.resize(dstSize, TapRange{ 0, 1 });
 			return result;
 		}
 
-		result.taps.reserve(dstSize);
+		result.taps.reserve(dstSize * 2);
 
 		const double scale = static_cast<double>(dstSize) / static_cast<double>(srcSize);
 		const bool downscale = scale < 1.0;
@@ -382,74 +381,74 @@ namespace
 
 		const auto xWeights = scaleUpX
 			? buildAxisWeights<BicubicKernel>(srcRect.w, dest.width, [pixelStride](uint64_t sx) noexcept -> size_t
-				{
-					return static_cast<size_t>(sx) * pixelStride;
-				})
+			{
+				return static_cast<size_t>(sx) * pixelStride;
+			})
 			: buildAxisWeights<Lanczos3Kernel>(srcRect.w, dest.width, [pixelStride](uint64_t sx) noexcept -> size_t
-				{
-					return static_cast<size_t>(sx) * pixelStride;
-				});
+			{
+				return static_cast<size_t>(sx) * pixelStride;
+			});
 
 		const auto yWeights = scaleUpY
 			? buildAxisWeights<BicubicKernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
-				{
-					return static_cast<size_t>(sy) * tempRowStride;
-				})
+			{
+				return static_cast<size_t>(sy) * tempRowStride;
+			})
 			: buildAxisWeights<Lanczos3Kernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
-				{
-					return static_cast<size_t>(sy) * tempRowStride;
-				});
+			{
+				return static_cast<size_t>(sy) * tempRowStride;
+			});
 
 		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
 
 		forEachRowBand(threadPool, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+		{
+			for (uint64_t ty = rowBegin; ty < rowEnd; ++ty)
 			{
-				for (uint64_t ty = rowBegin; ty < rowEnd; ++ty)
-				{
-					const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + ty) + srcRect.left * pixelStride;
-					float* tempRow = temp.get() + static_cast<size_t>(ty) * tempRowStride;
+				const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + ty) + srcRect.left * pixelStride;
+				float* tempRow = temp.get() + static_cast<size_t>(ty) * tempRowStride;
 
-					for (uint64_t dx = 0; dx < dest.width; ++dx)
+				for (uint64_t dx = 0; dx < dest.width; ++dx)
+				{
+					const auto wx = xWeights.tapsFor(dx);
+					float* outPixel = tempRow + static_cast<size_t>(dx) * numChannels;
+
+					for (size_t c = 0; c < numChannels; ++c)
+						outPixel[c] = 0.0f;
+
+					for (const Tap& tap : wx)
 					{
-						const auto wx = xWeights.tapsFor(dx);
-						float* outPixel = tempRow + static_cast<size_t>(dx) * numChannels;
+						const auto* srcPixel = srcRow + tap.offset;
+						const float weight = tap.weight;
 
 						for (size_t c = 0; c < numChannels; ++c)
-							outPixel[c] = 0.0f;
-
-						for (const Tap& tap : wx)
-						{
-							const auto* srcPixel = srcRow + tap.offset;
-							const float weight = tap.weight;
-
-							for (size_t c = 0; c < numChannels; ++c)
-								outPixel[c] += static_cast<float>(srcPixel[c]) * weight;
-						}
+							outPixel[c] += static_cast<float>(srcPixel[c]) * weight;
 					}
 				}
-			});
+			}
+		});
 
 		const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * pixelStride;
 		const auto writeRow = [&dest, numChannels, pixelStride, pixelTailSource](uint64_t dy, const float* accumRow)
+		{
+			auto* dstRow = dest.scanLine<uint8_t>(dy);
+			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
-				auto* dstRow = dest.scanLine<uint8_t>(dy);
-				for (uint64_t dx = 0; dx < dest.width; ++dx)
-				{
-					auto* dstPixel = dstRow + static_cast<size_t>(dx) * pixelStride;
-					const float* accumPixel = accumRow + static_cast<size_t>(dx) * numChannels;
+				auto* dstPixel = dstRow + static_cast<size_t>(dx) * pixelStride;
+				const float* accumPixel = accumRow + static_cast<size_t>(dx) * numChannels;
 
-					for (size_t c = 0; c < numChannels; ++c)
-						dstPixel[c] = clampToByte(accumPixel[c]);
+				for (size_t c = 0; c < numChannels; ++c)
+					dstPixel[c] = clampToByte(accumPixel[c]);
 
-					if (pixelStride > numChannels)
-						copyPixelTail(dstPixel, pixelTailSource, numChannels, pixelStride);
-				}
-			};
+				if (pixelStride > numChannels)
+					copyPixelTail(dstPixel, pixelTailSource, numChannels, pixelStride);
+			}
+		};
 
 		forEachRowBand(threadPool, dest.height, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
-			{
-				filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, rowBegin, rowEnd, writeRow);
-			});
+		{
+			filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, rowBegin, rowEnd, writeRow);
+		});
 	}
 
 	template <size_t Channels>
