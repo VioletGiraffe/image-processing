@@ -3,6 +3,7 @@
 #include "cimageresizer.h"
 #include "simd_support.h"
 
+#include <algorithm>
 #include <span>
 #include <stddef.h>
 #include <stdint.h>
@@ -10,28 +11,33 @@
 
 namespace ImageProcessing::Detail
 {
-	struct Tap
+	// One destination coordinate's filter: weights for a contiguous run of source pixels (x axis) or rows (y axis).
+	// startOffset locates the run's first source element - bytes into a row for x, float elements into the temp
+	// buffer for y - and weights[i] applies to the i-th consecutive element after it: border clamping is folded
+	// into the boundary weights at build time, and interior zero weights are kept, so runs have no gaps.
+	struct TapRun
 	{
-		size_t offset;
-		float weight;
-	};
-
-	struct TapRange
-	{
-		size_t firstTap;
-		size_t tapCount;
+		size_t startOffset;
+		size_t firstWeight;
+		size_t weightCount;
 	};
 
 	struct AxisWeights
 	{
-		[[nodiscard]] std::span<const Tap> tapsFor(size_t coordinate) const noexcept
+		struct Run
 		{
-			const TapRange& range = ranges[coordinate];
-			return { taps.data() + range.firstTap, range.tapCount };
+			size_t startOffset;
+			std::span<const float> weights;
+		};
+
+		[[nodiscard]] Run runFor(size_t coordinate) const noexcept
+		{
+			const TapRun& run = runs[coordinate];
+			return { run.startOffset, { weights.data() + run.firstWeight, run.weightCount } };
 		}
 
-		std::vector<Tap> taps;
-		std::vector<TapRange> ranges;
+		std::vector<float> weights;
+		std::vector<TapRun> runs;
 	};
 
 	[[nodiscard]] inline uint8_t clampToByte(float value) noexcept

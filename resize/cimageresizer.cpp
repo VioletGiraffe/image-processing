@@ -97,30 +97,34 @@ namespace
 		OffsetBuilder&& offsetBuilder)
 	{
 		AxisWeights result;
-		result.ranges.reserve(dstSize);
+		result.runs.reserve(dstSize);
 
 		if (srcSize == 1) [[unlikely]]
 		{
-			result.taps.push_back(Tap{ offsetBuilder(0), 1.0f });
-			result.ranges.resize(dstSize, TapRange{ 0, 1 });
+			result.weights.push_back(1.0f);
+			result.runs.resize(dstSize, TapRun{ offsetBuilder(0), 0, 1 });
 			return result;
 		}
-
-		result.taps.reserve(dstSize * 2);
 
 		const double scale = static_cast<double>(dstSize) / static_cast<double>(srcSize);
 		const bool downscale = scale < 1.0;
 		const double support = downscale ? (Kernel::radius / scale) : Kernel::radius;
 		const int64_t srcMax = static_cast<int64_t>(srcSize) - 1;
 
+		result.weights.reserve(dstSize * (static_cast<size_t>(2.0 * support) + 2));
+		std::vector<double> foldedWeights;
+
 		for (uint64_t d = 0; d < dstSize; ++d)
 		{
 			const double srcPos = (static_cast<double>(d) + 0.5) / scale - 0.5;
 			const int64_t left = static_cast<int64_t>(std::floor(srcPos - support));
 			const int64_t right = static_cast<int64_t>(std::ceil(srcPos + support));
-			const size_t firstTap = result.taps.size();
-			double sum = 0.0;
+			const int64_t runFirst = std::clamp(left, int64_t{ 0 }, srcMax);
+			const int64_t runLast = std::clamp(right, int64_t{ 0 }, srcMax);
 
+			// Border clamping repeats the boundary pixel, so out-of-range weights add into the boundary weight
+			// exactly; folding them here (in double) is what keeps every run contiguous in the source.
+			foldedWeights.assign(static_cast<size_t>(runLast - runFirst) + 1, 0.0);
 			for (int64_t s = left; s <= right; ++s)
 			{
 				const double distance = srcPos - static_cast<double>(s);
@@ -129,32 +133,53 @@ namespace
 					? Kernel::evaluate(distance * scale) * scale
 					: Kernel::evaluate(distance);
 
-				if (weight == 0.0)
-					continue;
-
-				const int64_t clamped = std::clamp(s, int64_t{ 0 }, srcMax);
-				result.taps.push_back(Tap{ offsetBuilder(static_cast<uint64_t>(clamped)), static_cast<float>(weight) });
-				// Summing the stored floats rather than the doubles makes the normalization below cancel their
-				// rounding, so a row of equal pixels still resolves to exactly that value.
-				sum += result.taps.back().weight;
+				foldedWeights[static_cast<size_t>(std::clamp(s, runFirst, runLast) - runFirst)] += weight;
 			}
 
-			if (sum != 0.0)
+			// The window edges land where the kernels are exactly zero, so most runs carry dead end taps; only
+			// interior zeros are needed for contiguity. (Interior Lanczos zeros compute as ~1e-16, not 0, and stay.)
+			size_t runBegin = 0;
+			size_t runEnd = foldedWeights.size();
+			while (runBegin < runEnd && foldedWeights[runBegin] == 0.0)
+				++runBegin;
+			while (runBegin < runEnd && foldedWeights[runEnd - 1] == 0.0)
+				--runEnd;
+
+			const size_t firstWeight = result.weights.size();
+
+			if (runBegin == runEnd) [[unlikely]] // no nonzero weights in the window; fall back to the nearest pixel
+			{
+				result.weights.push_back(1.0f);
+				result.runs.push_back(TapRun{ offsetBuilder(static_cast<uint64_t>(std::clamp(
+					static_cast<int64_t>(std::lround(srcPos)), runFirst, runLast))), firstWeight, 1 });
+				continue;
+			}
+
+			double sum = 0.0;
+			for (size_t i = runBegin; i < runEnd; ++i)
+			{
+				result.weights.push_back(static_cast<float>(foldedWeights[i]));
+				// Summing the stored floats rather than the doubles makes the normalization below cancel their
+				// rounding, so a row of equal pixels still resolves to exactly that value.
+				sum += result.weights.back();
+			}
+
+			if (sum != 0.0) [[likely]]
 			{
 				const double invSum = 1.0 / sum;
-				for (size_t tapIndex = firstTap; tapIndex < result.taps.size(); ++tapIndex)
-					result.taps[tapIndex].weight = static_cast<float>(result.taps[tapIndex].weight * invSum);
+				for (size_t i = firstWeight; i < result.weights.size(); ++i)
+					result.weights[i] = static_cast<float>(result.weights[i] * invSum);
 			}
 			else
 			{
-				result.taps.resize(firstTap);
-				result.taps.push_back(Tap{ offsetBuilder(static_cast<uint64_t>(std::clamp(
-					static_cast<int64_t>(std::lround(srcPos)),
-					int64_t{0},
-					srcMax))), 1.0f });
+				const int64_t trimmedFirst = runFirst + static_cast<int64_t>(runBegin);
+				const int64_t trimmedLast = runFirst + static_cast<int64_t>(runEnd) - 1;
+				std::fill(result.weights.begin() + static_cast<ptrdiff_t>(firstWeight), result.weights.end(), 0.0f);
+				const int64_t nearest = std::clamp(static_cast<int64_t>(std::lround(srcPos)), trimmedFirst, trimmedLast);
+				result.weights[firstWeight + static_cast<size_t>(nearest - trimmedFirst)] = 1.0f;
 			}
 
-			result.ranges.push_back(TapRange{ firstTap, result.taps.size() - firstTap });
+			result.runs.push_back(TapRun{ offsetBuilder(static_cast<uint64_t>(runFirst) + runBegin), firstWeight, runEnd - runBegin });
 		}
 
 		return result;
@@ -196,17 +221,17 @@ namespace
 
 			for (uint64_t dx = 0; dx < destWidth; ++dx)
 			{
-				const auto wx = xWeights.tapsFor(dx);
+				const auto [srcStartOffset, weights] = xWeights.runFor(dx);
+				const auto* srcPixel = srcRow + srcStartOffset;
 				float* outPixel = tempRow + static_cast<size_t>(dx) * Channels;
 				std::array<float, Channels> accum{};
 
-				for (const Tap& tap : wx)
+				for (const float weight : weights)
 				{
-					const auto* srcPixel = srcRow + tap.offset;
-					const float weight = tap.weight;
-
 					for (size_t c = 0; c < Channels; ++c)
 						accum[c] += static_cast<float>(srcPixel[c]) * weight;
+
+					srcPixel += PixelStride;
 				}
 
 				for (size_t c = 0; c < Channels; ++c)
@@ -230,13 +255,21 @@ namespace
 		{
 			std::fill_n(accumRow.get(), rowElementCount, 0.0f);
 
-			for (const Tap& tap : yWeights.tapsFor(dy))
-			{
-				const float* tempRow = temp + tap.offset;
-				const float weight = tap.weight;
+			const auto [tempStartOffset, weights] = yWeights.runFor(dy);
+			// Temp rows are dense, so the row element count is also the row stride
+			const float* tempRow = temp + tempStartOffset;
 
-				for (size_t element = 0; element < rowElementCount; ++element)
-					accumRow[element] += tempRow[element] * weight;
+			// A zero tap here would cost a whole row sweep, and exact-ratio downscales produce them
+			// (the kernels are zero at integer offsets)
+			for (const float weight : weights)
+			{
+				if (weight != 0.0f)
+				{
+					for (size_t element = 0; element < rowElementCount; ++element)
+						accumRow[element] += tempRow[element] * weight;
+				}
+
+				tempRow += rowElementCount;
 			}
 
 			writeRow(dy, accumRow.get());
@@ -410,19 +443,19 @@ namespace
 
 				for (uint64_t dx = 0; dx < dest.width; ++dx)
 				{
-					const auto wx = xWeights.tapsFor(dx);
+					const auto [srcStartOffset, weights] = xWeights.runFor(dx);
+					const auto* srcPixel = srcRow + srcStartOffset;
 					float* outPixel = tempRow + static_cast<size_t>(dx) * numChannels;
 
 					for (size_t c = 0; c < numChannels; ++c)
 						outPixel[c] = 0.0f;
 
-					for (const Tap& tap : wx)
+					for (const float weight : weights)
 					{
-						const auto* srcPixel = srcRow + tap.offset;
-						const float weight = tap.weight;
-
 						for (size_t c = 0; c < numChannels; ++c)
 							outPixel[c] += static_cast<float>(srcPixel[c]) * weight;
+
+						srcPixel += pixelStride;
 					}
 				}
 			}

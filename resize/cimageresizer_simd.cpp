@@ -64,6 +64,13 @@ namespace ImageProcessing::Detail
 			simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest), pixels0);
 			simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest + 16), pixels1);
 		}
+
+		// 8 bytes = two adjacent 4-byte pixels, zero-extended: lanes 0-3 hold the first pixel's channels, 4-7 the second's
+		IMAGE_PROCESSING_SIMD_INLINE simde__m256 loadTwoPixelsAsFloats(const uint8_t* pixels) noexcept
+		{
+			const simde__m128i bytes = simde_mm_loadl_epi64(reinterpret_cast<const simde__m128i*>(pixels));
+			return simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(bytes));
+		}
 	}
 
 	template <size_t Channels>
@@ -79,6 +86,12 @@ namespace ImageProcessing::Detail
 	{
 		static_assert(Channels == 3 || Channels == 4);
 
+		// Spread patterns turning 8 consecutive weights into the pair-broadcast [w(i) x4 | w(i+1) x4] each pixel pair needs
+		const simde__m256i weightSpread0 = simde_mm256_setr_epi32(0, 0, 0, 0, 1, 1, 1, 1);
+		const simde__m256i weightSpread1 = simde_mm256_setr_epi32(2, 2, 2, 2, 3, 3, 3, 3);
+		const simde__m256i weightSpread2 = simde_mm256_setr_epi32(4, 4, 4, 4, 5, 5, 5, 5);
+		const simde__m256i weightSpread3 = simde_mm256_setr_epi32(6, 6, 6, 6, 7, 7, 7, 7);
+
 		for (uint64_t sy = rowBegin; sy < rowEnd; ++sy)
 		{
 			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + sy) + srcRect.left * 4;
@@ -86,15 +99,48 @@ namespace ImageProcessing::Detail
 
 			for (uint64_t dx = 0; dx < destWidth; ++dx)
 			{
-				simde__m128 accum = simde_mm_setzero_ps();
+				const auto [srcStartOffset, weights] = xWeights.runFor(dx);
+				const uint8_t* srcPixel = srcRow + srcStartOffset;
+				const size_t tapCount = weights.size();
 
-				for (const Tap& tap : xWeights.tapsFor(dx))
+				simde__m128 accum = simde_mm_setzero_ps();
+				size_t tap = 0;
+
+				// A run is consecutive pixels, so 8 taps go through four independent FMA chains at two pixels
+				// per register; per-tap accumulation into one register would serialize on the FMA latency.
+				// Upscaling never enters this branch: a trimmed bicubic run is at most 4 taps.
+				if (tapCount >= 8)
+				{
+					simde__m256 accum0 = simde_mm256_setzero_ps();
+					simde__m256 accum1 = simde_mm256_setzero_ps();
+					simde__m256 accum2 = simde_mm256_setzero_ps();
+					simde__m256 accum3 = simde_mm256_setzero_ps();
+
+					for (; tap + 8 <= tapCount; tap += 8)
+					{
+						const uint8_t* blockPixels = srcPixel + tap * 4;
+						const simde__m256 blockWeights = simde_mm256_loadu_ps(weights.data() + tap);
+						accum0 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixels),
+							simde_mm256_permutevar8x32_ps(blockWeights, weightSpread0), accum0);
+						accum1 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixels + 8),
+							simde_mm256_permutevar8x32_ps(blockWeights, weightSpread1), accum1);
+						accum2 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixels + 16),
+							simde_mm256_permutevar8x32_ps(blockWeights, weightSpread2), accum2);
+						accum3 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixels + 24),
+							simde_mm256_permutevar8x32_ps(blockWeights, weightSpread3), accum3);
+					}
+
+					const simde__m256 pairSums = simde_mm256_add_ps(simde_mm256_add_ps(accum0, accum1), simde_mm256_add_ps(accum2, accum3));
+					accum = simde_mm_add_ps(simde_mm256_castps256_ps128(pairSums), simde_mm256_extractf128_ps(pairSums, 1));
+				}
+
+				for (; tap < tapCount; ++tap)
 				{
 					int32_t packedPixel;
-					::memcpy(&packedPixel, srcRow + tap.offset, sizeof(packedPixel));
+					::memcpy(&packedPixel, srcPixel + tap * 4, sizeof(packedPixel));
 					const simde__m128i bytes = simde_mm_cvtsi32_si128(packedPixel);
 					const simde__m128 channels = simde_mm_cvtepi32_ps(simde_mm_cvtepu8_epi32(bytes));
-					accum = simde_mm_fmadd_ps(channels, simde_mm_set1_ps(tap.weight), accum);
+					accum = simde_mm_fmadd_ps(channels, simde_mm_set1_ps(weights[tap]), accum);
 				}
 
 				float* outPixel = tempRow + static_cast<size_t>(dx) * Channels;
@@ -125,6 +171,8 @@ namespace ImageProcessing::Detail
 		constexpr size_t pixelsPerBlock = 8;
 		constexpr size_t elementsPerVector = 8;
 		const size_t destWidth = static_cast<size_t>(dest.width);
+		// Temp rows are dense: resizeImpl's tempRowStride is the same product
+		const size_t tempRowStride = destWidth * Channels;
 		const size_t blockedPixelCount = destWidth & ~(pixelsPerBlock - 1);
 		[[maybe_unused]] simde__m128i pixelTails;
 		if constexpr (Channels == 3)
@@ -135,7 +183,7 @@ namespace ImageProcessing::Detail
 
 		for (uint64_t dy = rowBegin; dy < rowEnd; ++dy)
 		{
-			const auto taps = yWeights.tapsFor(dy);
+			const auto [tempStartOffset, rowWeights] = yWeights.runFor(dy);
 			uint8_t* destRow = dest.scanLine<uint8_t>(dy);
 			size_t pixel = 0;
 
@@ -145,17 +193,23 @@ namespace ImageProcessing::Detail
 				simde__m256 accum1 = simde_mm256_setzero_ps();
 				simde__m256 accum2 = simde_mm256_setzero_ps();
 				[[maybe_unused]] simde__m256 accum3 = simde_mm256_setzero_ps();
-				const size_t element = pixel * Channels;
+				const float* source = temp + tempStartOffset + pixel * Channels;
 
-				for (const Tap& tap : taps)
+				// A zero tap costs a whole row sweep, and exact-ratio downscales produce them
+				// (the kernels are zero at integer offsets)
+				for (const float weight : rowWeights)
 				{
-					const float* source = temp + tap.offset + element;
-					const simde__m256 weights = simde_mm256_set1_ps(tap.weight);
-					accum0 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source), weights, accum0);
-					accum1 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector), weights, accum1);
-					accum2 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 2), weights, accum2);
-					if constexpr (Channels == 4)
-						accum3 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 3), weights, accum3);
+					if (weight != 0.0f)
+					{
+						const simde__m256 weightVector = simde_mm256_set1_ps(weight);
+						accum0 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source), weightVector, accum0);
+						accum1 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector), weightVector, accum1);
+						accum2 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 2), weightVector, accum2);
+						if constexpr (Channels == 4)
+							accum3 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 3), weightVector, accum3);
+					}
+
+					source += tempRowStride;
 				}
 
 				if constexpr (Channels == 3)
@@ -167,11 +221,16 @@ namespace ImageProcessing::Detail
 			for (; pixel < destWidth; ++pixel)
 			{
 				std::array<float, Channels> accum{};
-				for (const Tap& tap : taps)
+				const float* source = temp + tempStartOffset + pixel * Channels;
+				for (const float weight : rowWeights)
 				{
-					const float* source = temp + tap.offset + pixel * Channels;
-					for (size_t channel = 0; channel < Channels; ++channel)
-						accum[channel] = std::fma(source[channel], tap.weight, accum[channel]);
+					if (weight != 0.0f)
+					{
+						for (size_t channel = 0; channel < Channels; ++channel)
+							accum[channel] = std::fma(source[channel], weight, accum[channel]);
+					}
+
+					source += tempRowStride;
 				}
 
 				uint8_t* destPixel = destRow + pixel * 4;
