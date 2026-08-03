@@ -36,12 +36,7 @@ namespace ImageProcessing::Detail
 
 	[[nodiscard]] inline uint8_t clampToByte(float value) noexcept
 	{
-		if (value <= 0.0f) [[unlikely]]
-			return 0;
-
-		if (value >= 255.0f) [[unlikely]]
-			return 255;
-
+		value = std::min(std::max(value, 0.0f), 255.0f);
 		return static_cast<uint8_t>(value + 0.5f);
 	}
 
