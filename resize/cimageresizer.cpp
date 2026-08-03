@@ -273,23 +273,23 @@ namespace
 
 		const auto xWeights = scaleUpX
 			? buildAxisWeights<BicubicKernel>(srcRect.w, dest.width, [](uint64_t sx) noexcept -> size_t
-				{
-					return static_cast<size_t>(sx) * PixelStride;
-				})
+			{
+				return static_cast<size_t>(sx) * PixelStride;
+			})
 			: buildAxisWeights<Lanczos3Kernel>(srcRect.w, dest.width, [](uint64_t sx) noexcept -> size_t
-				{
-					return static_cast<size_t>(sx) * PixelStride;
-				});
+			{
+				return static_cast<size_t>(sx) * PixelStride;
+			});
 
 		const auto yWeights = scaleUpY
 			? buildAxisWeights<BicubicKernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
-				{
-					return static_cast<size_t>(sy) * tempRowStride;
-				})
+			{
+				return static_cast<size_t>(sy) * tempRowStride;
+			})
 			: buildAxisWeights<Lanczos3Kernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
-				{
-					return static_cast<size_t>(sy) * tempRowStride;
-				});
+			{
+				return static_cast<size_t>(sy) * tempRowStride;
+			});
 
 		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
 
@@ -301,9 +301,9 @@ namespace
 			if (useSimd)
 			{
 				forEachRowBand(threadPool, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
-					{
-						filterHorizontal4BytePixelsSimd<Channels>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
-					});
+				{
+					filterHorizontal4BytePixelsSimd<Channels>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
+				});
 			}
 		}
 #endif
@@ -311,9 +311,9 @@ namespace
 		if (!useSimd)
 		{
 			forEachRowBand(threadPool, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
-				{
-					filterHorizontalRows<Channels, PixelStride>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
-				});
+			{
+				filterHorizontalRows<Channels, PixelStride>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
+			});
 		}
 
 #if IMAGE_PROCESSING_SIMD
@@ -323,9 +323,9 @@ namespace
 			{
 				const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
 				forEachRowBand(threadPool, dest.height, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
-					{
-						filterVerticalRowsSimd<Channels>(yWeights, temp.get(), dest, pixelTailSource[3], rowBegin, rowEnd);
-					});
+				{
+					filterVerticalRowsSimd<Channels>(yWeights, temp.get(), dest, pixelTailSource[3], rowBegin, rowEnd);
+				});
 				return;
 			}
 		}
@@ -351,9 +351,9 @@ namespace
 			};
 
 		forEachRowBand(threadPool, dest.height, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
-			{
-				filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, rowBegin, rowEnd, writeRow);
-			});
+		{
+			filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, rowBegin, rowEnd, writeRow);
+		});
 	}
 
 	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool)
