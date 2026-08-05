@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <string.h>
 
 #if IMAGE_PROCESSING_SIMD
@@ -71,6 +72,151 @@ namespace ImageProcessing::Detail
 			const simde__m128i bytes = simde_mm_loadl_epi64(reinterpret_cast<const simde__m128i*>(pixels));
 			return simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(bytes));
 		}
+
+		IMAGE_PROCESSING_SIMD_INLINE simde__m128 loadPixelAsFloats(const uint8_t* pixel) noexcept
+		{
+			int32_t packedPixel;
+			::memcpy(&packedPixel, pixel, sizeof(packedPixel));
+			return simde_mm_cvtepi32_ps(simde_mm_cvtepu8_epi32(simde_mm_cvtsi32_si128(packedPixel)));
+		}
+
+		template <size_t Channels>
+		IMAGE_PROCESSING_SIMD_INLINE void storeTempPixel(float* outPixel, simde__m128 accum) noexcept
+		{
+			if constexpr (Channels == 4)
+				simde_mm_storeu_ps(outPixel, accum);
+			else
+			{
+				alignas(16) float channelValues[4];
+				simde_mm_store_ps(channelValues, accum);
+				::memcpy(outPixel, channelValues, Channels * sizeof(float));
+			}
+		}
+
+		// Filters Rows source rows in one destination-column sweep. The weight loads, permutes and broadcasts
+		// depend only on the column, so paired rows share them, while each row keeps its own accumulators and
+		// its exact single-row arithmetic. Two rows is the register budget: the four spread constants plus four
+		// accumulators per row nearly fill the file, a third row would spill inside the hottest loop.
+		// Rows are passed as individual pointers: a caller may hand rows that are not adjacent in either buffer.
+		template <size_t Channels, size_t Rows>
+		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalRowGroup(
+			const uint8_t* const (&srcRows)[Rows],
+			float* const (&tempRows)[Rows],
+			uint64_t destWidth,
+			const AxisWeights& xWeights) noexcept
+		{
+			static_assert(Rows == 1 || Rows == 2);
+
+			// Spread patterns turning 8 consecutive weights into the pair-broadcast [w(i) x4 | w(i+1) x4] each pixel pair needs
+			const simde__m256i weightSpread0 = simde_mm256_setr_epi32(0, 0, 0, 0, 1, 1, 1, 1);
+			const simde__m256i weightSpread1 = simde_mm256_setr_epi32(2, 2, 2, 2, 3, 3, 3, 3);
+			const simde__m256i weightSpread2 = simde_mm256_setr_epi32(4, 4, 4, 4, 5, 5, 5, 5);
+			const simde__m256i weightSpread3 = simde_mm256_setr_epi32(6, 6, 6, 6, 7, 7, 7, 7);
+
+			for (uint64_t dx = 0; dx < destWidth; ++dx)
+			{
+				const auto [srcStartOffset, weights] = xWeights.runFor(dx);
+				const uint8_t* srcPixelA = srcRows[0] + srcStartOffset;
+				[[maybe_unused]] const uint8_t* srcPixelB = srcRows[Rows - 1] + srcStartOffset;
+				const size_t tapCount = weights.size();
+
+				// Lanes hold [even pixel | odd pixel] partial sums until the single reduction below the blocks
+				simde__m256 accumPairsA = simde_mm256_setzero_ps();
+				[[maybe_unused]] simde__m256 accumPairsB = simde_mm256_setzero_ps();
+				size_t tap = 0;
+
+				// A run is consecutive pixels, so 8 taps go through four independent FMA chains at two pixels
+				// per register; per-tap accumulation into one register would serialize on the FMA latency.
+				// Upscaling never enters this branch: a trimmed bicubic run is at most 4 taps.
+				if (tapCount >= 8)
+				{
+					simde__m256 accumA0 = simde_mm256_setzero_ps();
+					simde__m256 accumA1 = simde_mm256_setzero_ps();
+					simde__m256 accumA2 = simde_mm256_setzero_ps();
+					simde__m256 accumA3 = simde_mm256_setzero_ps();
+					[[maybe_unused]] simde__m256 accumB0 = simde_mm256_setzero_ps();
+					[[maybe_unused]] simde__m256 accumB1 = simde_mm256_setzero_ps();
+					[[maybe_unused]] simde__m256 accumB2 = simde_mm256_setzero_ps();
+					[[maybe_unused]] simde__m256 accumB3 = simde_mm256_setzero_ps();
+
+					for (; tap + 8 <= tapCount; tap += 8)
+					{
+						const uint8_t* blockPixelsA = srcPixelA + tap * 4;
+						[[maybe_unused]] const uint8_t* blockPixelsB = srcPixelB + tap * 4;
+						const simde__m256 blockWeights = simde_mm256_loadu_ps(weights.data() + tap);
+
+						const simde__m256 w0 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread0);
+						accumA0 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA), w0, accumA0);
+						if constexpr (Rows == 2)
+							accumB0 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB), w0, accumB0);
+
+						const simde__m256 w1 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread1);
+						accumA1 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA + 8), w1, accumA1);
+						if constexpr (Rows == 2)
+							accumB1 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB + 8), w1, accumB1);
+
+						const simde__m256 w2 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread2);
+						accumA2 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA + 16), w2, accumA2);
+						if constexpr (Rows == 2)
+							accumB2 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB + 16), w2, accumB2);
+
+						const simde__m256 w3 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread3);
+						accumA3 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA + 24), w3, accumA3);
+						if constexpr (Rows == 2)
+							accumB3 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB + 24), w3, accumB3);
+					}
+
+					accumPairsA = simde_mm256_add_ps(simde_mm256_add_ps(accumA0, accumA1), simde_mm256_add_ps(accumA2, accumA3));
+					if constexpr (Rows == 2)
+						accumPairsB = simde_mm256_add_ps(simde_mm256_add_ps(accumB0, accumB1), simde_mm256_add_ps(accumB2, accumB3));
+				}
+
+				// One narrower block covers a whole bicubic run and most of an 8-block remainder
+				if (tap + 4 <= tapCount)
+				{
+					// 8-float load though only 4 are in play: the spread indices never select the upper lanes, and
+					// the builder pads the weights array to keep the overread in bounds. The natural 4-float load
+					// + castps128_ps256 compiles under MSVC to a 16-byte stack store that the 32-byte vpermps
+					// memory operand then reloads, and a load wider than the store it overlaps cannot be
+					// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
+					const simde__m256 blockWeights = simde_mm256_loadu_ps(weights.data() + tap);
+					const simde__m256 w01 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread0);
+					const simde__m256 w23 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread1);
+
+					const simde__m128i pixelBytesA = simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(srcPixelA + tap * 4));
+					const simde__m256 pixelsA01 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(pixelBytesA));
+					const simde__m256 pixelsA23 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(simde_mm_unpackhi_epi64(pixelBytesA, pixelBytesA)));
+					accumPairsA = simde_mm256_fmadd_ps(pixelsA01, w01, simde_mm256_fmadd_ps(pixelsA23, w23, accumPairsA));
+
+					if constexpr (Rows == 2)
+					{
+						const simde__m128i pixelBytesB = simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(srcPixelB + tap * 4));
+						const simde__m256 pixelsB01 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(pixelBytesB));
+						const simde__m256 pixelsB23 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(simde_mm_unpackhi_epi64(pixelBytesB, pixelBytesB)));
+						accumPairsB = simde_mm256_fmadd_ps(pixelsB01, w01, simde_mm256_fmadd_ps(pixelsB23, w23, accumPairsB));
+					}
+
+					tap += 4;
+				}
+
+				simde__m128 accumA = simde_mm_add_ps(simde_mm256_castps256_ps128(accumPairsA), simde_mm256_extractf128_ps(accumPairsA, 1));
+				[[maybe_unused]] simde__m128 accumB = simde_mm_setzero_ps();
+				if constexpr (Rows == 2)
+					accumB = simde_mm_add_ps(simde_mm256_castps256_ps128(accumPairsB), simde_mm256_extractf128_ps(accumPairsB, 1));
+
+				for (; tap < tapCount; ++tap)
+				{
+					const simde__m128 weight = simde_mm_set1_ps(weights[tap]);
+					accumA = simde_mm_fmadd_ps(loadPixelAsFloats(srcPixelA + tap * 4), weight, accumA);
+					if constexpr (Rows == 2)
+						accumB = simde_mm_fmadd_ps(loadPixelAsFloats(srcPixelB + tap * 4), weight, accumB);
+				}
+
+				storeTempPixel<Channels>(tempRows[0] + static_cast<size_t>(dx) * Channels, accumA);
+				if constexpr (Rows == 2)
+					storeTempPixel<Channels>(tempRows[1] + static_cast<size_t>(dx) * Channels, accumB);
+			}
+		}
 	}
 
 	template <size_t Channels>
@@ -86,92 +232,31 @@ namespace ImageProcessing::Detail
 	{
 		static_assert(Channels == 3 || Channels == 4);
 
-		// Spread patterns turning 8 consecutive weights into the pair-broadcast [w(i) x4 | w(i+1) x4] each pixel pair needs
-		const simde__m256i weightSpread0 = simde_mm256_setr_epi32(0, 0, 0, 0, 1, 1, 1, 1);
-		const simde__m256i weightSpread1 = simde_mm256_setr_epi32(2, 2, 2, 2, 3, 3, 3, 3);
-		const simde__m256i weightSpread2 = simde_mm256_setr_epi32(4, 4, 4, 4, 5, 5, 5, 5);
-		const simde__m256i weightSpread3 = simde_mm256_setr_epi32(6, 6, 6, 6, 7, 7, 7, 7);
+		// Two interleaved cold store streams defeat the prefetch that hides each temp line's ownership read
+		// (measured ~1.2 cycles per temp byte); a single cold stream is hidden fully. So row A of a pair writes
+		// temp directly, and row B sweeps into this staging row - reused every pair, so it stays cache-owned -
+		// and is copied out below as its own single sequential stream. Software-prefetching the second
+		// stream's store targets instead does not recover the loss (measured).
+		const size_t rowElements = static_cast<size_t>(destWidth) * Channels;
+		const auto staging = std::make_unique_for_overwrite<float[]>(rowElements);
 
-		for (uint64_t sy = rowBegin; sy < rowEnd; ++sy)
+		uint64_t sy = rowBegin;
+		for (; sy + 2 <= rowEnd; sy += 2)
 		{
-			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + sy) + srcRect.left * 4;
-			float* tempRow = temp + static_cast<size_t>(sy) * tempRowStride;
+			const uint8_t* const srcRows[2] = {
+				source.scanLine<uint8_t>(srcRect.top + sy) + srcRect.left * 4,
+				source.scanLine<uint8_t>(srcRect.top + sy + 1) + srcRect.left * 4 };
+			float* const outRows[2] = { temp + static_cast<size_t>(sy) * tempRowStride, staging.get() };
+			filterHorizontalRowGroup<Channels>(srcRows, outRows, destWidth, xWeights);
 
-			for (uint64_t dx = 0; dx < destWidth; ++dx)
-			{
-				const auto [srcStartOffset, weights] = xWeights.runFor(dx);
-				const uint8_t* srcPixel = srcRow + srcStartOffset;
-				const size_t tapCount = weights.size();
+			::memcpy(temp + static_cast<size_t>(sy + 1) * tempRowStride, staging.get(), rowElements * sizeof(float));
+		}
 
-				// Lanes hold [even pixel | odd pixel] partial sums until the single reduction below the blocks
-				simde__m256 accumPairs = simde_mm256_setzero_ps();
-				size_t tap = 0;
-
-				// A run is consecutive pixels, so 8 taps go through four independent FMA chains at two pixels
-				// per register; per-tap accumulation into one register would serialize on the FMA latency.
-				// Upscaling never enters this branch: a trimmed bicubic run is at most 4 taps.
-				if (tapCount >= 8)
-				{
-					simde__m256 accum0 = simde_mm256_setzero_ps();
-					simde__m256 accum1 = simde_mm256_setzero_ps();
-					simde__m256 accum2 = simde_mm256_setzero_ps();
-					simde__m256 accum3 = simde_mm256_setzero_ps();
-
-					for (; tap + 8 <= tapCount; tap += 8)
-					{
-						const uint8_t* blockPixels = srcPixel + tap * 4;
-						const simde__m256 blockWeights = simde_mm256_loadu_ps(weights.data() + tap);
-						accum0 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixels),
-							simde_mm256_permutevar8x32_ps(blockWeights, weightSpread0), accum0);
-						accum1 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixels + 8),
-							simde_mm256_permutevar8x32_ps(blockWeights, weightSpread1), accum1);
-						accum2 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixels + 16),
-							simde_mm256_permutevar8x32_ps(blockWeights, weightSpread2), accum2);
-						accum3 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixels + 24),
-							simde_mm256_permutevar8x32_ps(blockWeights, weightSpread3), accum3);
-					}
-
-					accumPairs = simde_mm256_add_ps(simde_mm256_add_ps(accum0, accum1), simde_mm256_add_ps(accum2, accum3));
-				}
-
-				// One narrower block covers a whole bicubic run and most of an 8-block remainder
-				if (tap + 4 <= tapCount)
-				{
-					const simde__m128i pixelBytes = simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(srcPixel + tap * 4));
-					const simde__m256 pixels01 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(pixelBytes));
-					const simde__m256 pixels23 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(simde_mm_unpackhi_epi64(pixelBytes, pixelBytes)));
-					// 8-float load though only 4 are in play: the spread indices never select the upper lanes, and
-					// the builder pads the weights array to keep the overread in bounds. The natural 4-float load
-					// + castps128_ps256 compiles under MSVC to a 16-byte stack store that the 32-byte vpermps
-					// memory operand then reloads, and a load wider than the store it overlaps cannot be
-					// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
-					const simde__m256 blockWeights = simde_mm256_loadu_ps(weights.data() + tap);
-					accumPairs = simde_mm256_fmadd_ps(pixels01, simde_mm256_permutevar8x32_ps(blockWeights, weightSpread0),
-						simde_mm256_fmadd_ps(pixels23, simde_mm256_permutevar8x32_ps(blockWeights, weightSpread1), accumPairs));
-					tap += 4;
-				}
-
-				simde__m128 accum = simde_mm_add_ps(simde_mm256_castps256_ps128(accumPairs), simde_mm256_extractf128_ps(accumPairs, 1));
-
-				for (; tap < tapCount; ++tap)
-				{
-					int32_t packedPixel;
-					::memcpy(&packedPixel, srcPixel + tap * 4, sizeof(packedPixel));
-					const simde__m128i bytes = simde_mm_cvtsi32_si128(packedPixel);
-					const simde__m128 channels = simde_mm_cvtepi32_ps(simde_mm_cvtepu8_epi32(bytes));
-					accum = simde_mm_fmadd_ps(channels, simde_mm_set1_ps(weights[tap]), accum);
-				}
-
-				float* outPixel = tempRow + static_cast<size_t>(dx) * Channels;
-				if constexpr (Channels == 4)
-					simde_mm_storeu_ps(outPixel, accum);
-				else
-				{
-					alignas(16) float channels[4];
-					simde_mm_store_ps(channels, accum);
-					::memcpy(outPixel, channels, Channels * sizeof(float));
-				}
-			}
+		if (sy < rowEnd)
+		{
+			const uint8_t* const srcRows[1] = { source.scanLine<uint8_t>(srcRect.top + sy) + srcRect.left * 4 };
+			float* const tempRows[1] = { temp + static_cast<size_t>(sy) * tempRowStride };
+			filterHorizontalRowGroup<Channels>(srcRows, tempRows, destWidth, xWeights);
 		}
 
 		SimdSupport::clearAvxUpperState();
