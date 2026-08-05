@@ -1,6 +1,7 @@
 #include "resize_internal.h"
 
 #include <array>
+#include <assert.h>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -217,103 +218,60 @@ namespace ImageProcessing::Detail
 					storeTempPixel<Channels>(tempRows[1] + static_cast<size_t>(dx) * Channels, accumB);
 			}
 		}
-	}
 
-	template <size_t Channels>
-	IMAGE_PROCESSING_SIMD_TARGET void filterHorizontal4BytePixelsSimd(
-		float* temp,
-		size_t tempRowStride,
-		const ImageView<true>& source,
-		Rect srcRect,
-		uint64_t destWidth,
-		const AxisWeights& xWeights,
-		uint64_t rowBegin,
-		uint64_t rowEnd)
-	{
-		static_assert(Channels == 3 || Channels == 4);
-
-		// Two interleaved cold store streams defeat the prefetch that hides each temp line's ownership read
-		// (measured ~1.2 cycles per temp byte); a single cold stream is hidden fully. So row A of a pair writes
-		// temp directly, and row B sweeps into this staging row - reused every pair, so it stays cache-owned -
-		// and is copied out below as its own single sequential stream. Software-prefetching the second
-		// stream's store targets instead does not recover the loss (measured).
-		const size_t rowElements = static_cast<size_t>(destWidth) * Channels;
-		const auto staging = std::make_unique_for_overwrite<float[]>(rowElements);
-
-		uint64_t sy = rowBegin;
-		for (; sy + 2 <= rowEnd; sy += 2)
+		// A tap window's temp rows as they sit in the ring: contiguous except for at most one wrap
+		struct TempRowSegment
 		{
-			const uint8_t* const srcRows[2] = {
-				source.scanLine<uint8_t>(srcRect.top + sy) + srcRect.left * 4,
-				source.scanLine<uint8_t>(srcRect.top + sy + 1) + srcRect.left * 4 };
-			float* const outRows[2] = { temp + static_cast<size_t>(sy) * tempRowStride, staging.get() };
-			filterHorizontalRowGroup<Channels>(srcRows, outRows, destWidth, xWeights);
+			const float* firstRow;
+			size_t rowCount;
+		};
 
-			::memcpy(temp + static_cast<size_t>(sy + 1) * tempRowStride, staging.get(), rowElements * sizeof(float));
-		}
-
-		if (sy < rowEnd)
+		// Writes one destination row from its y tap window. rowWeights covers both segments in order.
+		template <size_t Channels>
+		IMAGE_PROCESSING_SIMD_INLINE void filterVerticalDestRow(
+			const TempRowSegment (&segments)[2],
+			std::span<const float> rowWeights,
+			size_t tempRowStride,
+			uint8_t pixelTailValue,
+			uint8_t* destRow,
+			size_t destWidth) noexcept
 		{
-			const uint8_t* const srcRows[1] = { source.scanLine<uint8_t>(srcRect.top + sy) + srcRect.left * 4 };
-			float* const tempRows[1] = { temp + static_cast<size_t>(sy) * tempRowStride };
-			filterHorizontalRowGroup<Channels>(srcRows, tempRows, destWidth, xWeights);
-		}
+			constexpr size_t pixelsPerBlock = 8;
+			constexpr size_t elementsPerVector = 8;
+			const size_t blockedPixelCount = destWidth & ~(pixelsPerBlock - 1);
+			[[maybe_unused]] simde__m128i pixelTails;
+			if constexpr (Channels == 3)
+				pixelTails = simde_mm_set1_epi32(std::bit_cast<int32_t>(static_cast<uint32_t>(pixelTailValue) << 24));
 
-		SimdSupport::clearAvxUpperState();
-	}
-
-	template <size_t Channels>
-	IMAGE_PROCESSING_SIMD_TARGET void filterVerticalRowsSimd(
-		const AxisWeights& yWeights,
-		const float* temp,
-		ImageView<false>& dest,
-		[[maybe_unused]] uint8_t pixelTailValue,
-		uint64_t rowBegin,
-		uint64_t rowEnd)
-	{
-		static_assert(Channels == 3 || Channels == 4);
-		constexpr size_t pixelsPerBlock = 8;
-		constexpr size_t elementsPerVector = 8;
-		const size_t destWidth = static_cast<size_t>(dest.width);
-		// Temp rows are dense: resizeImpl's tempRowStride is the same product
-		const size_t tempRowStride = destWidth * Channels;
-		const size_t blockedPixelCount = destWidth & ~(pixelsPerBlock - 1);
-		[[maybe_unused]] simde__m128i pixelTails;
-		if constexpr (Channels == 3)
-		{
-			const int32_t packedPixelTail = std::bit_cast<int32_t>(static_cast<uint32_t>(pixelTailValue) << 24);
-			pixelTails = simde_mm_set1_epi32(packedPixelTail);
-		}
-
-		for (uint64_t dy = rowBegin; dy < rowEnd; ++dy)
-		{
-			const auto [tempStartOffset, rowWeights] = yWeights.runFor(dy);
-			uint8_t* destRow = dest.scanLine<uint8_t>(dy);
 			size_t pixel = 0;
-
 			for (; pixel < blockedPixelCount; pixel += pixelsPerBlock)
 			{
 				simde__m256 accum0 = simde_mm256_setzero_ps();
 				simde__m256 accum1 = simde_mm256_setzero_ps();
 				simde__m256 accum2 = simde_mm256_setzero_ps();
 				[[maybe_unused]] simde__m256 accum3 = simde_mm256_setzero_ps();
-				const float* source = temp + tempStartOffset + pixel * Channels;
+				const float* weight = rowWeights.data();
 
-				// A zero tap costs a whole row sweep, and exact-ratio downscales produce them
-				// (the kernels are zero at integer offsets)
-				for (const float weight : rowWeights)
+				for (const TempRowSegment& segment : segments)
 				{
-					if (weight != 0.0f)
-					{
-						const simde__m256 weightVector = simde_mm256_set1_ps(weight);
-						accum0 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source), weightVector, accum0);
-						accum1 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector), weightVector, accum1);
-						accum2 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 2), weightVector, accum2);
-						if constexpr (Channels == 4)
-							accum3 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 3), weightVector, accum3);
-					}
+					const float* source = segment.firstRow + pixel * Channels;
 
-					source += tempRowStride;
+					// A zero tap costs a whole row sweep, and exact-ratio downscales produce them
+					// (the kernels are zero at integer offsets)
+					for (const float* segmentEnd = weight + segment.rowCount; weight != segmentEnd; ++weight)
+					{
+						if (*weight != 0.0f)
+						{
+							const simde__m256 weightVector = simde_mm256_set1_ps(*weight);
+							accum0 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source), weightVector, accum0);
+							accum1 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector), weightVector, accum1);
+							accum2 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 2), weightVector, accum2);
+							if constexpr (Channels == 4)
+								accum3 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(source + elementsPerVector * 3), weightVector, accum3);
+						}
+
+						source += tempRowStride;
+					}
 				}
 
 				if constexpr (Channels == 3)
@@ -325,16 +283,21 @@ namespace ImageProcessing::Detail
 			for (; pixel < destWidth; ++pixel)
 			{
 				std::array<float, Channels> accum{};
-				const float* source = temp + tempStartOffset + pixel * Channels;
-				for (const float weight : rowWeights)
-				{
-					if (weight != 0.0f)
-					{
-						for (size_t channel = 0; channel < Channels; ++channel)
-							accum[channel] = std::fma(source[channel], weight, accum[channel]);
-					}
+				const float* weight = rowWeights.data();
 
-					source += tempRowStride;
+				for (const TempRowSegment& segment : segments)
+				{
+					const float* source = segment.firstRow + pixel * Channels;
+					for (const float* segmentEnd = weight + segment.rowCount; weight != segmentEnd; ++weight)
+					{
+						if (*weight != 0.0f)
+						{
+							for (size_t channel = 0; channel < Channels; ++channel)
+								accum[channel] = std::fma(source[channel], *weight, accum[channel]);
+						}
+
+						source += tempRowStride;
+					}
 				}
 
 				uint8_t* destPixel = destRow + pixel * 4;
@@ -345,14 +308,95 @@ namespace ImageProcessing::Detail
 					destPixel[3] = pixelTailValue;
 			}
 		}
+	}
+
+	// Fully resizes destination rows [destRowBegin, destRowEnd): temp rows are produced (in pairs) into a ring
+	// barely larger than the y tap window and consumed immediately, so the intermediate rows stay cache-resident
+	// instead of a whole-image temp buffer making a DRAM round trip between the passes. The ring is also what
+	// lets the pair write two store streams safely: into cold full-size temp, the interleaved streams defeat the
+	// prefetch that hides each line's ownership read (measured ~1.2 cycles per temp byte, and software prefetch
+	// does not recover it) - the ring is rewritten every few rows and stays cache-owned.
+	// Bands are independent: each computes every temp row its windows need, so neighbors re-do the shared boundary
+	// rows rather than hand them off.
+	// yWeights.startOffset must be the plain source row index - the ring decides the actual location.
+	template <size_t Channels>
+	IMAGE_PROCESSING_SIMD_TARGET void resizeRows4BytePixelsSimd(
+		const ImageView<true>& source,
+		Rect srcRect,
+		ImageView<false>& dest,
+		const AxisWeights& xWeights,
+		const AxisWeights& yWeights,
+		uint8_t pixelTailValue,
+		uint64_t destRowBegin,
+		uint64_t destRowEnd)
+	{
+		static_assert(Channels == 3 || Channels == 4);
+		assert(destRowBegin < destRowEnd);
+
+		const size_t destWidth = static_cast<size_t>(dest.width);
+		const size_t tempRowStride = destWidth * Channels;
+
+		// Ring capacity: while writing dest row dy, production has reached at most one row past dy's window
+		// (pair production), and end-trimming lets a later window start slightly before an earlier one - so
+		// measure each window's end against the earliest start any not-yet-written row still needs.
+		uint64_t firstNeededRow = UINT64_MAX;
+		size_t ringRows = 0;
+		for (uint64_t dy = destRowEnd; dy-- > destRowBegin;)
+		{
+			const auto run = yWeights.runFor(dy);
+			firstNeededRow = std::min(firstNeededRow, static_cast<uint64_t>(run.startOffset));
+			ringRows = std::max(ringRows, run.startOffset + run.weights.size() + 1 - static_cast<size_t>(firstNeededRow));
+		}
+
+		const auto ring = std::make_unique_for_overwrite<float[]>(ringRows * tempRowStride);
+		const auto ringRow = [&ring, ringRows, tempRowStride](uint64_t srcRow) noexcept
+		{
+			return ring.get() + static_cast<size_t>(srcRow % ringRows) * tempRowStride;
+		};
+
+		uint64_t produced = firstNeededRow;
+		for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
+		{
+			const auto [firstWindowRow, rowWeights] = yWeights.runFor(dy);
+			const uint64_t windowEnd = firstWindowRow + rowWeights.size();
+			assert(windowEnd <= srcRect.h);
+
+			while (produced < windowEnd)
+			{
+				if (produced + 2 <= srcRect.h)
+				{
+					const uint8_t* const srcRows[2] = {
+						source.scanLine<uint8_t>(srcRect.top + produced) + srcRect.left * 4,
+						source.scanLine<uint8_t>(srcRect.top + produced + 1) + srcRect.left * 4 };
+					float* const tempRows[2] = { ringRow(produced), ringRow(produced + 1) };
+					filterHorizontalRowGroup<Channels>(srcRows, tempRows, destWidth, xWeights);
+					produced += 2;
+				}
+				else
+				{
+					const uint8_t* const srcRows[1] = { source.scanLine<uint8_t>(srcRect.top + produced) + srcRect.left * 4 };
+					float* const tempRows[1] = { ringRow(produced) };
+					filterHorizontalRowGroup<Channels>(srcRows, tempRows, destWidth, xWeights);
+					++produced;
+				}
+			}
+
+			// The window is contiguous in the ring except across the wrap, which splits it at most once
+			assert(produced - firstWindowRow <= ringRows);
+			const size_t firstSlot = static_cast<size_t>(firstWindowRow % ringRows);
+			const size_t rowsToRingEnd = std::min(rowWeights.size(), ringRows - firstSlot);
+			const TempRowSegment segments[2] = {
+				{ ring.get() + firstSlot * tempRowStride, rowsToRingEnd },
+				{ ring.get(), rowWeights.size() - rowsToRingEnd } };
+
+			filterVerticalDestRow<Channels>(segments, rowWeights, tempRowStride, pixelTailValue, dest.scanLine<uint8_t>(dy), destWidth);
+		}
 
 		SimdSupport::clearAvxUpperState();
 	}
 
-	template void filterHorizontal4BytePixelsSimd<3>(float*, size_t, const ImageView<true>&, Rect, uint64_t, const AxisWeights&, uint64_t, uint64_t);
-	template void filterHorizontal4BytePixelsSimd<4>(float*, size_t, const ImageView<true>&, Rect, uint64_t, const AxisWeights&, uint64_t, uint64_t);
-	template void filterVerticalRowsSimd<3>(const AxisWeights&, const float*, ImageView<false>&, uint8_t, uint64_t, uint64_t);
-	template void filterVerticalRowsSimd<4>(const AxisWeights&, const float*, ImageView<false>&, uint8_t, uint64_t, uint64_t);
+	template void resizeRows4BytePixelsSimd<3>(const ImageView<true>&, Rect, ImageView<false>&, const AxisWeights&, const AxisWeights&, uint8_t, uint64_t, uint64_t);
+	template void resizeRows4BytePixelsSimd<4>(const ImageView<true>&, Rect, ImageView<false>&, const AxisWeights&, const AxisWeights&, uint8_t, uint64_t, uint64_t);
 }
 
 #endif

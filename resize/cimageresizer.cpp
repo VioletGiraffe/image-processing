@@ -308,6 +308,12 @@ namespace
 		const size_t tempPixelStride = Channels;
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * tempPixelStride;
 
+		bool useSimd = false;
+#if IMAGE_PROCESSING_SIMD
+		if constexpr (PixelStride == 4 && (Channels == 3 || Channels == 4))
+			useSimd = SimdSupport::canUseSimd();
+#endif
+
 		const auto xWeights = scaleUpX
 			? buildAxisWeights<BicubicKernel>(srcRect.w, dest.width, [](uint64_t sx) noexcept -> size_t
 			{
@@ -318,40 +324,18 @@ namespace
 				return static_cast<size_t>(sx) * PixelStride;
 			});
 
+		// The fused SIMD path locates temp rows through its ring, so its y offsets are plain row indices;
+		// the scalar two-pass path indexes the dense temp buffer directly, so the row stride folds in.
+		const size_t yOffsetStride = useSimd ? 1 : tempRowStride;
 		const auto yWeights = scaleUpY
-			? buildAxisWeights<BicubicKernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
+			? buildAxisWeights<BicubicKernel>(srcRect.h, dest.height, [yOffsetStride](uint64_t sy) noexcept -> size_t
 			{
-				return static_cast<size_t>(sy) * tempRowStride;
+				return static_cast<size_t>(sy) * yOffsetStride;
 			})
-			: buildAxisWeights<Lanczos3Kernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
+			: buildAxisWeights<Lanczos3Kernel>(srcRect.h, dest.height, [yOffsetStride](uint64_t sy) noexcept -> size_t
 			{
-				return static_cast<size_t>(sy) * tempRowStride;
+				return static_cast<size_t>(sy) * yOffsetStride;
 			});
-
-		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
-
-		bool useSimd = false;
-#if IMAGE_PROCESSING_SIMD
-		if constexpr (PixelStride == 4 && (Channels == 3 || Channels == 4))
-		{
-			useSimd = SimdSupport::canUseSimd();
-			if (useSimd)
-			{
-				forEachRowBand(threadPool, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
-				{
-					filterHorizontal4BytePixelsSimd<Channels>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
-				});
-			}
-		}
-#endif
-
-		if (!useSimd)
-		{
-			forEachRowBand(threadPool, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
-			{
-				filterHorizontalRows<Channels, PixelStride>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
-			});
-		}
 
 #if IMAGE_PROCESSING_SIMD
 		if constexpr (PixelStride == 4 && (Channels == 3 || Channels == 4))
@@ -359,14 +343,23 @@ namespace
 			if (useSimd)
 			{
 				const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
-				forEachRowBand(threadPool, dest.height, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+				// A fused row's work includes producing its share of temp rows, srcRect.h / dest.height of them
+				const size_t fusedElementsPerRow = tempRowStride + tempRowStride * static_cast<size_t>(srcRect.h) / static_cast<size_t>(dest.height);
+				forEachRowBand(threadPool, dest.height, fusedElementsPerRow, [&](uint64_t rowBegin, uint64_t rowEnd)
 				{
-					filterVerticalRowsSimd<Channels>(yWeights, temp.get(), dest, pixelTailSource[3], rowBegin, rowEnd);
+					resizeRows4BytePixelsSimd<Channels>(source, srcRect, dest, xWeights, yWeights, pixelTailSource[3], rowBegin, rowEnd);
 				});
 				return;
 			}
 		}
 #endif
+
+		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
+
+		forEachRowBand(threadPool, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+		{
+			filterHorizontalRows<Channels, PixelStride>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
+		});
 
 		const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
 		// Capture-default: pixelTailSource is unused when the pixel has no tail bytes, and an explicit capture would then be diagnosed

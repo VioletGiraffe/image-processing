@@ -12,9 +12,10 @@
 namespace ImageProcessing::Detail
 {
 	// One destination coordinate's filter: weights for a contiguous run of source pixels (x axis) or rows (y axis).
-	// startOffset locates the run's first source element - bytes into a row for x, float elements into the temp
-	// buffer for y - and weights[i] applies to the i-th consecutive element after it: border clamping is folded
-	// into the boundary weights at build time, and interior zero weights are kept, so runs have no gaps.
+	// startOffset locates the run's first source element in whatever unit the builder's offset callback chose
+	// (bytes into a row for x; a temp float offset or a plain row index for y), and weights[i] applies to the
+	// i-th consecutive element after it: border clamping is folded into the boundary weights at build time, and
+	// interior zero weights are kept, so runs have no gaps.
 	struct TapRun
 	{
 		size_t startOffset;
@@ -52,24 +53,17 @@ namespace ImageProcessing::Detail
 	// the upper YMM state dirty, which any AVX-using host does. GCC and Clang get that from the target attribute.
 	// The attribute also forbids inlining into the non-AVX2 dispatcher, keeping the runtime check in control of
 	// whether these ever execute.
+	// Resizes dest rows [destRowBegin, destRowEnd) in one fused pass over a ring of temp rows.
+	// yWeights.startOffset must be the plain source row index, not a buffer offset.
 	template <size_t Channels>
-	IMAGE_PROCESSING_SIMD_TARGET void filterHorizontal4BytePixelsSimd(
-		float* temp,
-		size_t tempRowStride,
+	IMAGE_PROCESSING_SIMD_TARGET void resizeRows4BytePixelsSimd(
 		const ImageView<true>& source,
 		Rect srcRect,
-		uint64_t destWidth,
-		const AxisWeights& xWeights,
-		uint64_t rowBegin,
-		uint64_t rowEnd);
-
-	template <size_t Channels>
-	IMAGE_PROCESSING_SIMD_TARGET void filterVerticalRowsSimd(
-		const AxisWeights& yWeights,
-		const float* temp,
 		ImageView<false>& dest,
+		const AxisWeights& xWeights,
+		const AxisWeights& yWeights,
 		uint8_t pixelTailValue,
-		uint64_t rowBegin,
-		uint64_t rowEnd);
+		uint64_t destRowBegin,
+		uint64_t destRowEnd);
 #endif
 }
