@@ -26,6 +26,10 @@ def build_report(results):
             continue
 
         scenario = name[len(RESIZER_PREFIX):]
+        # The reused-dest variant is a continuity anchor for old runs; it excludes allocation, so a QImage ratio would be skewed
+        if scenario.endswith(" [reused dest]"):
+            continue
+
         # Parallel-resize benchmarks share the QImage control of their serial counterpart
         control_scenario = scenario.removesuffix(" [multithreaded]")
         matching_controls = [(prefix, results[prefix + control_scenario]) for prefix in CONTROL_PREFIXES if prefix + control_scenario in results]

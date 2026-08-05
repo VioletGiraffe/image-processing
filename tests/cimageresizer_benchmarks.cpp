@@ -110,7 +110,8 @@ namespace
 		uint8_t channels,
 		uint8_t pixelStrideBytes,
 		QImage::Format qImageFormat,
-		CWorkerThreadPool* threadPool = nullptr)
+		CWorkerThreadPool* threadPool = nullptr,
+		bool addReusedDestVariant = false)
 	{
 		BenchmarkImage source(sourceWidth, sourceHeight, channels, pixelStrideBytes);
 		fillPhotoLikeContent(source);
@@ -124,20 +125,44 @@ namespace
 			qImageFormat);
 		REQUIRE(!qImageSource.isNull());
 
-		// The destination is reused across iterations: allocating one per iteration would time its first-touch
-		// page faults, and those neither shrink with thread count nor belong to the resize.
-		BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
-
-		BENCHMARK(std::string("CImageResizer | ") + name + (threadPool ? " [multithreaded]" : ""))
+		// The serial run of the same scenario provides the QImage control; report_benchmark_ratios.py matches it by stripping the suffix
+		if (threadPool)
 		{
+			// The destination is reused across iterations: allocating one per iteration would time its
+			// first-touch page faults, and those neither shrink with thread count nor belong to the resize.
+			BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
+
+			BENCHMARK(std::string("CImageResizer | ") + name + " [multithreaded]")
+			{
+				auto destView = dest.mutableView();
+				ImageProcessing::resize(destView, sourceView, {}, threadPool);
+				return dest.data[dest.dataSize / 2];
+			};
+			return;
+		}
+
+		// The QImage controls below allocate their destination inside the timed call with no way to exclude it,
+		// so the serial resize pays destination allocation and first touch as well to keep the ratios fair.
+		BENCHMARK(std::string("CImageResizer | ") + name)
+		{
+			BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
 			auto destView = dest.mutableView();
-			ImageProcessing::resize(destView, sourceView, {}, threadPool);
+			ImageProcessing::resize(destView, sourceView, {}, nullptr);
 			return dest.data[dest.dataSize / 2];
 		};
 
-		// The serial run of the same scenario provides the QImage control; report_benchmark_ratios.py matches it by stripping the suffix
-		if (threadPool)
-			return;
+		if (addReusedDestVariant)
+		{
+			// Continuity anchor: measures like runs recorded before the serial set included the allocation
+			BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
+
+			BENCHMARK(std::string("CImageResizer | ") + name + " [reused dest]")
+			{
+				auto destView = dest.mutableView();
+				ImageProcessing::resize(destView, sourceView, {}, nullptr);
+				return dest.data[dest.dataSize / 2];
+			};
+		}
 
 		if (sourceWidth == destWidth && sourceHeight == destHeight)
 		{
@@ -165,9 +190,10 @@ namespace
 TEST_CASE("Common display resize scenarios", "[!benchmark][resize]")
 {
 	benchmarkResize("24 MP photo to 1080p viewport - RGB32", 6000, 4000, 1620, 1080, 3, 4, QImage::Format_RGB32);
-	benchmarkResize("4K image to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32);
+	benchmarkResize("4K image to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32, nullptr, true);
 	benchmarkResize("720p image to 1080p - RGB32", 1280, 720, 1920, 1080, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("1080p image to 1440p - RGB32", 1920, 1080, 2560, 1440, 3, 4, QImage::Format_RGB32);
+	benchmarkResize("1080p to 240p thumbnail - RGB32", 1920, 1080, 426, 240, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("1080p image at native size - RGB32", 1920, 1080, 1920, 1080, 3, 4, QImage::Format_RGB32);
 }
 
@@ -204,6 +230,7 @@ TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 	benchmarkResize("4K image to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("720p image to 1080p - RGB32", 1280, 720, 1920, 1080, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("1080p image to 1440p - RGB32", 1920, 1080, 2560, 1440, 3, 4, QImage::Format_RGB32, &pool);
+	benchmarkResize("1080p to 240p thumbnail - RGB32", 1920, 1080, 426, 240, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("4K image to 64x64 - RGB32", 3840, 2160, 64, 64, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("64x64 image to 4K - RGB32", 64, 64, 3840, 2160, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("101 MP photo to 720p - RGB32", 11608, 8708, 1280, 720, 3, 4, QImage::Format_RGB32, &pool);
