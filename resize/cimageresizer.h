@@ -37,6 +37,13 @@ namespace ImageProcessing
 		uint64_t w = 0, h = 0;
 	};
 
+	enum class ResizeKernel : uint8_t
+	{
+		Auto, // Catmull-Rom when upscaling, Lanczos3 when downscaling, chosen per axis
+		CatmullRom,
+		Lanczos3,
+	};
+
 	// threadPool, when given, parallelizes the work across the pool's workers and the calling thread; the call still blocks until done.
-	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, CWorkerThreadPool* threadPool = nullptr);
+	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, CWorkerThreadPool* threadPool = nullptr, ResizeKernel kernel = ResizeKernel::Auto);
 }

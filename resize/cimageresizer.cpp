@@ -10,6 +10,7 @@
 #include <memory>
 #include <numbers>
 #include <string.h>
+#include <utility>
 #include <vector>
 
 using namespace ImageProcessing;
@@ -189,6 +190,19 @@ namespace
 		return result;
 	}
 
+	template <class OffsetBuilder>
+	[[nodiscard]] inline AxisWeights buildAxisWeightsForKernel(ResizeKernel kernel, bool scaleUp, uint64_t srcSize, uint64_t dstSize, OffsetBuilder&& offsetBuilder)
+	{
+		if (kernel == ResizeKernel::Auto)
+			kernel = scaleUp ? ResizeKernel::CatmullRom : ResizeKernel::Lanczos3;
+
+		if (kernel == ResizeKernel::Lanczos3)
+			return buildAxisWeights<Lanczos3Kernel>(srcSize, dstSize, std::forward<OffsetBuilder>(offsetBuilder));
+
+		assert(kernel == ResizeKernel::CatmullRom);
+		return buildAxisWeights<BicubicKernel>(srcSize, dstSize, std::forward<OffsetBuilder>(offsetBuilder));
+	}
+
 	inline void copyPixelTail(uint8_t* destPixel, const uint8_t* sourcePixel, size_t channels, size_t pixelStride) noexcept
 	{
 		// Bytes outside the logical channels can still carry pixel-format invariants, such as RGB32's required 0xff byte.
@@ -281,7 +295,7 @@ namespace
 	}
 
 	template <size_t Channels, size_t PixelStride>
-	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool)
+	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool, ResizeKernel kernel)
 	{
 		static_assert(Channels >= 1);
 		static_assert(PixelStride >= Channels);
@@ -314,28 +328,18 @@ namespace
 			useSimd = SimdSupport::canUseSimd();
 #endif
 
-		const auto xWeights = scaleUpX
-			? buildAxisWeights<BicubicKernel>(srcRect.w, dest.width, [](uint64_t sx) noexcept -> size_t
-			{
-				return static_cast<size_t>(sx) * PixelStride;
-			})
-			: buildAxisWeights<Lanczos3Kernel>(srcRect.w, dest.width, [](uint64_t sx) noexcept -> size_t
-			{
-				return static_cast<size_t>(sx) * PixelStride;
-			});
+		const auto xWeights = buildAxisWeightsForKernel(kernel, scaleUpX, srcRect.w, dest.width, [](uint64_t sx) noexcept -> size_t
+		{
+			return static_cast<size_t>(sx) * PixelStride;
+		});
 
 		// The fused SIMD path locates temp rows through its ring, so its y offsets are plain row indices;
 		// the scalar two-pass path indexes the dense temp buffer directly, so the row stride folds in.
 		const size_t yOffsetStride = useSimd ? 1 : tempRowStride;
-		const auto yWeights = scaleUpY
-			? buildAxisWeights<BicubicKernel>(srcRect.h, dest.height, [yOffsetStride](uint64_t sy) noexcept -> size_t
-			{
-				return static_cast<size_t>(sy) * yOffsetStride;
-			})
-			: buildAxisWeights<Lanczos3Kernel>(srcRect.h, dest.height, [yOffsetStride](uint64_t sy) noexcept -> size_t
-			{
-				return static_cast<size_t>(sy) * yOffsetStride;
-			});
+		const auto yWeights = buildAxisWeightsForKernel(kernel, scaleUpY, srcRect.h, dest.height, [yOffsetStride](uint64_t sy) noexcept -> size_t
+		{
+			return static_cast<size_t>(sy) * yOffsetStride;
+		});
 
 #if IMAGE_PROCESSING_SIMD
 		if constexpr (PixelStride == 4 && (Channels == 3 || Channels == 4))
@@ -386,7 +390,7 @@ namespace
 		});
 	}
 
-	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool)
+	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool, ResizeKernel kernel)
 	{
 		assert(source.width > 0 && source.height > 0);
 		assert(dest.width > 0 && dest.height > 0);
@@ -409,25 +413,15 @@ namespace
 		const size_t numChannels = dest.channels;
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * numChannels;
 
-		const auto xWeights = scaleUpX
-			? buildAxisWeights<BicubicKernel>(srcRect.w, dest.width, [pixelStride](uint64_t sx) noexcept -> size_t
-			{
-				return static_cast<size_t>(sx) * pixelStride;
-			})
-			: buildAxisWeights<Lanczos3Kernel>(srcRect.w, dest.width, [pixelStride](uint64_t sx) noexcept -> size_t
-			{
-				return static_cast<size_t>(sx) * pixelStride;
-			});
+		const auto xWeights = buildAxisWeightsForKernel(kernel, scaleUpX, srcRect.w, dest.width, [pixelStride](uint64_t sx) noexcept -> size_t
+		{
+			return static_cast<size_t>(sx) * pixelStride;
+		});
 
-		const auto yWeights = scaleUpY
-			? buildAxisWeights<BicubicKernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
-			{
-				return static_cast<size_t>(sy) * tempRowStride;
-			})
-			: buildAxisWeights<Lanczos3Kernel>(srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
-			{
-				return static_cast<size_t>(sy) * tempRowStride;
-			});
+		const auto yWeights = buildAxisWeightsForKernel(kernel, scaleUpY, srcRect.h, dest.height, [tempRowStride](uint64_t sy) noexcept -> size_t
+		{
+			return static_cast<size_t>(sy) * tempRowStride;
+		});
 
 		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
 
@@ -482,52 +476,52 @@ namespace
 	}
 
 	template <size_t Channels>
-	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool)
+	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool, ResizeKernel kernel)
 	{
 		switch (source.pixelStrideBytes)
 		{
 		case 1:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 1>(dest, source, srcRect, threadPool);
+				resizeImpl<1, 1>(dest, source, srcRect, threadPool, kernel);
 			else
-				resizeImplRuntime(dest, source, srcRect, threadPool);
+				resizeImplRuntime(dest, source, srcRect, threadPool, kernel);
 			return;
 
 		case 2:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 2>(dest, source, srcRect, threadPool);
+				resizeImpl<1, 2>(dest, source, srcRect, threadPool, kernel);
 			else
-				resizeImplRuntime(dest, source, srcRect, threadPool);
+				resizeImplRuntime(dest, source, srcRect, threadPool, kernel);
 			return;
 
 		case 3:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 3>(dest, source, srcRect, threadPool);
+				resizeImpl<1, 3>(dest, source, srcRect, threadPool, kernel);
 			else if constexpr (Channels == 3)
-				resizeImpl<3, 3>(dest, source, srcRect, threadPool);
+				resizeImpl<3, 3>(dest, source, srcRect, threadPool, kernel);
 			else
-				resizeImplRuntime(dest, source, srcRect, threadPool);
+				resizeImplRuntime(dest, source, srcRect, threadPool, kernel);
 			return;
 
 		case 4:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 4>(dest, source, srcRect, threadPool);
+				resizeImpl<1, 4>(dest, source, srcRect, threadPool, kernel);
 			else if constexpr (Channels == 3)
-				resizeImpl<3, 4>(dest, source, srcRect, threadPool);
+				resizeImpl<3, 4>(dest, source, srcRect, threadPool, kernel);
 			else if constexpr (Channels == 4)
-				resizeImpl<4, 4>(dest, source, srcRect, threadPool);
+				resizeImpl<4, 4>(dest, source, srcRect, threadPool, kernel);
 			else
-				resizeImplRuntime(dest, source, srcRect, threadPool);
+				resizeImplRuntime(dest, source, srcRect, threadPool, kernel);
 			return;
 
 		default:
-			resizeImplRuntime(dest, source, srcRect, threadPool);
+			resizeImplRuntime(dest, source, srcRect, threadPool, kernel);
 			return;
 		}
 	}
 }
 
-void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool)
+void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool, ResizeKernel kernel)
 {
 	assert(source.width > 0 && source.height > 0);
 	assert(dest.width > 0 && dest.height > 0);
@@ -567,9 +561,9 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 
 	switch (source.channels)
 	{
-	case 1: resizeDispatchStride<1>(dest, source, srcRect, threadPool); return;
-	case 3: resizeDispatchStride<3>(dest, source, srcRect, threadPool); return;
-	case 4: resizeDispatchStride<4>(dest, source, srcRect, threadPool); return;
-	default: resizeImplRuntime(dest, source, srcRect, threadPool); return;
+	case 1: resizeDispatchStride<1>(dest, source, srcRect, threadPool, kernel); return;
+	case 3: resizeDispatchStride<3>(dest, source, srcRect, threadPool, kernel); return;
+	case 4: resizeDispatchStride<4>(dest, source, srcRect, threadPool, kernel); return;
+	default: resizeImplRuntime(dest, source, srcRect, threadPool, kernel); return;
 	}
 }
