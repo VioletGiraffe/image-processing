@@ -8,7 +8,7 @@ RESTORE_COMPILER_WARNINGS
 
 #include <vector>
 
-class CWorkerThreadPool;
+class CThreadPool;
 
 struct ImplementationResult
 {
@@ -29,7 +29,7 @@ struct ComparisonInput
 	// and measure the results against the original - the one resize comparison with an objective reference.
 	bool roundTrip = false;
 	int timingRuns = 5;
-	CWorkerThreadPool* threadPool = nullptr; // null = single-threaded
+	CThreadPool* threadPool = nullptr; // null = single-threaded
 };
 
 struct ComparisonOutput

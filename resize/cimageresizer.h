@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <type_traits>
 
-class CWorkerThreadPool;
+class CThreadPool;
 
 namespace ImageProcessing
 {
@@ -45,5 +45,5 @@ namespace ImageProcessing
 	};
 
 	// threadPool, when given, parallelizes the work across the pool's workers and the calling thread; the call still blocks until done.
-	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, CWorkerThreadPool* threadPool = nullptr, ResizeKernel kernel = ResizeKernel::Auto);
+	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, CThreadPool* threadPool = nullptr, ResizeKernel kernel = ResizeKernel::Auto);
 }

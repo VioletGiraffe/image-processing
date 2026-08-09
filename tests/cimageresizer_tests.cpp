@@ -1,7 +1,7 @@
 #include "3rdparty/catch2/catch.hpp"
 #include "resize/cimageresizer.h"
 
-#include "threading/cworkerthread.h"
+#include "threading/cthreadpool.h"
 
 #include <algorithm>
 #include <cmath>
@@ -59,7 +59,7 @@ namespace
 		std::vector<uint8_t> data;
 	};
 
-	void resize(TestImage& dest, const TestImage& source, Rect sourceRect = {}, CWorkerThreadPool* threadPool = nullptr)
+	void resize(TestImage& dest, const TestImage& source, Rect sourceRect = {}, CThreadPool* threadPool = nullptr)
 	{
 		auto destView = dest.mutableView();
 		const auto sourceView = source.constView();
@@ -1002,7 +1002,7 @@ TEST_CASE("Seeded randomized small images preserve resize properties", "[resize]
 
 TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading]")
 {
-	CWorkerThreadPool pool(4, "Resize test pool");
+	CThreadPool pool(4, "Resize test pool");
 	std::mt19937 randomEngine(20260801);
 
 	for (const auto [channels, pixelStride] : pixelLayouts)

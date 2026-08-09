@@ -1,7 +1,7 @@
 #include "3rdparty/catch2/catch.hpp"
 #include "resize/cimageresizer.h"
 
-#include "threading/cworkerthread.h"
+#include "threading/cthreadpool.h"
 
 #include <QImage>
 
@@ -110,7 +110,7 @@ namespace
 		uint8_t channels,
 		uint8_t pixelStrideBytes,
 		QImage::Format qImageFormat,
-		CWorkerThreadPool* threadPool = nullptr,
+		CThreadPool* threadPool = nullptr,
 		bool addReusedDestVariant = false)
 	{
 		BenchmarkImage source(sourceWidth, sourceHeight, channels, pixelStrideBytes);
@@ -221,7 +221,7 @@ TEST_CASE("Very large image downscale", "[!benchmark][resize]")
 TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 {
 	// The resizer bands by pool size, so the pool follows the machine: a fixed count would oversubscribe a small runner.
-	CWorkerThreadPool pool(std::max(std::thread::hardware_concurrency(), 2u) - 1, "Resize benchmark pool");
+	CThreadPool pool(std::max(std::thread::hardware_concurrency(), 2u) - 1, "Resize benchmark pool");
 	pool.waitUntilStarted();
 	// The scenario names carry no thread count, to keep them comparable across machines
 	std::cout << "Parallel resize benchmarks: " << pool.maxWorkersCount() + 1 << " executors\n";

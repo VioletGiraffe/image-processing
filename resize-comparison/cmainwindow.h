@@ -1,7 +1,7 @@
 #pragma once
 
 #include "comparisonengine.h"
-#include "threading/cworkerthread.h"
+#include "threading/cthreadpool.h"
 
 DISABLE_COMPILER_WARNINGS
 #include <QMainWindow>
@@ -49,7 +49,7 @@ private:
 	void connectViewerSync(CPixelViewerWidget* viewer);
 
 private:
-	CWorkerThreadPool _threadPool;
+	CThreadPool _threadPool;
 
 	QImage _source; // canonical format
 	QString _sourceName;

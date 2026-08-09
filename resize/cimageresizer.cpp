@@ -1,6 +1,6 @@
 #include "resize_internal.h"
 
-#include "threading/cworkerthread.h"
+#include "threading/cthreadpool.h"
 
 #include <algorithm>
 #include <array>
@@ -21,7 +21,7 @@ namespace
 	// Runs worker(rowBegin, rowEnd) over [0, rowCount) split into contiguous bands: on the pool when the total
 	// work justifies the dispatch overhead, serially otherwise (or when no pool is given). Blocks until done.
 	template <class Worker>
-	void forEachRowBand(CWorkerThreadPool* threadPool, uint64_t rowCount, size_t elementsPerRow, Worker&& worker)
+	void forEachRowBand(CThreadPool* threadPool, uint64_t rowCount, size_t elementsPerRow, Worker&& worker)
 	{
 		constexpr uint64_t minElementsPerBand = 32 * 1024;
 		// The band count bounds the concurrency (helpers + the calling thread never outnumber the bands)
@@ -295,7 +295,7 @@ namespace
 	}
 
 	template <size_t Channels, size_t PixelStride>
-	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool, ResizeKernel kernel)
+	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CThreadPool* threadPool, ResizeKernel kernel)
 	{
 		static_assert(Channels >= 1);
 		static_assert(PixelStride >= Channels);
@@ -390,7 +390,7 @@ namespace
 		});
 	}
 
-	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool, ResizeKernel kernel)
+	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CThreadPool* threadPool, ResizeKernel kernel)
 	{
 		assert(source.width > 0 && source.height > 0);
 		assert(dest.width > 0 && dest.height > 0);
@@ -476,7 +476,7 @@ namespace
 	}
 
 	template <size_t Channels>
-	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool, ResizeKernel kernel)
+	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CThreadPool* threadPool, ResizeKernel kernel)
 	{
 		switch (source.pixelStrideBytes)
 		{
@@ -521,7 +521,7 @@ namespace
 	}
 }
 
-void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CWorkerThreadPool* threadPool, ResizeKernel kernel)
+void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CThreadPool* threadPool, ResizeKernel kernel)
 {
 	assert(source.width > 0 && source.height > 0);
 	assert(dest.width > 0 && dest.height > 0);

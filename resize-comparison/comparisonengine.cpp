@@ -14,7 +14,7 @@ namespace
 {
 	using ImageProcessing::ResizeKernel;
 
-	[[nodiscard]] QImage resizeWithOurs(const QImage& src, QSize target, CWorkerThreadPool* threadPool, ResizeKernel kernel)
+	[[nodiscard]] QImage resizeWithOurs(const QImage& src, QSize target, CThreadPool* threadPool, ResizeKernel kernel)
 	{
 		QImage dst{ target, src.format() };
 		const auto srcView = constView(src);
@@ -41,7 +41,7 @@ ComparisonOutput runComparison(const ComparisonInput& input)
 	}
 
 	const QImage& src = output.effectiveSource;
-	CWorkerThreadPool* const pool = input.threadPool;
+	CThreadPool* const pool = input.threadPool;
 
 	struct Implementation
 	{
