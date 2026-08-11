@@ -1,10 +1,9 @@
 #pragma once
 
+#include <functional>
 #include <stddef.h>
 #include <stdint.h>
 #include <type_traits>
-
-class CThreadPool;
 
 namespace ImageProcessing
 {
@@ -44,6 +43,9 @@ namespace ImageProcessing
 		Lanczos3,
 	};
 
-	// threadPool, when given, parallelizes the work across the pool's workers and the calling thread; the call still blocks until done.
-	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, CThreadPool* threadPool = nullptr, ResizeKernel kernel = ResizeKernel::Auto);
+	// The callback must run body(0) .. body(count - 1) concurrently and must not return until all of them have completed.
+	// When empty, the work runs on the calling thread; either way resize() returns only once the destination is complete.
+	using ParallelForFn = std::function<void(size_t count, const std::function<void(size_t index)>& body)>;
+
+	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, const ParallelForFn& parallelFor = {}, ResizeKernel kernel = ResizeKernel::Auto);
 }

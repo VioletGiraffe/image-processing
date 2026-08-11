@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <numbers>
@@ -63,7 +64,12 @@ namespace
 	{
 		auto destView = dest.mutableView();
 		const auto sourceView = source.constView();
-		ImageProcessing::resize(destView, sourceView, sourceRect, threadPool);
+
+		ImageProcessing::ParallelForFn parallelFor;
+		if (threadPool)
+			parallelFor = [threadPool](size_t count, const std::function<void(size_t)>& body) { threadPool->parallelFor(count, body); };
+
+		ImageProcessing::resize(destView, sourceView, sourceRect, parallelFor);
 	}
 
 	void setPixel(TestImage& image, uint64_t x, uint64_t y, std::initializer_list<uint8_t> values)

@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <numbers>
@@ -131,11 +132,15 @@ namespace
 			// The destination is reused across iterations: allocating one per iteration would time its
 			// first-touch page faults, and those neither shrink with thread count nor belong to the resize.
 			BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
+			const ImageProcessing::ParallelForFn parallelFor = [threadPool](size_t count, const std::function<void(size_t)>& body)
+			{
+				threadPool->parallelFor(count, body);
+			};
 
 			BENCHMARK(std::string("CImageResizer | ") + name + " [multithreaded]")
 			{
 				auto destView = dest.mutableView();
-				ImageProcessing::resize(destView, sourceView, {}, threadPool);
+				ImageProcessing::resize(destView, sourceView, {}, parallelFor);
 				return dest.data[dest.dataSize / 2];
 			};
 			return;
@@ -147,7 +152,7 @@ namespace
 		{
 			BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
 			auto destView = dest.mutableView();
-			ImageProcessing::resize(destView, sourceView, {}, nullptr);
+			ImageProcessing::resize(destView, sourceView);
 			return dest.data[dest.dataSize / 2];
 		};
 
@@ -159,7 +164,7 @@ namespace
 			BENCHMARK(std::string("CImageResizer | ") + name + " [reused dest]")
 			{
 				auto destView = dest.mutableView();
-				ImageProcessing::resize(destView, sourceView, {}, nullptr);
+				ImageProcessing::resize(destView, sourceView);
 				return dest.data[dest.dataSize / 2];
 			};
 		}
@@ -220,7 +225,6 @@ TEST_CASE("Very large image downscale", "[!benchmark][resize]")
 
 TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 {
-	// The resizer bands by pool size, so the pool follows the machine: a fixed count would oversubscribe a small runner.
 	CThreadPool pool(std::max(std::thread::hardware_concurrency(), 2u) - 1, "Resize benchmark pool");
 	pool.waitUntilStarted();
 	// The scenario names carry no thread count, to keep them comparable across machines

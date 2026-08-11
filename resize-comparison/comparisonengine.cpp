@@ -2,6 +2,8 @@
 #include "imagemetrics.h"
 #include "qimageviewutils.h"
 
+#include "threading/cthreadpool.h"
+
 DISABLE_COMPILER_WARNINGS
 #include <QElapsedTimer>
 RESTORE_COMPILER_WARNINGS
@@ -14,24 +16,28 @@ namespace
 {
 	using ImageProcessing::ResizeKernel;
 
-	[[nodiscard]] QImage resizeWithOurs(const QImage& src, QSize target, CThreadPool* threadPool, ResizeKernel kernel)
+	[[nodiscard]] QImage resizeWithOurs(const QImage& src, QSize target, const ImageProcessing::ParallelForFn& parallelFor, ResizeKernel kernel)
 	{
 		QImage dst{ target, src.format() };
 		const auto srcView = constView(src);
 		auto dstView = mutableView(dst);
-		ImageProcessing::resize(dstView, srcView, {}, threadPool, kernel);
+		ImageProcessing::resize(dstView, srcView, {}, parallelFor, kernel);
 		return dst;
 	}
 }
 
 ComparisonOutput runComparison(const ComparisonInput& input)
 {
+	ImageProcessing::ParallelForFn parallelFor;
+	if (input.threadPool)
+		parallelFor = [pool = input.threadPool](size_t count, const std::function<void(size_t)>& body) { pool->parallelFor(count, body); };
+
 	ComparisonOutput output;
 	QSize outputSize;
 	if (input.roundTrip)
 	{
 		output.groundTruth = input.source;
-		output.effectiveSource = resizeWithOurs(input.source, input.targetSize, input.threadPool, ResizeKernel::Lanczos3);
+		output.effectiveSource = resizeWithOurs(input.source, input.targetSize, parallelFor, ResizeKernel::Lanczos3);
 		outputSize = input.source.size();
 	}
 	else
@@ -41,7 +47,6 @@ ComparisonOutput runComparison(const ComparisonInput& input)
 	}
 
 	const QImage& src = output.effectiveSource;
-	CThreadPool* const pool = input.threadPool;
 
 	struct Implementation
 	{
@@ -50,9 +55,9 @@ ComparisonOutput runComparison(const ComparisonInput& input)
 	};
 
 	const Implementation implementations[] = {
-		{ QStringLiteral("Ours: auto"), [&] { return resizeWithOurs(src, outputSize, pool, ResizeKernel::Auto); } },
-		{ QStringLiteral("Ours: Catmull-Rom"), [&] { return resizeWithOurs(src, outputSize, pool, ResizeKernel::CatmullRom); } },
-		{ QStringLiteral("Ours: Lanczos3"), [&] { return resizeWithOurs(src, outputSize, pool, ResizeKernel::Lanczos3); } },
+		{ QStringLiteral("Ours: auto"), [&] { return resizeWithOurs(src, outputSize, parallelFor, ResizeKernel::Auto); } },
+		{ QStringLiteral("Ours: Catmull-Rom"), [&] { return resizeWithOurs(src, outputSize, parallelFor, ResizeKernel::CatmullRom); } },
+		{ QStringLiteral("Ours: Lanczos3"), [&] { return resizeWithOurs(src, outputSize, parallelFor, ResizeKernel::Lanczos3); } },
 		{ QStringLiteral("Qt smooth"), [&] { return src.scaled(outputSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation); } },
 		{ QStringLiteral("Qt fast"), [&] { return src.scaled(outputSize, Qt::IgnoreAspectRatio, Qt::FastTransformation); } },
 	};

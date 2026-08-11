@@ -1,7 +1,5 @@
 #include "resize_internal.h"
 
-#include "threading/cthreadpool.h"
-
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -18,16 +16,16 @@ using namespace ImageProcessing::Detail;
 
 namespace
 {
-	// Runs worker(rowBegin, rowEnd) over [0, rowCount) split into contiguous bands: on the pool when the total
-	// work justifies the dispatch overhead, serially otherwise (or when no pool is given). Blocks until done.
+	// Runs worker(rowBegin, rowEnd) over [0, rowCount) split into contiguous bands: through the callback when the
+	// total work justifies the dispatch overhead, serially otherwise (or with no callback). Blocks until done.
 	template <class Worker>
-	void forEachRowBand(CThreadPool* threadPool, uint64_t rowCount, size_t elementsPerRow, Worker&& worker)
+	void forEachRowBand(const ParallelForFn& parallelFor, uint64_t rowCount, size_t elementsPerRow, Worker&& worker)
 	{
 		constexpr uint64_t minElementsPerBand = 32 * 1024;
-		// The band count bounds the concurrency (helpers + the calling thread never outnumber the bands)
+		// The band count bounds the concurrency: the executors can never outnumber the bands
 		constexpr uint64_t maxExecutors = 4;
 		uint64_t bandCount = 1;
-		if (threadPool)
+		if (parallelFor)
 			bandCount = std::min({ rowCount, rowCount * elementsPerRow / minElementsPerBand, maxExecutors });
 
 		if (bandCount <= 1)
@@ -36,7 +34,7 @@ namespace
 			return;
 		}
 
-		threadPool->parallelFor(bandCount, [&](size_t band)
+		parallelFor(bandCount, [&](size_t band)
 			{
 				worker(rowCount * band / bandCount, rowCount * (band + 1) / bandCount);
 			});
@@ -295,7 +293,7 @@ namespace
 	}
 
 	template <size_t Channels, size_t PixelStride>
-	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CThreadPool* threadPool, ResizeKernel kernel)
+	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel)
 	{
 		static_assert(Channels >= 1);
 		static_assert(PixelStride >= Channels);
@@ -349,7 +347,7 @@ namespace
 				const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
 				// A fused row's work includes producing its share of temp rows, srcRect.h / dest.height of them
 				const size_t fusedElementsPerRow = tempRowStride + tempRowStride * static_cast<size_t>(srcRect.h) / static_cast<size_t>(dest.height);
-				forEachRowBand(threadPool, dest.height, fusedElementsPerRow, [&](uint64_t rowBegin, uint64_t rowEnd)
+				forEachRowBand(parallelFor, dest.height, fusedElementsPerRow, [&](uint64_t rowBegin, uint64_t rowEnd)
 				{
 					resizeRows4BytePixelsSimd<Channels>(source, srcRect, dest, xWeights, yWeights, pixelTailSource[3], rowBegin, rowEnd);
 				});
@@ -360,7 +358,7 @@ namespace
 
 		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
 
-		forEachRowBand(threadPool, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+		forEachRowBand(parallelFor, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
 		{
 			filterHorizontalRows<Channels, PixelStride>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
 		});
@@ -384,13 +382,13 @@ namespace
 				}
 			};
 
-		forEachRowBand(threadPool, dest.height, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+		forEachRowBand(parallelFor, dest.height, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
 		{
 			filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, rowBegin, rowEnd, writeRow);
 		});
 	}
 
-	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CThreadPool* threadPool, ResizeKernel kernel)
+	void resizeImplRuntime(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel)
 	{
 		assert(source.width > 0 && source.height > 0);
 		assert(dest.width > 0 && dest.height > 0);
@@ -425,7 +423,7 @@ namespace
 
 		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
 
-		forEachRowBand(threadPool, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+		forEachRowBand(parallelFor, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
 		{
 			for (uint64_t ty = rowBegin; ty < rowEnd; ++ty)
 			{
@@ -469,59 +467,59 @@ namespace
 			}
 		};
 
-		forEachRowBand(threadPool, dest.height, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
+		forEachRowBand(parallelFor, dest.height, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
 		{
 			filterVerticalRowsScalar(yWeights, temp.get(), tempRowStride, rowBegin, rowEnd, writeRow);
 		});
 	}
 
 	template <size_t Channels>
-	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CThreadPool* threadPool, ResizeKernel kernel)
+	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel)
 	{
 		switch (source.pixelStrideBytes)
 		{
 		case 1:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 1>(dest, source, srcRect, threadPool, kernel);
+				resizeImpl<1, 1>(dest, source, srcRect, parallelFor, kernel);
 			else
-				resizeImplRuntime(dest, source, srcRect, threadPool, kernel);
+				resizeImplRuntime(dest, source, srcRect, parallelFor, kernel);
 			return;
 
 		case 2:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 2>(dest, source, srcRect, threadPool, kernel);
+				resizeImpl<1, 2>(dest, source, srcRect, parallelFor, kernel);
 			else
-				resizeImplRuntime(dest, source, srcRect, threadPool, kernel);
+				resizeImplRuntime(dest, source, srcRect, parallelFor, kernel);
 			return;
 
 		case 3:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 3>(dest, source, srcRect, threadPool, kernel);
+				resizeImpl<1, 3>(dest, source, srcRect, parallelFor, kernel);
 			else if constexpr (Channels == 3)
-				resizeImpl<3, 3>(dest, source, srcRect, threadPool, kernel);
+				resizeImpl<3, 3>(dest, source, srcRect, parallelFor, kernel);
 			else
-				resizeImplRuntime(dest, source, srcRect, threadPool, kernel);
+				resizeImplRuntime(dest, source, srcRect, parallelFor, kernel);
 			return;
 
 		case 4:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 4>(dest, source, srcRect, threadPool, kernel);
+				resizeImpl<1, 4>(dest, source, srcRect, parallelFor, kernel);
 			else if constexpr (Channels == 3)
-				resizeImpl<3, 4>(dest, source, srcRect, threadPool, kernel);
+				resizeImpl<3, 4>(dest, source, srcRect, parallelFor, kernel);
 			else if constexpr (Channels == 4)
-				resizeImpl<4, 4>(dest, source, srcRect, threadPool, kernel);
+				resizeImpl<4, 4>(dest, source, srcRect, parallelFor, kernel);
 			else
-				resizeImplRuntime(dest, source, srcRect, threadPool, kernel);
+				resizeImplRuntime(dest, source, srcRect, parallelFor, kernel);
 			return;
 
 		default:
-			resizeImplRuntime(dest, source, srcRect, threadPool, kernel);
+			resizeImplRuntime(dest, source, srcRect, parallelFor, kernel);
 			return;
 		}
 	}
 }
 
-void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, CThreadPool* threadPool, ResizeKernel kernel)
+void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel)
 {
 	assert(source.width > 0 && source.height > 0);
 	assert(dest.width > 0 && dest.height > 0);
@@ -561,9 +559,9 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 
 	switch (source.channels)
 	{
-	case 1: resizeDispatchStride<1>(dest, source, srcRect, threadPool, kernel); return;
-	case 3: resizeDispatchStride<3>(dest, source, srcRect, threadPool, kernel); return;
-	case 4: resizeDispatchStride<4>(dest, source, srcRect, threadPool, kernel); return;
-	default: resizeImplRuntime(dest, source, srcRect, threadPool, kernel); return;
+	case 1: resizeDispatchStride<1>(dest, source, srcRect, parallelFor, kernel); return;
+	case 3: resizeDispatchStride<3>(dest, source, srcRect, parallelFor, kernel); return;
+	case 4: resizeDispatchStride<4>(dest, source, srcRect, parallelFor, kernel); return;
+	default: resizeImplRuntime(dest, source, srcRect, parallelFor, kernel); return;
 	}
 }

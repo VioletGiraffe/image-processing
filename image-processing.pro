@@ -8,7 +8,6 @@ CONFIG += strict_c++
 include(../global.pri)
 
 INCLUDEPATH += \
-	../cpputils \
 	../cpp-template-utils
 
 mac* | linux* | freebsd{
