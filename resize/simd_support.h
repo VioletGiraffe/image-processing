@@ -28,8 +28,8 @@
 #endif
 
 #if IMAGE_PROCESSING_SIMD
-	// Angle brackets are load-bearing: resize.pri puts 3rdparty on the external/system include path, which is
-	// what exempts SIMDe from our warning settings. A quoted relative path resolves before that path is searched.
+	// Angle brackets are load-bearing under GCC and Clang: resize.pri puts 3rdparty on the system include path,
+	// which is what exempts SIMDe from our warning settings, and a quoted relative path resolves before it.
 	#include <simde/x86/avx2.h>
 	#include <simde/x86/fma.h>
 #endif

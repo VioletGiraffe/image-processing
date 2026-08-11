@@ -6,11 +6,11 @@ HEADERS += \
 SOURCES += \
 	$$PWD/cimageresizer.cpp
 
-# SIMDe does not compile clean under our warning settings - notably an __int128 typedef it leaves unguarded,
-# which -pedantic-errors turns into a build failure - so its root goes on the external/system include path.
-# MSVC's flags ride with WARN_ON because /Wn resets the external warning level: /external:W0 must follow /W4.
+# SIMDe's root is on no consumer's include path, so it is added here. GCC and Clang need it as a system path:
+# an unguarded __int128 typedef in SIMDe is a build failure under -pedantic-errors. MSVC compiles it clean, and
+# the /external:W0 that its equivalent needs costs a D9025 on every cl invocation.
 SIMDE_INCLUDE_ROOT = $$clean_path($$PWD/../3rdparty)
-*msvc*: QMAKE_CXXFLAGS_WARN_ON += /external:W0 /external:I $$shell_quote($$SIMDE_INCLUDE_ROOT)
+*msvc*: INCLUDEPATH += $$SIMDE_INCLUDE_ROOT
 else: QMAKE_CXXFLAGS += -isystem $$shell_quote($$SIMDE_INCLUDE_ROOT)
 
 # The SIMD kernels need every intrinsic VEX-encoded, the 128-bit ones included: a legacy SSE encoding stalls for
