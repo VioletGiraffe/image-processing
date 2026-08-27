@@ -1,5 +1,6 @@
 HEADERS += \
 	$$PWD/cimageresizer.h \
+	$$PWD/qimage_resize.h \
 	$$PWD/resize_internal.h \
 	$$PWD/simd_support.h
 
