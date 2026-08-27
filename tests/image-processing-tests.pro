@@ -53,6 +53,7 @@ SOURCES += \
 	main.cpp \
 	cimageresizer_benchmarks.cpp \
 	cimageresizer_tests.cpp \
+	qimage_resize_tests.cpp \
 	$${PWD}/../../cpputils/threading/cthreadpool.cpp \
 	$${PWD}/../../cpputils/threading/thread_helpers.cpp \
 	$${PWD}/../../cpputils/assert/advanced_assert.cpp

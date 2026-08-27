@@ -21,23 +21,29 @@ namespace ImageProcessing
 		view.width = static_cast<uint64_t>(image.width());
 		view.height = static_cast<uint64_t>(image.height());
 
-		const auto format = image.format();
-
-		switch (format)
+		// pixelStrideBytes is the format's whole pixel size: RGB32 and RGBX64 pad theirs beyond the channels they expose.
+		switch (image.format())
 		{
 		case QImage::Format_Grayscale8: [[fallthrough]];
 		case QImage::Format_Indexed8:
 			view.channels = 1;
 			view.bytesPerChannel = 1;
+			view.pixelStrideBytes = 1;
 			break;
 		case QImage::Format_Grayscale16:
 			view.channels = 1;
 			view.bytesPerChannel = 2;
+			view.pixelStrideBytes = 2;
 			break;
-		case QImage::Format_RGB888: [[fallthrough]];
+		case QImage::Format_RGB888:
+			view.channels = 3;
+			view.bytesPerChannel = 1;
+			view.pixelStrideBytes = 3;
+			break;
 		case QImage::Format_RGB32:
 			view.channels = 3;
 			view.bytesPerChannel = 1;
+			view.pixelStrideBytes = 4;
 			break;
 		case QImage::Format_ARGB32: [[fallthrough]];
 		case QImage::Format_ARGB32_Premultiplied: [[fallthrough]];
@@ -45,25 +51,23 @@ namespace ImageProcessing
 		case QImage::Format_RGBA8888_Premultiplied:
 			view.channels = 4;
 			view.bytesPerChannel = 1;
+			view.pixelStrideBytes = 4;
 			break;
 		case QImage::Format_RGBA64:
 			view.channels = 4;
 			view.bytesPerChannel = 2;
+			view.pixelStrideBytes = 8;
 			break;
 		case QImage::Format_RGBX64:
 			view.channels = 3;
 			view.bytesPerChannel = 2;
+			view.pixelStrideBytes = 8;
 			break;
 		default:
 			view.data = nullptr;
 			view.width = view.height = 0;
 			return view;
 		}
-
-		if (format == QImage::Format_RGB32)
-			view.pixelStrideBytes = 4;
-		else
-			view.pixelStrideBytes = view.channels * view.bytesPerChannel;
 
 		view.bytesPerLine = static_cast<size_t>(image.bytesPerLine());
 
