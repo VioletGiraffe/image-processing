@@ -53,7 +53,7 @@ jobs:
       run: |
         clang --version
         $QT_ROOT_DIR/bin/qmake image-processing-tests.pro -config release CONFIG+=release
-        make -j4
+        make -j$(sysctl -n hw.ncpu)
 
     - name: Build tests on Linux
       if: startsWith(matrix.os, 'ubuntu')
