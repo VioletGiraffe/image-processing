@@ -38,14 +38,15 @@ jobs:
         git clone --depth 1 https://github.com/VioletGiraffe/cpp-template-utils ../cpp-template-utils
         git clone --depth 1 https://github.com/VioletGiraffe/cpputils ../cpputils
 
+    # cmd's exit status is the last command's, so every command fails the step itself
     - name: Build tests on Windows
       if: startsWith(matrix.os, 'windows')
       shell: cmd
       working-directory: tests
       run: |
         %QT_ROOT_DIR%\bin\qmake.exe -v
-        %QT_ROOT_DIR%\bin\qmake.exe -tp vc image-processing-tests.pro
-        msbuild image-processing-tests.vcxproj /t:Build /p:Configuration=Release
+        %QT_ROOT_DIR%\bin\qmake.exe -tp vc image-processing-tests.pro || exit /b 1
+        msbuild image-processing-tests.vcxproj /t:Build /p:Configuration=Release || exit /b 1
 
     - name: Build tests on macOS
       if: startsWith(matrix.os, 'macos')
