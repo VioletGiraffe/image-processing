@@ -22,7 +22,7 @@ DESTDIR = $$PWD/bin/$${OUTPUT_DIR}
 OBJECTS_DIR = $$PWD/build/$${OUTPUT_DIR}
 
 win* {
-	QMAKE_CXXFLAGS += /MP /Zi /FS /std:c++latest /permissive- /Zc:__cplusplus
+	QMAKE_CXXFLAGS += /MP /Zi /FS /std:c++latest /permissive- /Zc:__cplusplus /utf-8
 	QMAKE_CXXFLAGS_WARN_ON = /W4
 	DEFINES += WIN32_LEAN_AND_MEAN NOMINMAX
 
@@ -33,7 +33,6 @@ win* {
 
 linux* | mac* | freebsd {
 	QMAKE_CXXFLAGS += -std=c++2b
-	QMAKE_CXXFLAGS_WARN_ON = -Wall
 	# See the same flag in ../image-processing.pro
 	*-g++*:QMAKE_CXXFLAGS += -Wno-psabi
 }
