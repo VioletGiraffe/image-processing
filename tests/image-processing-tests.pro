@@ -33,10 +33,11 @@ win* {
 
 linux* | mac* | freebsd {
 	# See the same flag in ../image-processing.pro
-	*-g++*:QMAKE_CXXFLAGS += -Wno-psabi
+	*-g++*:QMAKE_CXXFLAGS_WARN_ON += -Wno-psabi
 }
 
 macx {
+	# Qt 6.9 headers use ARM ACLE intrinsics without including arm_acle.h
 	contains(QMAKE_HOST.arch, arm64)|contains(QMAKE_APPLE_DEVICE_ARCHS, arm64) {
 		QMAKE_CXXFLAGS += -include arm_acle.h
 	}
