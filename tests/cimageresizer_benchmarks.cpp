@@ -8,7 +8,9 @@ RESTORE_COMPILER_WARNINGS
 
 #include "threading/cthreadpool.h"
 
+DISABLE_COMPILER_WARNINGS
 #include <QImage>
+RESTORE_COMPILER_WARNINGS
 
 #include <algorithm>
 #include <bit>

@@ -6,8 +6,10 @@ RESTORE_COMPILER_WARNINGS
 
 #include "resize/qimage_resize.h"
 
+DISABLE_COMPILER_WARNINGS
 #include <QColor>
 #include <QImage>
+RESTORE_COMPILER_WARNINGS
 
 #include <cstddef>
 #include <cstdint>

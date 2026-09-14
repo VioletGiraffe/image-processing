@@ -4,8 +4,12 @@
 
 #include "cimageresizer.h"
 
+#include "compiler/compiler_warnings_control.h"
+
+DISABLE_COMPILER_WARNINGS
 #include <QImage>
 #include <QRect>
+RESTORE_COMPILER_WARNINGS
 
 #include <assert.h>
 #include <stdint.h>
