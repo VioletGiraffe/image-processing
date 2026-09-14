@@ -31,7 +31,6 @@ win* {
 }
 
 linux* | mac* | freebsd {
-	QMAKE_CXXFLAGS += -std=c++2b
 	# See the same flag in ../image-processing.pro
 	*-g++*:QMAKE_CXXFLAGS += -Wno-psabi
 }
