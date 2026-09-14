@@ -1,5 +1,7 @@
 #include "resize_internal.h"
 
+#include "compiler/compiler_warnings_control.h"
+
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -10,6 +12,9 @@
 #include <string.h>
 #include <utility>
 #include <vector>
+
+// The float equality tests are exact-zero checks by design
+DISABLE_CLANG_GCC_WARNING("-Wfloat-equal")
 
 using namespace ImageProcessing;
 using namespace ImageProcessing::Detail;
@@ -160,14 +165,14 @@ namespace
 				result.weights.push_back(static_cast<float>(foldedWeights[i]));
 				// Summing the stored floats rather than the doubles makes the normalization below cancel their
 				// rounding, so a row of equal pixels still resolves to exactly that value.
-				sum += result.weights.back();
+				sum += static_cast<double>(result.weights.back());
 			}
 
 			if (sum != 0.0) [[likely]]
 			{
 				const double invSum = 1.0 / sum;
 				for (size_t i = firstWeight; i < result.weights.size(); ++i)
-					result.weights[i] = static_cast<float>(result.weights[i] * invSum);
+					result.weights[i] = static_cast<float>(static_cast<double>(result.weights[i]) * invSum);
 			}
 			else
 			{

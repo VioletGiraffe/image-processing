@@ -1,5 +1,7 @@
 #include "resize_internal.h"
 
+#include "compiler/compiler_warnings_control.h"
+
 #include <array>
 #include <assert.h>
 #include <bit>
@@ -7,6 +9,11 @@
 #include <cstdint>
 #include <memory>
 #include <string.h>
+
+// The float equality tests are exact-zero checks by design
+DISABLE_CLANG_GCC_WARNING("-Wfloat-equal")
+// The loadu/storeu intrinsics take unaligned memory through __m128i pointers
+DISABLE_CLANG_GCC_WARNING("-Wcast-align")
 
 #if IMAGE_PROCESSING_SIMD
 
