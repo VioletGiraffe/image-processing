@@ -32,9 +32,7 @@
 #if IMAGE_PROCESSING_SIMD
 	// Angle brackets are load-bearing under GCC and Clang: SIMDe must come from the system include path resize.pri sets, and a quoted relative path resolves first.
 	// The system path does not cover warnings GCC emits for SIMDe code inlined into ours.
-	// -Wmaybe-uninitialized is listed separately: -Wextra enables it too.
 	DISABLE_COMPILER_WARNINGS
-	DISABLE_GCC_WARNING("-Wmaybe-uninitialized")
 	#include <simde/x86/avx2.h>
 	#include <simde/x86/fma.h>
 	RESTORE_COMPILER_WARNINGS
