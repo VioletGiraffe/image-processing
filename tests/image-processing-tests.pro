@@ -47,7 +47,8 @@ macx {
 INCLUDEPATH += \
 	$$PWD/.. \
 	$$PWD/../../cpputils \
-	$$PWD/../../cpp-template-utils
+	$$PWD/../../cpp-template-utils \
+	$$PWD/../../qtutils # Header-only use: catch_qt.hpp
 
 SOURCES += \
 	main.cpp \
