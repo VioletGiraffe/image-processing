@@ -34,6 +34,7 @@ win* {
 linux* | mac* | freebsd {
 	# See the same flag in ../image-processing.pro
 	*-g++*:QMAKE_CXXFLAGS_WARN_ON += -Wno-psabi
+	*-g++*:QMAKE_CXXFLAGS_WARN_ON += -Wno-maybe-uninitialized # False positives on std::optional and std::expected
 }
 
 macx {
