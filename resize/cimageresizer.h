@@ -43,9 +43,16 @@ namespace ImageProcessing
 		Lanczos3,
 	};
 
+	enum class SimdUsage : uint8_t
+	{
+		Auto, // The SIMD kernels wherever the CPU supports them
+		Disabled,
+	};
+
 	// The callback must run body(0) .. body(count - 1) concurrently and must not return until all of them have completed.
 	// When empty, the work runs on the calling thread; either way resize() returns only once the destination is complete.
 	using ParallelForFn = std::function<void(size_t count, const std::function<void(size_t index)>& body)>;
 
-	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, const ParallelForFn& parallelFor = {}, ResizeKernel kernel = ResizeKernel::Auto);
+	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, const ParallelForFn& parallelFor = {},
+		ResizeKernel kernel = ResizeKernel::Auto, SimdUsage simd = SimdUsage::Auto);
 }

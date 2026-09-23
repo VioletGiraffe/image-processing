@@ -23,10 +23,12 @@ RESTORE_COMPILER_WARNINGS
 #include <numbers>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace
 {
 	using ImageProcessing::ImageView;
+	using ImageProcessing::SimdUsage;
 
 	struct BenchmarkImage
 	{
@@ -133,6 +135,16 @@ namespace
 			qImageFormat);
 		REQUIRE(!qImageSource.isNull());
 
+		// Only the 4-byte layouts have SIMD kernels, and an unscaled copy runs neither path.
+		// report_benchmark_ratios.py matches a scalar run to its SIMD run by the scenario name.
+		std::vector<SimdUsage> simdUsages{ SimdUsage::Auto };
+		if (pixelStrideBytes == 4 && channels >= 3 && (sourceWidth != destWidth || sourceHeight != destHeight))
+			simdUsages.push_back(SimdUsage::Disabled);
+
+		const auto resizerName = [name](SimdUsage simd) {
+			return std::string(simd == SimdUsage::Disabled ? "CImageResizer [scalar] | " : "CImageResizer | ") + name;
+		};
+
 		// The serial run of the same scenario provides the QImage control; report_benchmark_ratios.py matches it by stripping the suffix
 		if (threadPool)
 		{
@@ -144,24 +156,30 @@ namespace
 				threadPool->parallelFor(count, body);
 			};
 
-			BENCHMARK(std::string("CImageResizer | ") + name + " [multithreaded]")
+			for (const SimdUsage simd : simdUsages)
 			{
-				auto destView = dest.mutableView();
-				ImageProcessing::resize(destView, sourceView, {}, parallelFor);
-				return dest.data[dest.dataSize / 2];
-			};
+				BENCHMARK(resizerName(simd) + " [multithreaded]")
+				{
+					auto destView = dest.mutableView();
+					ImageProcessing::resize(destView, sourceView, {}, parallelFor, ImageProcessing::ResizeKernel::Auto, simd);
+					return dest.data[dest.dataSize / 2];
+				};
+			}
 			return;
 		}
 
 		// The QImage controls below allocate their destination inside the timed call with no way to exclude it,
 		// so the serial resize pays destination allocation and first touch as well to keep the ratios fair.
-		BENCHMARK(std::string("CImageResizer | ") + name)
+		for (const SimdUsage simd : simdUsages)
 		{
-			BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
-			auto destView = dest.mutableView();
-			ImageProcessing::resize(destView, sourceView);
-			return dest.data[dest.dataSize / 2];
-		};
+			BENCHMARK(resizerName(simd))
+			{
+				BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
+				auto destView = dest.mutableView();
+				ImageProcessing::resize(destView, sourceView, {}, {}, ImageProcessing::ResizeKernel::Auto, simd);
+				return dest.data[dest.dataSize / 2];
+			};
+		}
 
 		if (addReusedDestVariant)
 		{

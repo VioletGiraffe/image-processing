@@ -298,7 +298,7 @@ namespace
 	}
 
 	template <size_t Channels, size_t PixelStride>
-	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel)
+	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, [[maybe_unused]] SimdUsage simd)
 	{
 		static_assert(Channels >= 1);
 		static_assert(PixelStride >= Channels);
@@ -328,7 +328,7 @@ namespace
 		bool useSimd = false;
 #if IMAGE_PROCESSING_SIMD
 		if constexpr (PixelStride == 4 && (Channels == 3 || Channels == 4))
-			useSimd = SimdSupport::canUseSimd();
+			useSimd = simd == SimdUsage::Auto && SimdSupport::canUseSimd();
 #endif
 
 		const auto xWeights = buildAxisWeightsForKernel(kernel, scaleUpX, srcRect.w, dest.width, [](uint64_t sx) noexcept -> size_t
@@ -479,40 +479,40 @@ namespace
 	}
 
 	template <size_t Channels>
-	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel)
+	inline void resizeDispatchStride(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, SimdUsage simd)
 	{
 		switch (source.pixelStrideBytes)
 		{
 		case 1:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 1>(dest, source, srcRect, parallelFor, kernel);
+				resizeImpl<1, 1>(dest, source, srcRect, parallelFor, kernel, simd);
 			else
 				resizeImplRuntime(dest, source, srcRect, parallelFor, kernel);
 			return;
 
 		case 2:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 2>(dest, source, srcRect, parallelFor, kernel);
+				resizeImpl<1, 2>(dest, source, srcRect, parallelFor, kernel, simd);
 			else
 				resizeImplRuntime(dest, source, srcRect, parallelFor, kernel);
 			return;
 
 		case 3:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 3>(dest, source, srcRect, parallelFor, kernel);
+				resizeImpl<1, 3>(dest, source, srcRect, parallelFor, kernel, simd);
 			else if constexpr (Channels == 3)
-				resizeImpl<3, 3>(dest, source, srcRect, parallelFor, kernel);
+				resizeImpl<3, 3>(dest, source, srcRect, parallelFor, kernel, simd);
 			else
 				resizeImplRuntime(dest, source, srcRect, parallelFor, kernel);
 			return;
 
 		case 4:
 			if constexpr (Channels == 1)
-				resizeImpl<1, 4>(dest, source, srcRect, parallelFor, kernel);
+				resizeImpl<1, 4>(dest, source, srcRect, parallelFor, kernel, simd);
 			else if constexpr (Channels == 3)
-				resizeImpl<3, 4>(dest, source, srcRect, parallelFor, kernel);
+				resizeImpl<3, 4>(dest, source, srcRect, parallelFor, kernel, simd);
 			else if constexpr (Channels == 4)
-				resizeImpl<4, 4>(dest, source, srcRect, parallelFor, kernel);
+				resizeImpl<4, 4>(dest, source, srcRect, parallelFor, kernel, simd);
 			else
 				resizeImplRuntime(dest, source, srcRect, parallelFor, kernel);
 			return;
@@ -524,7 +524,7 @@ namespace
 	}
 }
 
-void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel)
+void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, SimdUsage simd)
 {
 	assert(source.width > 0 && source.height > 0);
 	assert(dest.width > 0 && dest.height > 0);
@@ -564,9 +564,9 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 
 	switch (source.channels)
 	{
-	case 1: resizeDispatchStride<1>(dest, source, srcRect, parallelFor, kernel); return;
-	case 3: resizeDispatchStride<3>(dest, source, srcRect, parallelFor, kernel); return;
-	case 4: resizeDispatchStride<4>(dest, source, srcRect, parallelFor, kernel); return;
+	case 1: resizeDispatchStride<1>(dest, source, srcRect, parallelFor, kernel, simd); return;
+	case 3: resizeDispatchStride<3>(dest, source, srcRect, parallelFor, kernel, simd); return;
+	case 4: resizeDispatchStride<4>(dest, source, srcRect, parallelFor, kernel, simd); return;
 	default: resizeImplRuntime(dest, source, srcRect, parallelFor, kernel); return;
 	}
 }

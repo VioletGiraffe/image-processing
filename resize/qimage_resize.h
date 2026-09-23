@@ -87,7 +87,8 @@ namespace ImageProcessing
 
 	// False when either format has no view: the caller picks the fallback, QImage::scaled typically.
 	// dest arrives at the target size; an empty srcRect means the whole source.
-	[[nodiscard]] inline bool resize(QImage& dest, const QImage& source, const QRect& srcRect = {}, const ParallelForFn& parallelFor = {}, ResizeKernel kernel = ResizeKernel::Auto)
+	[[nodiscard]] inline bool resize(QImage& dest, const QImage& source, const QRect& srcRect = {}, const ParallelForFn& parallelFor = {},
+		ResizeKernel kernel = ResizeKernel::Auto, SimdUsage simd = SimdUsage::Auto)
 	{
 		assert(srcRect.isEmpty() || source.rect().contains(srcRect));
 
@@ -106,7 +107,7 @@ namespace ImageProcessing
 			static_cast<uint64_t>(srcRect.height())
 		};
 
-		resize(destView, sourceView, rect, parallelFor, kernel);
+		resize(destView, sourceView, rect, parallelFor, kernel, simd);
 		return true;
 	}
 }

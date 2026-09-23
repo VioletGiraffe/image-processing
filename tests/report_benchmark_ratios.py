@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 RESIZER_PREFIX = "CImageResizer | "
+SCALAR_RESIZER_PREFIX = "CImageResizer [scalar] | "
 CONTROL_PREFIXES = ("QImage::scaled | ", "QImage::copy | ")
 
 
@@ -40,7 +41,10 @@ def build_report(results):
         if control_ns <= 0.0:
             raise RuntimeError(f"QImage control reported a non-positive duration for: {scenario}")
 
-        rows.append((scenario, resizer_ns / 1_000_000.0, control_prefix.removesuffix(" | "), control_ns / 1_000_000.0, resizer_ns / control_ns))
+        # Only scenarios that reach the SIMD kernels have a scalar run
+        scalar_ns = results.get(SCALAR_RESIZER_PREFIX + scenario)
+        scalar_cells = f"{scalar_ns / 1_000_000.0:.3f} | {scalar_ns / resizer_ns:.2f}x" if scalar_ns is not None else " | "
+        rows.append((scenario, resizer_ns / 1_000_000.0, control_prefix.removesuffix(" | "), control_ns / 1_000_000.0, resizer_ns / control_ns, scalar_cells))
 
     if not rows:
         raise RuntimeError("No CImageResizer benchmark results found")
@@ -48,13 +52,13 @@ def build_report(results):
     lines = [
         "## Image resizer benchmark ratios",
         "",
-        "Lower is better; ratios use measurements from this job only.",
+        "Lower is better, except SIMD speedup (scalar / SIMD time); ratios use measurements from this job only.",
         "",
-        "| Scenario | CImageResizer (ms) | Control | Control (ms) | Resizer / control |",
-        "|---|---:|---|---:|---:|",
+        "| Scenario | CImageResizer (ms) | Control | Control (ms) | Resizer / control | Scalar (ms) | SIMD speedup |",
+        "|---|---:|---|---:|---:|---:|---:|",
     ]
-    for scenario, resizer_ms, control, control_ms, ratio in rows:
-        lines.append(f"| {scenario} | {resizer_ms:.3f} | {control} | {control_ms:.3f} | {ratio:.3f}x |")
+    for scenario, resizer_ms, control, control_ms, ratio, scalar_cells in rows:
+        lines.append(f"| {scenario} | {resizer_ms:.3f} | {control} | {control_ms:.3f} | {ratio:.3f}x | {scalar_cells} |")
 
     return "\n".join(lines) + "\n"
 

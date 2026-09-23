@@ -24,6 +24,7 @@ namespace
 {
 	using ImageProcessing::ImageView;
 	using ImageProcessing::Rect;
+	using ImageProcessing::SimdUsage;
 
 	struct TestImage
 	{
@@ -65,7 +66,7 @@ namespace
 		std::vector<uint8_t> data;
 	};
 
-	void resize(TestImage& dest, const TestImage& source, Rect sourceRect = {}, CThreadPool* threadPool = nullptr)
+	void resize(TestImage& dest, const TestImage& source, Rect sourceRect = {}, CThreadPool* threadPool = nullptr, SimdUsage simd = SimdUsage::Auto)
 	{
 		auto destView = dest.mutableView();
 		const auto sourceView = source.constView();
@@ -74,7 +75,7 @@ namespace
 		if (threadPool)
 			parallelFor = [threadPool](size_t count, const std::function<void(size_t)>& body) { threadPool->parallelFor(count, body); };
 
-		ImageProcessing::resize(destView, sourceView, sourceRect, parallelFor);
+		ImageProcessing::resize(destView, sourceView, sourceRect, parallelFor, ImageProcessing::ResizeKernel::Auto, simd);
 	}
 
 	void setPixel(TestImage& image, uint64_t x, uint64_t y, std::initializer_list<uint8_t> values)
@@ -425,10 +426,12 @@ namespace
 		{ 640, 480, 16, 12 },
 	};
 
-	struct PixelLayout { uint8_t channels; uint8_t pixelStride; };
+	struct PixelLayout { uint8_t channels; uint8_t pixelStride; SimdUsage simd = SimdUsage::Auto; };
 
-	// 4/4 and 3/4 take the SIMD path where available, 3/3 and 1/1 the scalar one, 2/2 the runtime fallback
-	constexpr PixelLayout pixelLayouts[] = { { 4, 4 }, { 3, 4 }, { 3, 3 }, { 1, 1 }, { 2, 2 } };
+	// 4/4 and 3/4 take the SIMD path where available, and the scalar one with SIMD disabled; 3/3 and 1/1 always the scalar one, 2/2 the runtime fallback
+	constexpr PixelLayout pixelLayouts[] = {
+		{ 4, 4 }, { 3, 4 }, { 4, 4, SimdUsage::Disabled }, { 3, 4, SimdUsage::Disabled }, { 3, 3 }, { 1, 1 }, { 2, 2 }
+	};
 }
 
 TEST_CASE("Bicubic upscaling matches independently generated golden pixels", "[resize][bicubic][golden]")
@@ -803,9 +806,10 @@ TEST_CASE("Every pixel layout and geometry matches a direct double-precision ref
 {
 	std::mt19937 randomEngine(20260802);
 
-	for (const auto [channels, pixelStride] : pixelLayouts)
+	for (const auto [channels, pixelStride, simd] : pixelLayouts)
 	{
-		CAPTURE(+channels, +pixelStride);
+		const bool simdDisabled = simd == SimdUsage::Disabled;
+		CAPTURE(+channels, +pixelStride, simdDisabled);
 		for (const ResizeJob& job : resizeJobs)
 		{
 			CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
@@ -813,7 +817,7 @@ TEST_CASE("Every pixel layout and geometry matches a direct double-precision ref
 			fillLogicalBytes(source, randomEngine);
 
 			TestImage dest(job.destWidth, job.destHeight, channels, pixelStride);
-			resize(dest, source);
+			resize(dest, source, {}, nullptr, simd);
 			requireResizeMatchesReference(dest, source);
 		}
 	}
@@ -1016,9 +1020,10 @@ TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading
 	CThreadPool pool(4, "Resize test pool");
 	std::mt19937 randomEngine(20260801);
 
-	for (const auto [channels, pixelStride] : pixelLayouts)
+	for (const auto [channels, pixelStride, simd] : pixelLayouts)
 	{
-		CAPTURE(+channels, +pixelStride);
+		const bool simdDisabled = simd == SimdUsage::Disabled;
+		CAPTURE(+channels, +pixelStride, simdDisabled);
 		for (const ResizeJob& job : resizeJobs)
 		{
 			CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
@@ -1026,14 +1031,14 @@ TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading
 			fillLogicalBytes(source, randomEngine);
 
 			TestImage serialDest(job.destWidth, job.destHeight, channels, pixelStride);
-			resize(serialDest, source);
+			resize(serialDest, source, {}, nullptr, simd);
 
 			// Repeated because a race would only manifest probabilistically; the per-pixel sweep runs only to diagnose a mismatch
 			for (int iteration = 0; iteration < 20; ++iteration)
 			{
 				CAPTURE(iteration);
 				TestImage parallelDest(job.destWidth, job.destHeight, channels, pixelStride);
-				resize(parallelDest, source, {}, &pool);
+				resize(parallelDest, source, {}, &pool, simd);
 
 				const bool identical = parallelDest.data == serialDest.data;
 				CHECK(identical);
