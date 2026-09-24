@@ -2,6 +2,7 @@
 
 #include "compiler/compiler_warnings_control.h"
 
+#include <algorithm>
 #include <array>
 #include <assert.h>
 #include <bit>
@@ -81,7 +82,6 @@ namespace ImageProcessing::Detail
 			return simde_mm_cvtepi32_ps(simde_mm_cvtepu8_epi32(simde_mm_cvtsi32_si128(packedPixel)));
 		}
 
-		// Source rows are widened once before horizontal filtering: overlapping x windows would otherwise convert each pixel once per window
 		IMAGE_PROCESSING_SIMD_INLINE void convertPixelsToFloats(const uint8_t* pixels, float* floats, size_t pixelCount) noexcept
 		{
 			size_t pixel = 0;
@@ -95,6 +95,62 @@ namespace ImageProcessing::Detail
 			for (; pixel < pixelCount; ++pixel)
 				simde_mm_storeu_ps(floats + pixel * 4, loadPixelAsFloats(pixels + pixel * 4));
 		}
+
+		// A row group's source pixels as floats, 4 per pixel, over a span that slides along the rows as the x runs advance.
+		// Each pixel is converted once: overlapping runs would otherwise convert it once per run.
+		// The span stays a few KB so that it lives in L1: whole converted rows overflow the L2 that parallel bands share.
+		template <size_t Rows>
+		struct SlidingSourceFloats
+		{
+			// Room kept behind a run's first pixel when the span slides: end-trimming lets a later run start a few pixels earlier
+			static constexpr size_t backMargin = 8;
+			// Pixels converted ahead of the current run, so that conversion runs in batches
+			static constexpr size_t conversionChunk = 64;
+
+			// A slide moves the floats still needed to the front: room for two runs keeps that to about one move per pixel
+			[[nodiscard]] static constexpr size_t capacityFor(size_t longestRun) noexcept
+			{
+				return 2 * longestRun + backMargin + conversionChunk;
+			}
+
+			// Converts whatever of pixels [first, first + count) is missing; returns the float offset of pixel first in each buffer
+			IMAGE_PROCESSING_SIMD_INLINE size_t prepareRun(size_t first, size_t count) noexcept
+			{
+				assert(count + backMargin <= capacity);
+				const size_t end = first + count;
+				if (first < base || end > base + capacity)
+				{
+					const size_t newBase = first > backMargin ? first - backMargin : 0;
+					if (newBase >= base && newBase < converted)
+					{
+						for (size_t row = 0; row < Rows; ++row)
+							::memmove(floats[row], floats[row] + (newBase - base) * 4, (converted - newBase) * 4 * sizeof(float));
+					}
+					else
+						converted = newBase; // Nothing converted is reusable: the run starts before the span or past its converted end
+
+					base = newBase;
+				}
+
+				if (end > converted)
+				{
+					const size_t convertedTarget = std::min({ std::max(end, converted + conversionChunk), base + capacity, pixelCount });
+					for (size_t row = 0; row < Rows; ++row)
+						convertPixelsToFloats(pixels[row] + converted * 4, floats[row] + (converted - base) * 4, convertedTarget - converted);
+
+					converted = convertedTarget;
+				}
+
+				return (first - base) * 4;
+			}
+
+			const uint8_t* const pixels[Rows];
+			float* const floats[Rows];
+			const size_t capacity; // In pixels
+			const size_t pixelCount;
+			size_t base = 0; // The source pixel at floats[row][0]
+			size_t converted = 0; // Pixels [base, converted) are in the buffers
+		};
 
 		template <size_t Channels>
 		IMAGE_PROCESSING_SIMD_INLINE void storeTempPixel(float* outPixel, simde__m128 accum) noexcept
@@ -116,7 +172,7 @@ namespace ImageProcessing::Detail
 		// Rows are passed as individual pointers: a pair of temp rows may straddle the ring's wrap.
 		template <size_t Channels, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalRowGroup(
-			const float* const (&srcRows)[Rows],
+			SlidingSourceFloats<Rows>& source,
 			float* const (&tempRows)[Rows],
 			uint64_t destWidth,
 			const AxisWeights& xWeights) noexcept
@@ -131,11 +187,12 @@ namespace ImageProcessing::Detail
 
 			for (uint64_t dx = 0; dx < destWidth; ++dx)
 			{
-				// The x offsets count 4 bytes per source pixel, which is also its float index in srcRows
 				const auto [srcStartOffset, weights] = xWeights.runFor(dx);
-				const float* srcPixelA = srcRows[0] + srcStartOffset;
-				[[maybe_unused]] const float* srcPixelB = srcRows[Rows - 1] + srcStartOffset;
 				const size_t tapCount = weights.size();
+				// The x offsets count 4 bytes per source pixel
+				const size_t runFloatOffset = source.prepareRun(srcStartOffset / 4, tapCount);
+				const float* srcPixelA = source.floats[0] + runFloatOffset;
+				[[maybe_unused]] const float* srcPixelB = source.floats[Rows - 1] + runFloatOffset;
 
 				// Lanes hold [even pixel | odd pixel] partial sums until the single reduction below the blocks
 				simde__m256 accumPairsA = simde_mm256_setzero_ps();
@@ -366,9 +423,14 @@ namespace ImageProcessing::Detail
 		};
 
 		const size_t srcWidth = static_cast<size_t>(srcRect.w);
-		const auto srcFloats = std::make_unique_for_overwrite<float[]>(2 * srcWidth * 4);
-		float* const srcFloatsA = srcFloats.get();
-		float* const srcFloatsB = srcFloatsA + srcWidth * 4;
+		size_t longestXRun = 0;
+		for (const TapRun& run : xWeights.runs)
+			longestXRun = std::max(longestXRun, run.weightCount);
+
+		const size_t sourceFloatsCapacity = SlidingSourceFloats<2>::capacityFor(longestXRun);
+		const auto sourceFloats = std::make_unique_for_overwrite<float[]>(2 * sourceFloatsCapacity * 4);
+		float* const sourceFloatsA = sourceFloats.get();
+		float* const sourceFloatsB = sourceFloatsA + sourceFloatsCapacity * 4;
 		const auto sourcePixels = [&source, srcRect](uint64_t srcRow) noexcept
 		{
 			return source.scanLine<uint8_t>(srcRect.top + srcRow) + srcRect.left * 4;
@@ -385,19 +447,16 @@ namespace ImageProcessing::Detail
 			{
 				if (produced + 2 <= srcRect.h)
 				{
-					convertPixelsToFloats(sourcePixels(produced), srcFloatsA, srcWidth);
-					convertPixelsToFloats(sourcePixels(produced + 1), srcFloatsB, srcWidth);
-					const float* const srcRows[2] = { srcFloatsA, srcFloatsB };
+					SlidingSourceFloats<2> sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, srcWidth };
 					float* const tempRows[2] = { ringRow(produced), ringRow(produced + 1) };
-					filterHorizontalRowGroup<Channels>(srcRows, tempRows, destWidth, xWeights);
+					filterHorizontalRowGroup<Channels>(sourceRows, tempRows, destWidth, xWeights);
 					produced += 2;
 				}
 				else
 				{
-					convertPixelsToFloats(sourcePixels(produced), srcFloatsA, srcWidth);
-					const float* const srcRows[1] = { srcFloatsA };
+					SlidingSourceFloats<1> sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, srcWidth };
 					float* const tempRows[1] = { ringRow(produced) };
-					filterHorizontalRowGroup<Channels>(srcRows, tempRows, destWidth, xWeights);
+					filterHorizontalRowGroup<Channels>(sourceRow, tempRows, destWidth, xWeights);
 					++produced;
 				}
 			}
