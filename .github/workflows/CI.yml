@@ -4,12 +4,17 @@ on: [push, pull_request, workflow_dispatch]
 
 jobs:
   test:
-    name: Build and test on ${{ matrix.os }}
+    name: Build and test on ${{ matrix.os }}${{ matrix.compiler == 'clang' && ' (Clang)' || '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
+        # The axis must exist for the include to add a job: an include that only adds a new key extends the matching job instead
+        compiler: [default]
+        include:
+          - os: ubuntu-24.04-arm
+            compiler: clang
 
     steps:
     - name: Checkout
@@ -59,7 +64,7 @@ jobs:
         make -j$(sysctl -n hw.ncpu)
 
     - name: Build tests on Linux
-      if: startsWith(matrix.os, 'ubuntu')
+      if: startsWith(matrix.os, 'ubuntu') && matrix.compiler != 'clang'
       working-directory: tests
       run: |
         sudo apt update -y
@@ -68,6 +73,17 @@ jobs:
         sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 50
         g++ --version
         $QT_ROOT_DIR/bin/qmake image-processing-tests.pro -config release CONFIG+=release
+        make -j$(nproc)
+
+    # lld links Clang's thin LTO objects without a linker plugin
+    - name: Build tests on Linux with Clang
+      if: startsWith(matrix.os, 'ubuntu') && matrix.compiler == 'clang'
+      working-directory: tests
+      run: |
+        sudo apt update -y
+        sudo apt install -qq clang lld
+        clang++ --version
+        $QT_ROOT_DIR/bin/qmake image-processing-tests.pro -spec linux-clang -config release CONFIG+=release QMAKE_LFLAGS+=-fuse-ld=lld
         make -j$(nproc)
 
     - name: Run tests on Windows
