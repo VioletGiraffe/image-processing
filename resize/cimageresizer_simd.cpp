@@ -114,10 +114,15 @@ namespace ImageProcessing::Detail
 			}
 
 			// Converts whatever of pixels [first, first + count) is missing; returns the float offset of pixel first in each buffer
-			IMAGE_PROCESSING_SIMD_INLINE size_t prepareRun(size_t first, size_t count) noexcept
+			// base and converted locate the span: pixels [base, converted) are in the buffers, and both start at 0 for a new row group.
+			// The caller keeps them in locals so that they stay in registers across the kernel's stores into the temp rows.
+			IMAGE_PROCESSING_SIMD_INLINE size_t prepareRun(size_t& base, size_t& converted, size_t first, size_t count) const noexcept
 			{
 				assert(count + backMargin <= capacity);
 				const size_t end = first + count;
+				if (first >= base && end <= converted) [[likely]]
+					return (first - base) * 4;
+
 				if (first < base || end > base + capacity)
 				{
 					const size_t newBase = first > backMargin ? first - backMargin : 0;
@@ -148,8 +153,6 @@ namespace ImageProcessing::Detail
 			float* const floats[Rows];
 			const size_t capacity; // In pixels
 			const size_t pixelCount;
-			size_t base = 0; // The source pixel at floats[row][0]
-			size_t converted = 0; // Pixels [base, converted) are in the buffers
 		};
 
 		template <size_t Channels>
@@ -172,7 +175,7 @@ namespace ImageProcessing::Detail
 		// Rows are passed as individual pointers: a pair of temp rows may straddle the ring's wrap.
 		template <size_t Channels, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalRowGroup(
-			SlidingSourceFloats<Rows>& source,
+			const SlidingSourceFloats<Rows>& source,
 			float* const (&tempRows)[Rows],
 			uint64_t destWidth,
 			const AxisWeights& xWeights) noexcept
@@ -185,14 +188,20 @@ namespace ImageProcessing::Detail
 			const simde__m256i weightSpread2 = simde_mm256_setr_epi32(4, 4, 4, 4, 5, 5, 5, 5);
 			const simde__m256i weightSpread3 = simde_mm256_setr_epi32(6, 6, 6, 6, 7, 7, 7, 7);
 
+			// Locals, not members of source: see prepareRun
+			size_t spanBase = 0;
+			size_t spanConverted = 0;
+			const float* const sourceFloatsA = source.floats[0];
+			[[maybe_unused]] const float* const sourceFloatsB = source.floats[Rows - 1];
+
 			for (uint64_t dx = 0; dx < destWidth; ++dx)
 			{
 				const auto [srcStartOffset, weights] = xWeights.runFor(dx);
 				const size_t tapCount = weights.size();
 				// The x offsets count 4 bytes per source pixel
-				const size_t runFloatOffset = source.prepareRun(srcStartOffset / 4, tapCount);
-				const float* srcPixelA = source.floats[0] + runFloatOffset;
-				[[maybe_unused]] const float* srcPixelB = source.floats[Rows - 1] + runFloatOffset;
+				const size_t runFloatOffset = source.prepareRun(spanBase, spanConverted, srcStartOffset / 4, tapCount);
+				const float* srcPixelA = sourceFloatsA + runFloatOffset;
+				[[maybe_unused]] const float* srcPixelB = sourceFloatsB + runFloatOffset;
 
 				// Lanes hold [even pixel | odd pixel] partial sums until the single reduction below the blocks
 				simde__m256 accumPairsA = simde_mm256_setzero_ps();
