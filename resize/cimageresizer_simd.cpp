@@ -105,7 +105,7 @@ namespace ImageProcessing::Detail
 			// Room kept behind a run's first pixel when the span slides: end-trimming lets a later run start a few pixels earlier
 			static constexpr size_t backMargin = 8;
 			// Pixels converted ahead of the current run, so that conversion runs in batches
-			static constexpr size_t conversionChunk = 64;
+			static constexpr size_t conversionChunk = 256;
 
 			// A slide moves the floats still needed to the front: room for two runs keeps that to about one move per pixel
 			[[nodiscard]] static constexpr size_t capacityFor(size_t longestRun) noexcept
