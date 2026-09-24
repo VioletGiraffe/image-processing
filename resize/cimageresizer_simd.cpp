@@ -88,6 +88,18 @@ namespace ImageProcessing::Detail
 			return simde_mm_cvtepi32_ps(simde_mm_cvtepu8_epi32(simde_mm_cvtsi32_si128(packedPixel)));
 		}
 
+		// The pair-broadcast [weights[0] x4 | weights[1] x4]; block holds the 8 weights around the pair, and spread selects the pair in it.
+		// x64: one vpermps of the already loaded block.
+		// Elsewhere: two broadcast loads from weights, since SIMDe emulates the 8-lane permute element by element on NEON. The unused block load drops out.
+		IMAGE_PROCESSING_SIMD_INLINE simde__m256 weightPair([[maybe_unused]] const float* weights, [[maybe_unused]] simde__m256 block, [[maybe_unused]] simde__m256i spread) noexcept
+		{
+#if IMAGE_PROCESSING_X64
+			return simde_mm256_permutevar8x32_ps(block, spread);
+#else
+			return simde_mm256_set_m128(simde_mm_set1_ps(weights[1]), simde_mm_set1_ps(weights[0]));
+#endif
+		}
+
 		template <size_t Channels>
 		IMAGE_PROCESSING_SIMD_INLINE void storeTempPixel(float* outPixel, simde__m128 accum) noexcept
 		{
@@ -153,22 +165,22 @@ namespace ImageProcessing::Detail
 						[[maybe_unused]] const uint8_t* blockPixelsB = srcPixelB + tap * 4;
 						const simde__m256 blockWeights = simde_mm256_loadu_ps(weights.data() + tap);
 
-						const simde__m256 w0 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread0);
+						const simde__m256 w0 = weightPair(weights.data() + tap, blockWeights, weightSpread0);
 						accumA0 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA), w0, accumA0);
 						if constexpr (Rows == 2)
 							accumB0 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB), w0, accumB0);
 
-						const simde__m256 w1 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread1);
+						const simde__m256 w1 = weightPair(weights.data() + tap + 2, blockWeights, weightSpread1);
 						accumA1 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA + 8), w1, accumA1);
 						if constexpr (Rows == 2)
 							accumB1 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB + 8), w1, accumB1);
 
-						const simde__m256 w2 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread2);
+						const simde__m256 w2 = weightPair(weights.data() + tap + 4, blockWeights, weightSpread2);
 						accumA2 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA + 16), w2, accumA2);
 						if constexpr (Rows == 2)
 							accumB2 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB + 16), w2, accumB2);
 
-						const simde__m256 w3 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread3);
+						const simde__m256 w3 = weightPair(weights.data() + tap + 6, blockWeights, weightSpread3);
 						accumA3 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA + 24), w3, accumA3);
 						if constexpr (Rows == 2)
 							accumB3 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB + 24), w3, accumB3);
@@ -188,8 +200,8 @@ namespace ImageProcessing::Detail
 					// memory operand then reloads, and a load wider than the store it overlaps cannot be
 					// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
 					const simde__m256 blockWeights = simde_mm256_loadu_ps(weights.data() + tap);
-					const simde__m256 w01 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread0);
-					const simde__m256 w23 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread1);
+					const simde__m256 w01 = weightPair(weights.data() + tap, blockWeights, weightSpread0);
+					const simde__m256 w23 = weightPair(weights.data() + tap + 2, blockWeights, weightSpread1);
 
 					const simde__m128i pixelBytesA = simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(srcPixelA + tap * 4));
 					const simde__m256 pixelsA01 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(pixelBytesA));
