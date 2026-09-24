@@ -38,9 +38,6 @@ linux*|mac*|freebsd{
 	QMAKE_CXXFLAGS_WARN_ON += -pedantic-errors
 	QMAKE_CFLAGS_WARN_ON += -pedantic-errors
 	QMAKE_CXXFLAGS_WARN_ON *= -Wall
-	# SIMDe's non-target-attributed inline helpers are parsed without AVX; they are always_inline'd into our
-	# target("avx2,fma") functions, and no vector type crosses a non-inlined boundary, so the ABI note is noise.
-	*-g++*:QMAKE_CXXFLAGS_WARN_ON += -Wno-psabi
 	*-g++*:QMAKE_CXXFLAGS_WARN_ON += -Wno-maybe-uninitialized # False positives on std::optional and std::expected
 
 	Release:DEFINES += NDEBUG=1

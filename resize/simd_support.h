@@ -20,22 +20,49 @@
 	#include <immintrin.h>
 	#if defined(_MSC_VER)
 		#include <intrin.h>
-		// MSVC permits AVX2/FMA intrinsics in isolated functions without enabling them for the entire translation unit.
-		#define SIMDE_X86_AVX2_NATIVE
-		#define SIMDE_X86_FMA_NATIVE
-	#else
-		// AVX2 and FMA are enabled per function, after SIMDe's translation-unit feature detection has run.
-		#define SIMDE_NATURAL_VECTOR_SIZE 256
 	#endif
+	// SIMDe uses the native intrinsics only when these are defined, and the baseline instruction set leaves them undefined.
+	// The kernels are only called once canUseSimd() has confirmed AVX2 and FMA at runtime.
+	#define SIMDE_X86_AVX2_NATIVE
+	#define SIMDE_X86_FMA_NATIVE
+#endif
+
+#if IMAGE_PROCESSING_X64 && (defined(__GNUC__) || defined(__clang__))
+	// GCC and Clang allow AVX2 intrinsics only in AVX2-enabled functions, so SIMDe's functions are compiled with AVX2 below.
+	// SIMDe's own functions are static. The standard headers it includes come first: an inline function they define inside
+	// the AVX2 region could be the copy the linker keeps for baseline callers.
+	#include <cfloat>
+	#include <cmath>
+	#include <cstddef>
+	#include <fenv.h>
+	#include <limits.h>
+	#include <stdint.h>
+	#include <stdio.h>
+	#include <stdlib.h>
+	#include <string.h>
+	#include <type_traits>
 #endif
 
 #if IMAGE_PROCESSING_SIMD
+	#if IMAGE_PROCESSING_X64 && defined(__clang__)
+		#pragma clang attribute push(__attribute__((target("avx2,fma"))), apply_to = function)
+	#elif IMAGE_PROCESSING_X64 && defined(__GNUC__)
+		#pragma GCC push_options
+		#pragma GCC target("avx2,fma")
+	#endif
+
 	// Angle brackets are load-bearing under GCC and Clang: SIMDe must come from the system include path resize.pri sets, and a quoted relative path resolves first.
 	// The system path does not cover warnings GCC emits for SIMDe code inlined into ours.
 	DISABLE_COMPILER_WARNINGS
 	#include <simde/x86/avx2.h>
 	#include <simde/x86/fma.h>
 	RESTORE_COMPILER_WARNINGS
+
+	#if IMAGE_PROCESSING_X64 && defined(__clang__)
+		#pragma clang attribute pop
+	#elif IMAGE_PROCESSING_X64 && defined(__GNUC__)
+		#pragma GCC pop_options
+	#endif
 #endif
 
 #if IMAGE_PROCESSING_X64 && (defined(__GNUC__) || defined(__clang__))
