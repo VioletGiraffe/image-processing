@@ -20,3 +20,5 @@ tests/build/
 /tests/target_wrapper.bat
 /resize-comparison/bin/
 /resize-comparison/build/
+/scripts/local-env.*
+.qmake.stash
