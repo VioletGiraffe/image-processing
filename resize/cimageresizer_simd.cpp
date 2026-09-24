@@ -74,13 +74,6 @@ namespace ImageProcessing::Detail
 			simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest + 16), pixels1);
 		}
 
-		// 8 bytes = two adjacent 4-byte pixels, zero-extended: lanes 0-3 hold the first pixel's channels, 4-7 the second's
-		IMAGE_PROCESSING_SIMD_INLINE simde__m256 loadTwoPixelsAsFloats(const uint8_t* pixels) noexcept
-		{
-			const simde__m128i bytes = simde_mm_loadl_epi64(reinterpret_cast<const simde__m128i*>(pixels));
-			return simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(bytes));
-		}
-
 		IMAGE_PROCESSING_SIMD_INLINE simde__m128 loadPixelAsFloats(const uint8_t* pixel) noexcept
 		{
 			int32_t packedPixel;
@@ -88,16 +81,19 @@ namespace ImageProcessing::Detail
 			return simde_mm_cvtepi32_ps(simde_mm_cvtepu8_epi32(simde_mm_cvtsi32_si128(packedPixel)));
 		}
 
-		// The pair-broadcast [weights[0] x4 | weights[1] x4]; block holds the 8 weights around the pair, and spread selects the pair in it.
-		// x64: one vpermps of the already loaded block.
-		// Elsewhere: two broadcast loads from weights, since SIMDe emulates the 8-lane permute element by element on NEON. The unused block load drops out.
-		IMAGE_PROCESSING_SIMD_INLINE simde__m256 weightPair([[maybe_unused]] const float* weights, [[maybe_unused]] simde__m256 block, [[maybe_unused]] simde__m256i spread) noexcept
+		// Source rows are widened once before horizontal filtering: overlapping x windows would otherwise convert each pixel once per window
+		IMAGE_PROCESSING_SIMD_INLINE void convertPixelsToFloats(const uint8_t* pixels, float* floats, size_t pixelCount) noexcept
 		{
-#if IMAGE_PROCESSING_X64
-			return simde_mm256_permutevar8x32_ps(block, spread);
-#else
-			return simde_mm256_set_m128(simde_mm_set1_ps(weights[1]), simde_mm_set1_ps(weights[0]));
-#endif
+			size_t pixel = 0;
+			for (; pixel + 4 <= pixelCount; pixel += 4)
+			{
+				const simde__m128i bytes = simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(pixels + pixel * 4));
+				simde_mm256_storeu_ps(floats + pixel * 4, simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(bytes)));
+				simde_mm256_storeu_ps(floats + pixel * 4 + 8, simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(simde_mm_unpackhi_epi64(bytes, bytes))));
+			}
+
+			for (; pixel < pixelCount; ++pixel)
+				simde_mm_storeu_ps(floats + pixel * 4, loadPixelAsFloats(pixels + pixel * 4));
 		}
 
 		template <size_t Channels>
@@ -117,10 +113,10 @@ namespace ImageProcessing::Detail
 		// depend only on the column, so paired rows share them, while each row keeps its own accumulators and
 		// its exact single-row arithmetic. Two rows is the register budget: the four spread constants plus four
 		// accumulators per row nearly fill the file, a third row would spill inside the hottest loop.
-		// Rows are passed as individual pointers: a caller may hand rows that are not adjacent in either buffer.
+		// Rows are passed as individual pointers: a pair of temp rows may straddle the ring's wrap.
 		template <size_t Channels, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalRowGroup(
-			const uint8_t* const (&srcRows)[Rows],
+			const float* const (&srcRows)[Rows],
 			float* const (&tempRows)[Rows],
 			uint64_t destWidth,
 			const AxisWeights& xWeights) noexcept
@@ -135,9 +131,10 @@ namespace ImageProcessing::Detail
 
 			for (uint64_t dx = 0; dx < destWidth; ++dx)
 			{
+				// The x offsets count 4 bytes per source pixel, which is also its float index in srcRows
 				const auto [srcStartOffset, weights] = xWeights.runFor(dx);
-				const uint8_t* srcPixelA = srcRows[0] + srcStartOffset;
-				[[maybe_unused]] const uint8_t* srcPixelB = srcRows[Rows - 1] + srcStartOffset;
+				const float* srcPixelA = srcRows[0] + srcStartOffset;
+				[[maybe_unused]] const float* srcPixelB = srcRows[Rows - 1] + srcStartOffset;
 				const size_t tapCount = weights.size();
 
 				// Lanes hold [even pixel | odd pixel] partial sums until the single reduction below the blocks
@@ -161,29 +158,29 @@ namespace ImageProcessing::Detail
 
 					for (; tap + 8 <= tapCount; tap += 8)
 					{
-						const uint8_t* blockPixelsA = srcPixelA + tap * 4;
-						[[maybe_unused]] const uint8_t* blockPixelsB = srcPixelB + tap * 4;
+						const float* blockPixelsA = srcPixelA + tap * 4;
+						[[maybe_unused]] const float* blockPixelsB = srcPixelB + tap * 4;
 						const simde__m256 blockWeights = simde_mm256_loadu_ps(weights.data() + tap);
 
-						const simde__m256 w0 = weightPair(weights.data() + tap, blockWeights, weightSpread0);
-						accumA0 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA), w0, accumA0);
+						const simde__m256 w0 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread0);
+						accumA0 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsA), w0, accumA0);
 						if constexpr (Rows == 2)
-							accumB0 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB), w0, accumB0);
+							accumB0 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsB), w0, accumB0);
 
-						const simde__m256 w1 = weightPair(weights.data() + tap + 2, blockWeights, weightSpread1);
-						accumA1 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA + 8), w1, accumA1);
+						const simde__m256 w1 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread1);
+						accumA1 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsA + 8), w1, accumA1);
 						if constexpr (Rows == 2)
-							accumB1 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB + 8), w1, accumB1);
+							accumB1 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsB + 8), w1, accumB1);
 
-						const simde__m256 w2 = weightPair(weights.data() + tap + 4, blockWeights, weightSpread2);
-						accumA2 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA + 16), w2, accumA2);
+						const simde__m256 w2 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread2);
+						accumA2 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsA + 16), w2, accumA2);
 						if constexpr (Rows == 2)
-							accumB2 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB + 16), w2, accumB2);
+							accumB2 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsB + 16), w2, accumB2);
 
-						const simde__m256 w3 = weightPair(weights.data() + tap + 6, blockWeights, weightSpread3);
-						accumA3 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsA + 24), w3, accumA3);
+						const simde__m256 w3 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread3);
+						accumA3 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsA + 24), w3, accumA3);
 						if constexpr (Rows == 2)
-							accumB3 = simde_mm256_fmadd_ps(loadTwoPixelsAsFloats(blockPixelsB + 24), w3, accumB3);
+							accumB3 = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsB + 24), w3, accumB3);
 					}
 
 					accumPairsA = simde_mm256_add_ps(simde_mm256_add_ps(accumA0, accumA1), simde_mm256_add_ps(accumA2, accumA3));
@@ -200,20 +197,15 @@ namespace ImageProcessing::Detail
 					// memory operand then reloads, and a load wider than the store it overlaps cannot be
 					// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
 					const simde__m256 blockWeights = simde_mm256_loadu_ps(weights.data() + tap);
-					const simde__m256 w01 = weightPair(weights.data() + tap, blockWeights, weightSpread0);
-					const simde__m256 w23 = weightPair(weights.data() + tap + 2, blockWeights, weightSpread1);
+					const simde__m256 w01 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread0);
+					const simde__m256 w23 = simde_mm256_permutevar8x32_ps(blockWeights, weightSpread1);
 
-					const simde__m128i pixelBytesA = simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(srcPixelA + tap * 4));
-					const simde__m256 pixelsA01 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(pixelBytesA));
-					const simde__m256 pixelsA23 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(simde_mm_unpackhi_epi64(pixelBytesA, pixelBytesA)));
-					accumPairsA = simde_mm256_fmadd_ps(pixelsA01, w01, simde_mm256_fmadd_ps(pixelsA23, w23, accumPairsA));
-
+					const float* blockPixelsA = srcPixelA + tap * 4;
+					accumPairsA = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsA), w01, simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsA + 8), w23, accumPairsA));
 					if constexpr (Rows == 2)
 					{
-						const simde__m128i pixelBytesB = simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(srcPixelB + tap * 4));
-						const simde__m256 pixelsB01 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(pixelBytesB));
-						const simde__m256 pixelsB23 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(simde_mm_unpackhi_epi64(pixelBytesB, pixelBytesB)));
-						accumPairsB = simde_mm256_fmadd_ps(pixelsB01, w01, simde_mm256_fmadd_ps(pixelsB23, w23, accumPairsB));
+						const float* blockPixelsB = srcPixelB + tap * 4;
+						accumPairsB = simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsB), w01, simde_mm256_fmadd_ps(simde_mm256_loadu_ps(blockPixelsB + 8), w23, accumPairsB));
 					}
 
 					tap += 4;
@@ -227,9 +219,9 @@ namespace ImageProcessing::Detail
 				for (; tap < tapCount; ++tap)
 				{
 					const simde__m128 weight = simde_mm_set1_ps(weights[tap]);
-					accumA = simde_mm_fmadd_ps(loadPixelAsFloats(srcPixelA + tap * 4), weight, accumA);
+					accumA = simde_mm_fmadd_ps(simde_mm_loadu_ps(srcPixelA + tap * 4), weight, accumA);
 					if constexpr (Rows == 2)
-						accumB = simde_mm_fmadd_ps(loadPixelAsFloats(srcPixelB + tap * 4), weight, accumB);
+						accumB = simde_mm_fmadd_ps(simde_mm_loadu_ps(srcPixelB + tap * 4), weight, accumB);
 				}
 
 				storeTempPixel<Channels>(tempRows[0] + static_cast<size_t>(dx) * Channels, accumA);
@@ -373,6 +365,15 @@ namespace ImageProcessing::Detail
 			return ring.get() + static_cast<size_t>(srcRow % ringRows) * tempRowStride;
 		};
 
+		const size_t srcWidth = static_cast<size_t>(srcRect.w);
+		const auto srcFloats = std::make_unique_for_overwrite<float[]>(2 * srcWidth * 4);
+		float* const srcFloatsA = srcFloats.get();
+		float* const srcFloatsB = srcFloatsA + srcWidth * 4;
+		const auto sourcePixels = [&source, srcRect](uint64_t srcRow) noexcept
+		{
+			return source.scanLine<uint8_t>(srcRect.top + srcRow) + srcRect.left * 4;
+		};
+
 		uint64_t produced = firstNeededRow;
 		for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
 		{
@@ -384,16 +385,17 @@ namespace ImageProcessing::Detail
 			{
 				if (produced + 2 <= srcRect.h)
 				{
-					const uint8_t* const srcRows[2] = {
-						source.scanLine<uint8_t>(srcRect.top + produced) + srcRect.left * 4,
-						source.scanLine<uint8_t>(srcRect.top + produced + 1) + srcRect.left * 4 };
+					convertPixelsToFloats(sourcePixels(produced), srcFloatsA, srcWidth);
+					convertPixelsToFloats(sourcePixels(produced + 1), srcFloatsB, srcWidth);
+					const float* const srcRows[2] = { srcFloatsA, srcFloatsB };
 					float* const tempRows[2] = { ringRow(produced), ringRow(produced + 1) };
 					filterHorizontalRowGroup<Channels>(srcRows, tempRows, destWidth, xWeights);
 					produced += 2;
 				}
 				else
 				{
-					const uint8_t* const srcRows[1] = { source.scanLine<uint8_t>(srcRect.top + produced) + srcRect.left * 4 };
+					convertPixelsToFloats(sourcePixels(produced), srcFloatsA, srcWidth);
+					const float* const srcRows[1] = { srcFloatsA };
 					float* const tempRows[1] = { ringRow(produced) };
 					filterHorizontalRowGroup<Channels>(srcRows, tempRows, destWidth, xWeights);
 					++produced;

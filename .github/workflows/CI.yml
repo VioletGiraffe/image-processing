@@ -13,6 +13,8 @@ jobs:
         # The axis must exist for the include to add a job: an include that only adds a new key extends the matching job instead
         compiler: [default]
         include:
+          - os: ubuntu-latest
+            compiler: clang
           - os: ubuntu-24.04-arm
             compiler: clang
 
