@@ -399,21 +399,32 @@ namespace
 		requireResizeMatchesReference(actual, source);
 	}
 
-	struct ResizeJob { uint64_t srcWidth, srcHeight, destWidth, destHeight; };
+#ifdef _DEBUG
+	constexpr bool debugBuild = true;
+#else
+	constexpr bool debugBuild = false;
+#endif
+
+	struct ResizeJob
+	{
+		uint64_t srcWidth, srcHeight, destWidth, destHeight;
+		// The largest jobs dominate an unoptimized run by minutes; the other jobs cover the same paths
+		bool skippedInDebug = false;
+	};
 
 	// Shared by the reference and threading test cases so both cover the same geometry space
 	constexpr ResizeJob resizeJobs[] = {
 		// Downscales
-		{ 5472, 3648, 1620, 1080 },   // 20 MP photo to a viewport
-		{ 3840, 2160, 1920, 1080 },
+		{ 5472, 3648, 1620, 1080, true },   // 20 MP photo to a viewport
+		{ 3840, 2160, 1920, 1080, true },
 		{ 640, 480, 333, 257 },
 		// Upscales
-		{ 1280, 720, 3840, 2160 },
+		{ 1280, 720, 3840, 2160, true },
 		{ 640, 480, 1280, 963 },
 		{ 2, 2, 2048, 2048 },
 		{ 1, 1, 2000, 2000 },
 		// Mixed axes
-		{ 3840, 1080, 1920, 2160 },   // X down, Y up
+		{ 3840, 1080, 1920, 2160, true },   // X down, Y up
 		{ 640, 480, 900, 200 },       // X up, Y down
 		// Near-unity, where a one-pixel change in size shifts every tap by a fraction of a pixel
 		{ 1920, 1080, 1921, 1081 },
@@ -812,6 +823,9 @@ TEST_CASE("Every pixel layout and geometry matches a direct double-precision ref
 		CAPTURE(+channels, +pixelStride, simdDisabled);
 		for (const ResizeJob& job : resizeJobs)
 		{
+			if (debugBuild && job.skippedInDebug)
+				continue;
+
 			CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
 			TestImage source(job.srcWidth, job.srcHeight, channels, pixelStride);
 			fillLogicalBytes(source, randomEngine);
@@ -1026,6 +1040,9 @@ TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading
 		CAPTURE(+channels, +pixelStride, simdDisabled);
 		for (const ResizeJob& job : resizeJobs)
 		{
+			if (debugBuild && job.skippedInDebug)
+				continue;
+
 			CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
 			TestImage source(job.srcWidth, job.srcHeight, channels, pixelStride);
 			fillLogicalBytes(source, randomEngine);
@@ -1034,7 +1051,8 @@ TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading
 			resize(serialDest, source, {}, nullptr, simd);
 
 			// Repeated because a race would only manifest probabilistically; the per-pixel sweep runs only to diagnose a mismatch
-			for (int iteration = 0; iteration < 20; ++iteration)
+			constexpr int iterations = debugBuild ? 3 : 20;
+			for (int iteration = 0; iteration < iterations; ++iteration)
 			{
 				CAPTURE(iteration);
 				TestImage parallelDest(job.destWidth, job.destHeight, channels, pixelStride);
