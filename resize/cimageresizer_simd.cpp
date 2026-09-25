@@ -22,18 +22,19 @@ namespace ImageProcessing::Detail
 {
 	namespace
 	{
-		IMAGE_PROCESSING_SIMD_INLINE simde__m128i packEightFloatsToBytes(simde__m256 values) noexcept
+		// Rounds 8 floats to 8 words in order.
+		// The packs are 128-bit: 256-bit packs work per lane and need a lane-crossing permute after them, which SIMDe emulates element by element on NEON.
+		IMAGE_PROCESSING_SIMD_INLINE simde__m128i packEightFloatsToWords(simde__m256 values) noexcept
 		{
 			// packus_epi32 saturates negatives to 0; the 255 cap must stay - values past 32767 would wrap negative through the signed-input packus_epi16
 			values = simde_mm256_min_ps(simde_mm256_set1_ps(255.0f), values);
 			const simde__m256i integers = simde_mm256_cvttps_epi32(simde_mm256_add_ps(values, simde_mm256_set1_ps(0.5f)));
-			const simde__m256i zeroIntegers = simde_mm256_setzero_si256();
-			const simde__m256i packed16 = simde_mm256_packus_epi32(integers, zeroIntegers);
-			const simde__m256i packed8 = simde_mm256_packus_epi16(packed16, zeroIntegers);
-			const simde__m256i contiguousBytes = simde_mm256_permutevar8x32_epi32(
-				packed8,
-				simde_mm256_setr_epi32(0, 4, 1, 1, 1, 1, 1, 1));
-			return simde_mm256_castsi256_si128(contiguousBytes);
+			return simde_mm_packus_epi32(simde_mm256_castsi256_si128(integers), simde_mm256_extracti128_si256(integers, 1));
+		}
+
+		IMAGE_PROCESSING_SIMD_INLINE simde__m128i packSixteenFloatsToBytes(simde__m256 first, simde__m256 second) noexcept
+		{
+			return simde_mm_packus_epi16(packEightFloatsToWords(first), packEightFloatsToWords(second));
 		}
 
 		// Color is capped at alpha, as writePixelBytes does
@@ -49,12 +50,8 @@ namespace ImageProcessing::Detail
 			simde__m256 values2,
 			simde__m256 values3) noexcept
 		{
-			const simde__m128i bytes0 = packEightFloatsToBytes(capColorAtAlpha(values0));
-			const simde__m128i bytes1 = packEightFloatsToBytes(capColorAtAlpha(values1));
-			const simde__m128i bytes2 = packEightFloatsToBytes(capColorAtAlpha(values2));
-			const simde__m128i bytes3 = packEightFloatsToBytes(capColorAtAlpha(values3));
-			simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest), simde_mm_unpacklo_epi64(bytes0, bytes1));
-			simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest + 16), simde_mm_unpacklo_epi64(bytes2, bytes3));
+			simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest), packSixteenFloatsToBytes(capColorAtAlpha(values0), capColorAtAlpha(values1)));
+			simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest + 16), packSixteenFloatsToBytes(capColorAtAlpha(values2), capColorAtAlpha(values3)));
 		}
 
 		IMAGE_PROCESSING_SIMD_INLINE void writeEightRgb32Pixels(
@@ -64,11 +61,10 @@ namespace ImageProcessing::Detail
 			simde__m256 values2,
 			simde__m128i pixelTails) noexcept
 		{
-			const simde__m128i bytes0 = packEightFloatsToBytes(values0);
-			const simde__m128i bytes1 = packEightFloatsToBytes(values1);
-			const simde__m128i bytes2 = packEightFloatsToBytes(values2);
-			const simde__m128i firstSixteenRgbBytes = simde_mm_unpacklo_epi64(bytes0, bytes1);
-			const simde__m128i lastTwelveRgbBytes = simde_mm_alignr_epi8(bytes2, firstSixteenRgbBytes, 12);
+			const simde__m128i firstSixteenRgbBytes = packSixteenFloatsToBytes(values0, values1);
+			const simde__m128i lastWords = packEightFloatsToWords(values2);
+			const simde__m128i lastEightRgbBytes = simde_mm_packus_epi16(lastWords, lastWords);
+			const simde__m128i lastTwelveRgbBytes = simde_mm_alignr_epi8(lastEightRgbBytes, firstSixteenRgbBytes, 12);
 			const simde__m128i rgbToRgb32 = simde_mm_setr_epi8(
 				0, 1, 2, -1,
 				3, 4, 5, -1,
