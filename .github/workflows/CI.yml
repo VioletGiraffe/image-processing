@@ -113,6 +113,17 @@ jobs:
       if: startsWith(matrix.os, 'ubuntu')
       run: ./tests/bin/release/image-processing-tests
 
+    # Runners of one label vary in CPU model, and the benchmark ratios with it
+    - name: Show the CPU
+      shell: bash
+      run: |
+        case "$RUNNER_OS" in
+          Linux) lscpu ;;
+          # Filtered, not queried by name: Apple Silicon lacks some of these keys, and an unknown one fails sysctl
+          macOS) sysctl -a | grep -E '^(machdep\.cpu\.brand_string|hw\.(physicalcpu|logicalcpu|l2cachesize|l3cachesize|perflevel[0-9]\.(name|physicalcpu|l2cachesize))):' ;;
+          Windows) pwsh -NoProfile -Command "Get-CimInstance Win32_Processor | Format-List Name, NumberOfCores, NumberOfLogicalProcessors, L2CacheSize, L3CacheSize" ;;
+        esac
+
     - name: Run benchmarks on Windows
       if: startsWith(matrix.os, 'windows')
       env:
