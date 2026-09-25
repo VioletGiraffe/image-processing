@@ -19,6 +19,7 @@ else: QMAKE_CXXFLAGS += -isystem $$shell_quote($$SIMDE_INCLUDE_ROOT)
 # does. GCC and Clang, clang-cl included, get that per function from the target attribute; MSVC only has the per-TU
 # switch, so its kernels compile as a separate object. Flags are expanded here rather than taken from $(CXXFLAGS)
 # because the VS project generator emits fully expanded command lines and has no makefile macros.
+# The linker keeps one copy of each inline function, possibly this object's AVX2 one: CI runs the tests on an emulated CPU without AVX2 to catch it executing.
 *msvc*:!contains(QMAKE_COMPILER, clang_cl) {
 	AVX2_CXXFLAGS = $$QMAKE_CXXFLAGS /arch:AVX2
 	CONFIG(debug, debug|release): AVX2_CXXFLAGS += $$QMAKE_CXXFLAGS_DEBUG

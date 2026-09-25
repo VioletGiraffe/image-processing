@@ -36,7 +36,8 @@ the table. Every table names the commit it was measured at: re-measure after cha
 ## Standing against Qt
 
 Resizer / QImage, lower is better. PC at 9d86565 (mean of three rounds; 4K -> 1080p RGB24 with threads: one run), Pi at
-6fac81f (4K -> 1080p RGB24 with threads: 2b371a2). All three have the same resizer code. "-": no such benchmark.
+6fac81f (4K -> 1080p RGB24 with threads: 2b371a2). All three have the same resizer code, from before column strips. "-": no
+such benchmark.
 
 | Scenario | PC | PC, threads | Pi | Pi, threads |
 |---|---|---|---|---|
@@ -295,12 +296,80 @@ RGB24 4K -> 1080p with threads: 8ca3148 with 2b371a2's benchmark file -> 2b371a2
 | 101 MP -> 720p | 2569 -> 2277 | 841 -> 1032 | 3.06x -> 2.21x |
 
 - RGB24 and Grayscale8, the layouts ARM runs scalar, gain 15-37% single-threaded. With threads the RGB24 upscale gains 4%,
-  and the RGB24 downscale loses 15%: open lead 5.
+  and the RGB24 downscale loses 15%: the column strips section.
 - No upscale loses: open lead 3 is MSVC's.
 - With threads the scalar path now scales like the SIMD path, which uses the same ring. Four RGB32 and RGBA32 rows lose
-  7-24%: open lead 5.
+  7-24%: the column strips section.
 - 4K -> 64x64 and 101 MP gain only 3% and 11% single-threaded. Likely cause: their float rows, 46 and 139 KB, exceed the
   A72's 32 KB L1, and their long x runs read each pixel many times.
+
+### Column strips (b9fea7e)
+
+Each thread fills its ring for one column strip of the destination at a time. `stripWidthFor` bounds a ring to 128 KB, half
+of a four-core share of the Pi's 1 MB L2. The SIMD path converts only the strip's source span (29b97e9).
+
+Full-width rings overflowed the Pi's shared L2 with four threads. Per thread, ring plus float row plus accumulator row came
+to about 350 KB for 720p -> 4K RGBA32, 390 KB for 4K -> 1080p RGB24, 500 KB for 24 MP -> 1080p, 1.2 MB for 101 MP -> 720p.
+Pi PMU counters, whole process, "Parallel resize" reduced to 720p -> 4K RGBA32, 8ca3148 (two passes through a whole-image
+temp) -> 2b371a2 (full-width ring):
+
+| Event | 8ca3148 | 2b371a2 |
+|---|---:|---:|
+| L2 read refills (0x52) | 85.8 M | 103.0 M |
+| L2 write refills (0x53) | 4.6 M | 10.3 M |
+| Bus reads (0x60) | 359 M | 450 M |
+| Bus writes (0x61) | 144 M | 177 M |
+| Cycles (0x11) | 19.0 G | 22.2 G |
+| Kernel time | 1.48 s | 0.50 s |
+
+- DRAM traffic grew both ways despite less work: evicted dirty ring rows are written out and read back.
+- The 3.2 G extra cycles over the 17.2 M extra read refills come to about 186 cycles each, a full DRAM latency.
+- The whole-image temp caused few write refills: the A72 stops allocating on long sequential store runs. Its kernel time
+  is the temp's page faults on every call.
+- The A72 does not count backend stalls (0x24).
+
+Pi, ms with threads, 2b371a2 -> b9fea7e. Scalar also against 8ca3148. Speedup: single-threaded / threaded time, with strips.
+
+| Scenario | SIMD | Scalar: 8ca3148 / 2b371a2 -> b9fea7e | Speedup: SIMD, scalar |
+|---|---|---|---|
+| 24 MP -> 1080p | 236.8 -> 136.4 | 304.7 / 308.8 -> 171.8 | 3.36x, 3.52x |
+| 4K -> 1080p RGBA32 | 167.3 -> 69.9 | 214.6 / 228.7 -> 91.4 | 3.13x, 3.23x |
+| 4K -> 1080p RGB24 | - | 136.4 / 156.6 -> 74.2 | -, 3.42x |
+| 720p -> 4K RGBA32 | 88.6 -> 36.5 | 127.0 / 144.5 -> 77.2 | 3.08x, 2.04x |
+| 720p -> 4K RGB24 | - | 62.7 / 60.5 -> 38.7 | -, 3.12x |
+| 101 MP -> 720p | 624.8 -> 481.0 | 840.8 / 1034.8 -> 614.9 | 3.11x, 3.62x |
+| 1080p -> 240p | 13.0 -> 11.9 | 16.7 / 16.7 -> 16.8 | - |
+| 1080p -> 1440p (one strip) | 23.0 -> 24.7 | 38.4 / 34.2 -> 38.2 | - |
+| 4K -> 64x64 | 42.6 -> 44.3 | 47.1 / 58.6 -> 59.2 | 2.46x, 2.85x |
+
+- Both paths scale 3.1-3.6x on four cores; before strips the SIMD path scaled 1.3-3.1x, the scalar one 1.1-2.9x.
+- Weak rows: 4K -> 64x64, whose two strips each re-convert about 360 shared source pixels, and scalar 720p -> 4K RGBA32.
+- Single-threaded the Pi is about neutral: 101 MP SIMD gains 9-12% (its ring overflowed the L2 even alone), 4K -> 64x64 SIMD
+  loses 8%.
+- CI shows only the cost: the runners' L2 is private, 512 KB or 1 MB per core, and full-width rings already fit.
+
+Strips cost x64 Windows single-threaded, the SIMD upscales most. CI, SIMD time, 2b371a2 -> b9fea7e: MSVC and clang-cl on
+EPYC 7763 +57-67% on 720p -> 4K and +15-17% on 4K -> 1080p RGB32; x64 GCC on the same CPU model 0-6%; ARM 0-6%.
+With threads every job stayed within -12% to +6%.
+
+PC, MSVC, SIMD, mean ms of five alternating rounds.
+
+| Scenario | 2b371a2 | b9fea7e | 29b97e9 (cap) |
+|---|---:|---:|---:|
+| 4K -> 1080p RGB32 | 15.42 | 18.28 (+19%) | 17.81 (+15%) |
+| 4K -> 1080p RGB32 [reused dest] | 14.55 | 15.97 (+10%) | 15.34 (+5%) |
+| 720p -> 4K RGBA32 | 12.75 | 18.74 (+47%) | 18.13 (+42%) |
+| 720p -> 4K RGB32 | 11.94 | 17.35 (+45%) | 16.78 (+41%) |
+| 24 MP -> 1080p | 34.87 | 37.37 (+7%) | 37.10 (+6%) |
+| 1080p -> 1440p (one strip) | 8.39 | 8.48 | 8.30 |
+
+- Most of the cost is first-touch page faults on the freshly allocated destination. The fault zeroes a page into the
+  cache; a strip fills only part of it, and the page is written back before the later strips fill the rest.
+- The fresh-destination premium on 4K -> 1080p RGB32 grew from 0.87-0.95 ms to 2.3-2.7 ms in each of three runs. An
+  upscale writes 9 times its source in destination, so it pays the most.
+- Linux on the same CPU does not pay it. Unverified explanation: glibc's dynamic `mmap` threshold keeps a freed large
+  block mapped, so the next allocation reuses faulted pages.
+- The scalar path pays 3-10% on the PC with several strips; it already converted only the strip's span.
 
 ## Experiments that lost
 
@@ -354,28 +423,10 @@ RGB24 4K -> 1080p with threads: 8ca3148 with 2b371a2's benchmark file -> 2b371a2
      it with clang-cl's is the next step.
 4. **CPUs without AVX2 take the scalar path:** there is no SSE4.1 kernel yet. Baselines on a Sandy Bridge laptop and a
    Celeron N4100 come first.
-5. **Four threads' temp rows overflow the Pi's shared L2.** Estimated per thread, ring plus float row plus accumulator row:
-   about 350 KB for 720p -> 4K RGBA32, 390 KB for 4K -> 1080p RGB24, 500 KB for 24 MP -> 1080p, 1.2 MB for
-   101 MP -> 720p. The L2 is 1 MB for all four cores.
-   - It costs a layout ARM runs scalar: RGB24 4K -> 1080p with threads went from 136 to 157 ms (the scalar ring section).
-   - The scalar thread speedup fell from 2.4-3.7x to 1.1-2.9x with the ring (the scalar ring section). The SIMD path, on
-     the same ring, scales 1.3-3.1x.
-   - The old scalar path streamed a whole-image temp in order, and scaled better.
-   - Pi PMU counters, whole process, "Parallel resize" reduced to 720p -> 4K RGBA32, 8ca3148 -> 2b371a2:
-
-     | Event | Old | New |
-     |---|---:|---:|
-     | L2 read refills (0x52) | 85.8 M | 103.0 M |
-     | L2 write refills (0x53) | 4.6 M | 10.3 M |
-     | Bus reads (0x60) | 359 M | 450 M |
-     | Bus writes (0x61) | 144 M | 177 M |
-     | Cycles (0x11) | 19.0 G | 22.2 G |
-     | Kernel time | 1.48 s | 0.50 s |
-
-     - DRAM traffic grew both ways despite less work. Evicted dirty ring rows are written out and read back.
-     - The 3.2 G extra cycles over the 17.2 M extra read refills come to about 186 cycles each, a full DRAM latency.
-     - The old whole-image temp caused few write refills: the A72 stops allocating on long sequential store runs. Its
-       kernel time is the temp's page faults on every call.
-     - The A72 does not count backend stalls (0x24).
-   - Candidates: column strips, which narrow each thread's ring rows for both paths at the cost of repeated horizontal
-     work at the strip edges; the sliding buffer for the scalar path, which also covers its L1 overflow.
+5. **Strips cost x64 Windows up to 42% on the PC's single-threaded SIMD upscales** (the column strips section), mostly in
+   first-touch faults on a fresh destination.
+   - Candidate: row blocks. Each thread finishes all strips of a block of destination rows before the next, so every
+     destination page fills while cached. The temp rows under the window at each block boundary get recomputed.
+   - A runtime L2-share budget does not remove it: a CI Windows runner's 512 KB L2, shared by two threads, yields the same
+     128 KB budget.
+6. **4K -> 64x64 with threads on the Pi:** scalar 59 ms against 47 for the whole-image temp (8ca3148).

@@ -105,6 +105,21 @@ jobs:
       if: startsWith(matrix.os, 'windows')
       run: ./tests/bin/release/image-processing-tests.exe
 
+    # MSVC compiles the SIMD file with /arch:AVX2: the linker may keep that file's AVX2 copy of an inline function the baseline code calls
+    - name: Set up Intel SDE
+      if: startsWith(matrix.os, 'windows')
+      uses: petarpetrovt/setup-sde@v6.0
+
+    # Sandy Bridge lacks AVX2, so the resizer takes its scalar path, and SDE flags any AVX2 instruction executed
+    # -chip-check-exe-only: the resizer is linked into the executable, and the Qt and system DLLs are not ours to check
+    # SDE's exit status on a flagged instruction is undocumented: the log is checked too
+    - name: Run the scalar tests on an emulated CPU without AVX2
+      if: startsWith(matrix.os, 'windows')
+      shell: bash
+      run: |
+        "$SDE_PATH/sde.exe" -snb -chip-check-exe-only -- ./tests/bin/release/image-processing-tests.exe "~[!benchmark] ~[threading] ~[slow]" 2>&1 | tee sde.log
+        ! grep -q SDE-ERROR sde.log
+
     - name: Run tests on macOS
       if: startsWith(matrix.os, 'macos')
       run: ./tests/bin/release/image-processing-tests.app/Contents/MacOS/image-processing-tests

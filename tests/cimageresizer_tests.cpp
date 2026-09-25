@@ -858,7 +858,7 @@ TEST_CASE("Extreme scale factors match a direct double-precision reference", "[r
 
 // The only reference check covering the SIMD kernels, large sources and degenerate aspect ratios. Random bytes
 // give every channel different data, so a channel mix-up cannot hide behind identical values.
-TEST_CASE("Every pixel layout and geometry matches a direct double-precision reference", "[resize][reference]")
+TEST_CASE("Every pixel layout and geometry matches a direct double-precision reference", "[resize][reference][slow]")
 {
 	std::mt19937 randomEngine(20260802);
 
