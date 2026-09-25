@@ -21,7 +21,7 @@ the table. Every table names the commit it was measured at: re-measure after cha
 - A Pi 4 without cooling throttles under sustained load: `vcgencmd get_throttled` must print `0x0` after a run.
 - A/B rounds alternate the builds.
 - A CI label's runner CPU varies between runs, and the ratios with it: Qt's SSE code and the AVX2 kernel do not scale
-  alike. A job's numbers compare across runs only when its "Show the CPU" step reports the same model.
+  alike. A job's numbers compare across runs only when the CPU line above its table names the same model.
 
 ## Machines
 

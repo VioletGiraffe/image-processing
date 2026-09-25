@@ -133,11 +133,18 @@ jobs:
       shell: bash
       run: |
         case "$RUNNER_OS" in
-          Linux) lscpu ;;
+          Linux)
+            lscpu
+            model=$(lscpu | sed -n 's/^ *Model name: *//p' | head -n 1) ;;
           # Filtered, not queried by name: Apple Silicon lacks some of these keys, and an unknown one fails sysctl
-          macOS) sysctl -a | grep -E '^(machdep\.cpu\.brand_string|hw\.(physicalcpu|logicalcpu|l2cachesize|l3cachesize|perflevel[0-9]\.(name|physicalcpu|l2cachesize))):' ;;
-          Windows) pwsh -NoProfile -Command "Get-CimInstance Win32_Processor | Format-List Name, NumberOfCores, NumberOfLogicalProcessors, L2CacheSize, L3CacheSize" ;;
+          macOS)
+            sysctl -a | grep -E '^(machdep\.cpu\.brand_string|hw\.(physicalcpu|logicalcpu|l2cachesize|l3cachesize|perflevel[0-9]\.(name|physicalcpu|l2cachesize))):'
+            model=$(sysctl -n machdep.cpu.brand_string) ;;
+          Windows)
+            pwsh -NoProfile -Command "Get-CimInstance Win32_Processor | Format-List Name, NumberOfCores, NumberOfLogicalProcessors, L2CacheSize, L3CacheSize"
+            model=$(pwsh -NoProfile -Command "(Get-CimInstance Win32_Processor | Select-Object -First 1).Name.Trim()" | tr -d '\r') ;;
         esac
+        echo "**CPU:** $model" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Run benchmarks on Windows
       if: startsWith(matrix.os, 'windows')
