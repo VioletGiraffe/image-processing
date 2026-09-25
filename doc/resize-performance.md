@@ -36,7 +36,7 @@ the table. Every table names the commit it was measured at: re-measure after cha
 ## Standing against Qt
 
 Resizer / QImage, lower is better. PC at 9d86565 (mean of three rounds; 4K -> 1080p RGB24 with threads: one run), Pi at
-6fac81f, which has the same resizer code. "-": no such benchmark.
+6fac81f (4K -> 1080p RGB24 with threads: 2b371a2). All three have the same resizer code. "-": no such benchmark.
 
 | Scenario | PC | PC, threads | Pi | Pi, threads |
 |---|---|---|---|---|
@@ -52,7 +52,7 @@ Resizer / QImage, lower is better. PC at 9d86565 (mean of three rounds; 4K -> 10
 | 1080p, native size | 1.12 | - | 1.06 | - |
 | 4K -> 1080p Grayscale8 (scalar) | 1.06 | - | 1.16 | - |
 | 720p -> 4K Grayscale8 (scalar) | 0.90 | - | 0.56 | - |
-| 4K -> 1080p RGB24 (scalar) | 2.93 | 0.73 | 3.64 | not yet run |
+| 4K -> 1080p RGB24 (scalar) | 2.93 | 0.73 | 3.64 | 2.31 |
 | 720p -> 4K RGB24 (scalar) | 2.09 | 0.53 | 1.06 | 0.54 |
 
 - PC: upscales and straight-alpha images beat Qt; Qt premultiplies alpha in a separate pass.
@@ -277,10 +277,11 @@ CI, scalar / QImage single-threaded, 8ca3148 -> 9d86565, in the jobs whose SIMD 
   and SIMD times within 2%.
 
 Pi, scalar ms, 8ca3148 -> 6fac81f. The Qt controls held within 2%, except 4K -> 1080p RGBA32: +6%, its SIMD row +9%.
+RGB24 4K -> 1080p with threads: 8ca3148 with 2b371a2's benchmark file -> 2b371a2; the other threaded rows matched within 1%.
 
 | Scenario | Single-threaded | Threads | Thread speedup |
 |---|---|---|---|
-| 4K -> 1080p RGB24 | 372 -> 247 | - | - |
+| 4K -> 1080p RGB24 | 372 -> 247 | 136 -> 157 | 2.73x -> 1.58x |
 | 4K -> 1080p Grayscale8 | 143 -> 121 | - | - |
 | 720p -> 4K RGB24 | 189 -> 118 | 62.7 -> 59.9 | 3.01x -> 1.98x |
 | 720p -> 4K Grayscale8 | 76.4 -> 52.2 | - | - |
@@ -293,7 +294,8 @@ Pi, scalar ms, 8ca3148 -> 6fac81f. The Qt controls held within 2%, except 4K -> 
 | 4K -> 64x64 | 172 -> 166 | 47.1 -> 58.1 | 3.65x -> 2.86x |
 | 101 MP -> 720p | 2569 -> 2277 | 841 -> 1032 | 3.06x -> 2.21x |
 
-- RGB24 and Grayscale8, the layouts ARM runs scalar, gain 15-37% single-threaded. The RGB24 upscale gains 4% with threads.
+- RGB24 and Grayscale8, the layouts ARM runs scalar, gain 15-37% single-threaded. With threads the RGB24 upscale gains 4%,
+  and the RGB24 downscale loses 15%: open lead 5.
 - No upscale loses: open lead 3 is MSVC's.
 - With threads the scalar path now scales like the SIMD path, which uses the same ring. Four RGB32 and RGBA32 rows lose
   7-24%: open lead 5.
@@ -353,10 +355,27 @@ Pi, scalar ms, 8ca3148 -> 6fac81f. The Qt controls held within 2%, except 4K -> 
 4. **CPUs without AVX2 take the scalar path:** there is no SSE4.1 kernel yet. Baselines on a Sandy Bridge laptop and a
    Celeron N4100 come first.
 5. **Four threads' temp rows overflow the Pi's shared L2.** Estimated per thread, ring plus float row plus accumulator row:
-   about 350 KB for 720p -> 4K RGBA32, 500 KB for 24 MP -> 1080p, 1.2 MB for 101 MP -> 720p. The L2 is 1 MB for all
-   four cores.
+   about 350 KB for 720p -> 4K RGBA32, 390 KB for 4K -> 1080p RGB24, 500 KB for 24 MP -> 1080p, 1.2 MB for
+   101 MP -> 720p. The L2 is 1 MB for all four cores.
+   - It costs a layout ARM runs scalar: RGB24 4K -> 1080p with threads went from 136 to 157 ms (the scalar ring section).
    - The scalar thread speedup fell from 2.4-3.7x to 1.1-2.9x with the ring (the scalar ring section). The SIMD path, on
      the same ring, scales 1.3-3.1x.
    - The old scalar path streamed a whole-image temp in order, and scaled better.
+   - Pi PMU counters, whole process, "Parallel resize" reduced to 720p -> 4K RGBA32, 8ca3148 -> 2b371a2:
+
+     | Event | Old | New |
+     |---|---:|---:|
+     | L2 read refills (0x52) | 85.8 M | 103.0 M |
+     | L2 write refills (0x53) | 4.6 M | 10.3 M |
+     | Bus reads (0x60) | 359 M | 450 M |
+     | Bus writes (0x61) | 144 M | 177 M |
+     | Cycles (0x11) | 19.0 G | 22.2 G |
+     | Kernel time | 1.48 s | 0.50 s |
+
+     - DRAM traffic grew both ways despite less work. Evicted dirty ring rows are written out and read back.
+     - The 3.2 G extra cycles over the 17.2 M extra read refills come to about 186 cycles each, a full DRAM latency.
+     - The old whole-image temp caused few write refills: the A72 stops allocating on long sequential store runs. Its
+       kernel time is the temp's page faults on every call.
+     - The A72 does not count backend stalls (0x24).
    - Candidates: column strips, which narrow each thread's ring rows for both paths at the cost of repeated horizontal
      work at the strip edges; the sliding buffer for the scalar path, which also covers its L1 overflow.

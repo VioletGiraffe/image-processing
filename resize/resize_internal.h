@@ -49,8 +49,8 @@ namespace ImageProcessing::Detail
 		size_t rowCount;
 	};
 
-	// Horizontally filtered rows for one band of destination rows, in a ring barely larger than the y tap window: the rows
-	// stay cache-resident between the passes instead of making a DRAM round trip through a whole-image buffer.
+	// Horizontally filtered rows for one band of destination rows and one column strip, in a ring barely larger than the y tap
+	// window: the rows stay cache-resident between the passes instead of making a DRAM round trip through a whole-image buffer.
 	// Bands are independent: each produces every temp row its windows need, so neighbors redo the shared boundary rows.
 	class TempRowRing
 	{
@@ -125,6 +125,7 @@ namespace ImageProcessing::Detail
 		ImageView<false>& dest,
 		const AxisWeights& xWeights,
 		const AxisWeights& yWeights,
+		size_t stripWidth,
 		uint8_t pixelTailValue,
 		uint64_t destRowBegin,
 		uint64_t destRowEnd);

@@ -458,6 +458,8 @@ namespace
 		{ 8192, 1, 4096, 3 },
 		{ 1, 8192, 3, 4096 },
 		{ 1024, 1024, 1, 1 },
+		// A tall y window splits even a narrow dest into many column strips, some partial
+		{ 600, 600, 150, 6 },
 		// Small enough for the threading test to fall back to serial despite the pool
 		{ 640, 480, 16, 12 },
 	};

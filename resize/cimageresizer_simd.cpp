@@ -210,11 +210,13 @@ namespace ImageProcessing::Detail
 		// its exact single-row arithmetic. Two rows is the register budget: the four spread constants plus four
 		// accumulators per row nearly fill the file, a third row would spill inside the hottest loop.
 		// Rows are passed as individual pointers: a pair of temp rows may straddle the ring's wrap.
+		// Filters dest columns [destBegin, destEnd) into the temp rows' start.
 		template <size_t Channels, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalRowGroup(
 			SlidingSourceFloats<Rows>& source,
 			float* const (&tempRows)[Rows],
-			uint64_t destWidth,
+			size_t destBegin,
+			size_t destEnd,
 			const AxisWeights& xWeights) noexcept
 		{
 			static_assert(Rows == 1 || Rows == 2);
@@ -225,7 +227,7 @@ namespace ImageProcessing::Detail
 			const simde__m256i weightSpread2 = simde_mm256_setr_epi32(4, 4, 4, 4, 5, 5, 5, 5);
 			const simde__m256i weightSpread3 = simde_mm256_setr_epi32(6, 6, 6, 6, 7, 7, 7, 7);
 
-			for (uint64_t dx = 0; dx < destWidth; ++dx)
+			for (size_t dx = destBegin; dx < destEnd; ++dx)
 			{
 				const auto [firstPixel, weights] = xWeights.runFor(dx);
 				const size_t tapCount = weights.size();
@@ -320,9 +322,9 @@ namespace ImageProcessing::Detail
 						accumB = simde_mm_fmadd_ps(simde_mm_loadu_ps(srcPixelB + tap * 4), weight, accumB);
 				}
 
-				storeTempPixel<Channels>(tempRows[0] + static_cast<size_t>(dx) * Channels, accumA);
+				storeTempPixel<Channels>(tempRows[0] + (dx - destBegin) * Channels, accumA);
 				if constexpr (Rows == 2)
-					storeTempPixel<Channels>(tempRows[1] + static_cast<size_t>(dx) * Channels, accumB);
+					storeTempPixel<Channels>(tempRows[1] + (dx - destBegin) * Channels, accumB);
 			}
 		}
 
@@ -409,7 +411,7 @@ namespace ImageProcessing::Detail
 		}
 	}
 
-	// Fully resizes destination rows [destRowBegin, destRowEnd), producing temp rows in pairs into a TempRowRing.
+	// Fully resizes destination rows [destRowBegin, destRowEnd), one column strip at a time, producing temp rows in pairs into a TempRowRing.
 	// The ring is also what lets the pair write two store streams safely: into cold full-size temp, the interleaved streams
 	// defeat the prefetch that hides each line's ownership read (measured ~1.2 cycles per temp byte, and software prefetch
 	// does not recover it) - the ring is rewritten every few rows and stays cache-owned.
@@ -420,6 +422,7 @@ namespace ImageProcessing::Detail
 		ImageView<false>& dest,
 		const AxisWeights& xWeights,
 		const AxisWeights& yWeights,
+		size_t stripWidth,
 		uint8_t pixelTailValue,
 		uint64_t destRowBegin,
 		uint64_t destRowEnd)
@@ -428,7 +431,7 @@ namespace ImageProcessing::Detail
 		assert(destRowBegin < destRowEnd);
 
 		const size_t destWidth = static_cast<size_t>(dest.width);
-		const size_t tempRowStride = destWidth * Channels;
+		const size_t tempRowStride = stripWidth * Channels;
 
 		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2 };
 
@@ -447,40 +450,46 @@ namespace ImageProcessing::Detail
 		};
 		const bool premultiplyAlpha = hasStraightAlpha(source);
 
-		uint64_t produced = ring.firstNeededRow();
-		for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
+		for (size_t stripBegin = 0; stripBegin < destWidth; stripBegin += stripWidth)
 		{
-			const auto [firstWindowRow, rowWeights] = yWeights.runFor(dy);
-			const uint64_t windowEnd = firstWindowRow + rowWeights.size();
-			assert(windowEnd <= srcRect.h);
+			const size_t stripEnd = std::min(stripBegin + stripWidth, destWidth);
 
-			while (produced < windowEnd)
+			uint64_t produced = ring.firstNeededRow();
+			for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
 			{
-				if (produced + 2 <= srcRect.h)
-				{
-					SlidingSourceFloats<2> sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, srcWidth, premultiplyAlpha };
-					float* const tempRows[2] = { ring.row(produced), ring.row(produced + 1) };
-					filterHorizontalRowGroup<Channels>(sourceRows, tempRows, destWidth, xWeights);
-					produced += 2;
-				}
-				else
-				{
-					SlidingSourceFloats<1> sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, srcWidth, premultiplyAlpha };
-					float* const tempRows[1] = { ring.row(produced) };
-					filterHorizontalRowGroup<Channels>(sourceRow, tempRows, destWidth, xWeights);
-					++produced;
-				}
-			}
+				const auto [firstWindowRow, rowWeights] = yWeights.runFor(dy);
+				const uint64_t windowEnd = firstWindowRow + rowWeights.size();
+				assert(windowEnd <= srcRect.h);
 
-			assert(produced - firstWindowRow <= ring.rowCapacity());
-			filterVerticalDestRow<Channels>(ring.window(firstWindowRow, rowWeights.size()), rowWeights, tempRowStride, pixelTailValue, dest.scanLine<uint8_t>(dy), destWidth);
+				while (produced < windowEnd)
+				{
+					if (produced + 2 <= srcRect.h)
+					{
+						SlidingSourceFloats<2> sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, srcWidth, premultiplyAlpha };
+						float* const tempRows[2] = { ring.row(produced), ring.row(produced + 1) };
+						filterHorizontalRowGroup<Channels>(sourceRows, tempRows, stripBegin, stripEnd, xWeights);
+						produced += 2;
+					}
+					else
+					{
+						SlidingSourceFloats<1> sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, srcWidth, premultiplyAlpha };
+						float* const tempRows[1] = { ring.row(produced) };
+						filterHorizontalRowGroup<Channels>(sourceRow, tempRows, stripBegin, stripEnd, xWeights);
+						++produced;
+					}
+				}
+
+				assert(produced - firstWindowRow <= ring.rowCapacity());
+				uint8_t* const stripDest = dest.scanLine<uint8_t>(dy) + stripBegin * 4;
+				filterVerticalDestRow<Channels>(ring.window(firstWindowRow, rowWeights.size()), rowWeights, tempRowStride, pixelTailValue, stripDest, stripEnd - stripBegin);
+			}
 		}
 
 		SimdSupport::clearAvxUpperState();
 	}
 
-	template void resizeRows4BytePixelsSimd<3>(const ImageView<true>&, Rect, ImageView<false>&, const AxisWeights&, const AxisWeights&, uint8_t, uint64_t, uint64_t);
-	template void resizeRows4BytePixelsSimd<4>(const ImageView<true>&, Rect, ImageView<false>&, const AxisWeights&, const AxisWeights&, uint8_t, uint64_t, uint64_t);
+	template void resizeRows4BytePixelsSimd<3>(const ImageView<true>&, Rect, ImageView<false>&, const AxisWeights&, const AxisWeights&, size_t, uint8_t, uint64_t, uint64_t);
+	template void resizeRows4BytePixelsSimd<4>(const ImageView<true>&, Rect, ImageView<false>&, const AxisWeights&, const AxisWeights&, size_t, uint8_t, uint64_t, uint64_t);
 }
 
 #endif

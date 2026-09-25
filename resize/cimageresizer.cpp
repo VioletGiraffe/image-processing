@@ -264,13 +264,14 @@ namespace
 		}
 	}
 
+	// Filters dest columns [destBegin, destEnd) into tempRow; sourceFloats starts at source pixel firstSourcePixel
 	template <size_t Channels>
-	void filterHorizontalRow(const float* sourceFloats, float* tempRow, size_t destWidth, const AxisWeights& xWeights) noexcept
+	void filterHorizontalRow(const float* sourceFloats, size_t firstSourcePixel, float* tempRow, size_t destBegin, size_t destEnd, const AxisWeights& xWeights) noexcept
 	{
-		for (size_t dx = 0; dx < destWidth; ++dx)
+		for (size_t dx = destBegin; dx < destEnd; ++dx)
 		{
 			const auto [firstPixel, weights] = xWeights.runFor(dx);
-			const float* srcPixel = sourceFloats + firstPixel * Channels;
+			const float* srcPixel = sourceFloats + (firstPixel - firstSourcePixel) * Channels;
 			std::array<float, Channels> accum{};
 
 			for (const float weight : weights)
@@ -281,12 +282,12 @@ namespace
 				srcPixel += Channels;
 			}
 
-			std::copy_n(accum.data(), Channels, tempRow + dx * Channels);
+			std::copy_n(accum.data(), Channels, tempRow + (dx - destBegin) * Channels);
 		}
 	}
 
 	// Sums the window's temp rows into accumRow, tap by tap: each tap is one sweep over contiguous floats
-	void filterVerticalRow(const std::array<TempRowSegment, 2>& segments, std::span<const float> rowWeights, size_t rowElementCount, float* accumRow) noexcept
+	void filterVerticalRow(const std::array<TempRowSegment, 2>& segments, std::span<const float> rowWeights, size_t tempRowStride, size_t rowElementCount, float* accumRow) noexcept
 	{
 		std::fill_n(accumRow, rowElementCount, 0.0f);
 
@@ -294,7 +295,7 @@ namespace
 		for (const TempRowSegment& segment : segments)
 		{
 			const float* tempRow = segment.firstRow;
-			for (size_t row = 0; row < segment.rowCount; ++row, ++weight, tempRow += rowElementCount)
+			for (size_t row = 0; row < segment.rowCount; ++row, ++weight, tempRow += tempRowStride)
 			{
 				// A zero tap would cost a whole row sweep, and exact-ratio downscales produce them (the kernels are zero at integer offsets)
 				const float tapWeight = *weight;
@@ -307,8 +308,29 @@ namespace
 		}
 	}
 
-	// Resizes dest rows [destRowBegin, destRowEnd) through a TempRowRing.
-	// Each source row is converted to floats once, whole: the x runs of neighboring columns overlap.
+	struct SourceSpan
+	{
+		size_t begin;
+		size_t end;
+	};
+
+	// The source pixels read by the x runs of dest columns [destBegin, destEnd)
+	[[nodiscard]] SourceSpan sourceSpanFor(const AxisWeights& xWeights, size_t destBegin, size_t destEnd) noexcept
+	{
+		SourceSpan span{ SIZE_MAX, 0 };
+		// Every run is checked: end-trimming lets a run start before its predecessor
+		for (size_t dx = destBegin; dx < destEnd; ++dx)
+		{
+			const auto run = xWeights.runFor(dx);
+			span.begin = std::min(span.begin, run.firstSource);
+			span.end = std::max(span.end, run.firstSource + run.weights.size());
+		}
+
+		return span;
+	}
+
+	// Resizes dest rows [destRowBegin, destRowEnd) through a TempRowRing, one column strip at a time.
+	// Each source row's strip span is converted to floats once, whole: the x runs of neighboring columns overlap.
 	template <size_t Channels, size_t PixelStride>
 	void resizeRowsScalar(
 		const ImageView<true>& source,
@@ -316,16 +338,16 @@ namespace
 		ImageView<false>& dest,
 		const AxisWeights& xWeights,
 		const AxisWeights& yWeights,
+		size_t stripWidth,
 		uint64_t destRowBegin,
 		uint64_t destRowEnd)
 	{
 		const size_t pixelStride = effectivePixelStride<PixelStride>(source.pixelStrideBytes);
-		const size_t srcWidth = static_cast<size_t>(srcRect.w);
 		const size_t destWidth = static_cast<size_t>(dest.width);
-		const size_t tempRowStride = destWidth * Channels;
+		const size_t tempRowStride = stripWidth * Channels;
 
 		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 1 };
-		const auto sourceFloats = std::make_unique_for_overwrite<float[]>(srcWidth * Channels);
+		const auto sourceFloats = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.w) * Channels);
 		const auto accumRow = std::make_unique_for_overwrite<float[]>(tempRowStride);
 
 		// A layout without alpha never instantiates the premultiplying variant
@@ -334,30 +356,59 @@ namespace
 			: &convertRowToFloats<Channels, PixelStride, false>;
 		const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * pixelStride;
 
-		uint64_t produced = ring.firstNeededRow();
-		for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
+		for (size_t stripBegin = 0; stripBegin < destWidth; stripBegin += stripWidth)
 		{
-			const auto [firstWindowRow, rowWeights] = yWeights.runFor(dy);
-			const uint64_t windowEnd = firstWindowRow + rowWeights.size();
-			assert(windowEnd <= srcRect.h);
+			const size_t stripEnd = std::min(stripBegin + stripWidth, destWidth);
+			const size_t stripElementCount = (stripEnd - stripBegin) * Channels;
+			const SourceSpan span = sourceSpanFor(xWeights, stripBegin, stripEnd);
 
-			for (; produced < windowEnd; ++produced)
+			uint64_t produced = ring.firstNeededRow();
+			for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
 			{
-				convertRow(source.scanLine<uint8_t>(srcRect.top + produced) + srcRect.left * pixelStride, pixelStride, sourceFloats.get(), srcWidth);
-				filterHorizontalRow<Channels>(sourceFloats.get(), ring.row(produced), destWidth, xWeights);
-			}
+				const auto [firstWindowRow, rowWeights] = yWeights.runFor(dy);
+				const uint64_t windowEnd = firstWindowRow + rowWeights.size();
+				assert(windowEnd <= srcRect.h);
 
-			assert(produced - firstWindowRow <= ring.rowCapacity());
-			filterVerticalRow(ring.window(firstWindowRow, rowWeights.size()), rowWeights, tempRowStride, accumRow.get());
+				for (; produced < windowEnd; ++produced)
+				{
+					const auto* spanPixels = source.scanLine<uint8_t>(srcRect.top + produced) + (srcRect.left + span.begin) * pixelStride;
+					convertRow(spanPixels, pixelStride, sourceFloats.get(), span.end - span.begin);
+					filterHorizontalRow<Channels>(sourceFloats.get(), span.begin, ring.row(produced), stripBegin, stripEnd, xWeights);
+				}
 
-			auto* dstPixel = dest.scanLine<uint8_t>(dy);
-			for (size_t dx = 0; dx < destWidth; ++dx, dstPixel += pixelStride)
-			{
-				writePixelBytes(dstPixel, accumRow.get() + dx * Channels, Channels);
-				if (pixelStride > Channels)
-					copyPixelTail(dstPixel, pixelTailSource, Channels, pixelStride);
+				assert(produced - firstWindowRow <= ring.rowCapacity());
+				filterVerticalRow(ring.window(firstWindowRow, rowWeights.size()), rowWeights, tempRowStride, stripElementCount, accumRow.get());
+
+				auto* dstPixel = dest.scanLine<uint8_t>(dy) + stripBegin * pixelStride;
+				for (size_t dx = stripBegin; dx < stripEnd; ++dx, dstPixel += pixelStride)
+				{
+					writePixelBytes(dstPixel, accumRow.get() + (dx - stripBegin) * Channels, Channels);
+					if (pixelStride > Channels)
+						copyPixelTail(dstPixel, pixelTailSource, Channels, pixelStride);
+				}
 			}
 		}
+	}
+
+	// Dest columns per strip: each thread holds a ring of temp rows for one strip at a time, and the strip width bounds
+	// that ring to a share of a small L2 shared by all cores, such as the Pi 4's 1 MB.
+	[[nodiscard]] size_t stripWidthFor(uint64_t destWidth, const AxisWeights& yWeights, size_t channels) noexcept
+	{
+		// Half of a four-core share of the Pi's L2: the source floats, weights and dest rows need the rest
+		constexpr size_t ringBudgetBytes = 128 * 1024;
+		// The SIMD vertical pass writes 8-pixel blocks, with a scalar tail per strip
+		constexpr size_t widthGranule = 8;
+
+		size_t longestYRun = 0;
+		for (const TapRun& run : yWeights.runs)
+			longestYRun = std::max(longestYRun, run.weightCount);
+
+		const size_t width = static_cast<size_t>(destWidth);
+		const size_t maxStripWidth = std::max(widthGranule, ringBudgetBytes / (longestYRun * channels * sizeof(float)));
+		const size_t stripCount = (width + maxStripWidth - 1) / maxStripWidth;
+		// Equal widths: a narrow last strip would pay the per-strip costs for little work
+		const size_t equalWidth = (width + stripCount - 1) / stripCount;
+		return std::min(width, (equalWidth + widthGranule - 1) / widthGranule * widthGranule);
 	}
 
 	template <size_t Channels>
@@ -389,6 +440,7 @@ namespace
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * Channels;
 		// A dest row's work includes producing its share of temp rows, srcRect.h / dest.height of them
 		const size_t elementsPerDestRow = tempRowStride + tempRowStride * static_cast<size_t>(srcRect.h) / static_cast<size_t>(dest.height);
+		const size_t stripWidth = stripWidthFor(dest.width, yWeights, Channels);
 
 #if IMAGE_PROCESSING_SIMD
 		if constexpr (Channels == 3 || Channels == 4)
@@ -398,7 +450,7 @@ namespace
 				const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * pixelStride;
 				forEachRowBand(parallelFor, dest.height, elementsPerDestRow, [&](uint64_t rowBegin, uint64_t rowEnd)
 				{
-					resizeRows4BytePixelsSimd<Channels>(source, srcRect, dest, xWeights, yWeights, pixelTailSource[3], rowBegin, rowEnd);
+					resizeRows4BytePixelsSimd<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
 				});
 				return;
 			}
@@ -417,7 +469,7 @@ namespace
 
 		forEachRowBand(parallelFor, dest.height, elementsPerDestRow, [&](uint64_t rowBegin, uint64_t rowEnd)
 		{
-			resizeRows(source, srcRect, dest, xWeights, yWeights, rowBegin, rowEnd);
+			resizeRows(source, srcRect, dest, xWeights, yWeights, stripWidth, rowBegin, rowEnd);
 		});
 	}
 }
