@@ -464,7 +464,7 @@ namespace
 
 	struct PixelLayout { uint8_t channels; uint8_t pixelStride; SimdUsage simd = SimdUsage::Auto; };
 
-	// 4/4 and 3/4 take the SIMD path where available, and the scalar one with SIMD disabled; 3/3 and 1/1 always the scalar one, 2/2 the runtime fallback
+	// 4/4 and 3/4 take the SIMD path where available, and the scalar one with SIMD disabled; 3/3, 1/1 and 2/2 always the scalar one
 	constexpr PixelLayout pixelLayouts[] = {
 		{ 4, 4 }, { 3, 4 }, { 4, 4, SimdUsage::Disabled }, { 3, 4, SimdUsage::Disabled }, { 3, 3 }, { 1, 1 }, { 2, 2 }
 	};
@@ -580,7 +580,7 @@ TEST_CASE("Constant images remain constant when resized", "[resize]")
 
 TEST_CASE("Filtered resize initializes bytes outside the logical channels", "[resize][pixel-layout]")
 {
-	SECTION("Specialized RGB32 layout")
+	SECTION("RGB32")
 	{
 		TestImage source(2, 2, 3, 4);
 		TestImage packedSource(2, 2, 3, 3);
@@ -619,7 +619,7 @@ TEST_CASE("Filtered resize initializes bytes outside the logical channels", "[re
 		}
 	}
 
-	SECTION("Runtime channel-count path")
+	SECTION("Two channels in four-byte pixels")
 	{
 		TestImage source(2, 2, 2, 4);
 		for (uint64_t y = 0; y < source.height; ++y)
@@ -660,13 +660,13 @@ TEST_CASE("Scaled crops match equivalent tightly packed images", "[resize][sourc
 		requirePixelsEqual(croppedResult, packedResult);
 	};
 
-	SECTION("Specialized channel-count path")
+	SECTION("RGB32")
 	{
 		for (const SimdUsage simd : simdUsages)
 			requireCropEquivalence(3, 4, simd);
 	}
 
-	SECTION("Runtime channel-count path")
+	SECTION("Two channels in four-byte pixels")
 	{
 		requireCropEquivalence(2, 4, SimdUsage::Auto);
 	}
@@ -882,7 +882,7 @@ TEST_CASE("Every pixel layout and geometry matches a direct double-precision ref
 }
 
 // The other layout comparisons use two-pixel sources; these sizes cover many blocked SIMD iterations and a
-// different scalar remainder, across the SIMD, scalar and runtime-dispatch paths.
+// different scalar remainder, across the SIMD and scalar paths.
 TEST_CASE("Pixel layouts agree on identical channel data", "[resize][pixel-layout]")
 {
 	constexpr uint64_t sourceWidth = 320, sourceHeight = 240;
