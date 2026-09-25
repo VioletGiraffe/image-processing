@@ -228,6 +228,38 @@ Pi, single-threaded. Columns: 1ecd630 / f116725 (out-of-line call) / 1199012 (in
 | 4K -> 64x64 | 3.62 / 3.63 / 3.41 |
 | 101 MP -> 720p | 4.32 / 4.47 / 4.29 |
 
+### The scalar path's temp-row ring and whole-row conversion
+
+The scalar path used to run two passes through a whole-image float temp, and converted and premultiplied a source pixel at
+every tap. It now shares `TempRowRing` with the SIMD kernel, and converts each source row once:
+- Whole rows, not the sliding buffer: on ARM the scalar path only serves layouts without a kernel, 1-3 floats per pixel in
+  one row. The whole rows that overflowed the Pi's L2 held 8: two rows of 4. Pi RGB24 on large images with threads is not
+  measured.
+- Tight packing and RGB32 get a compile-time pixel stride. With a runtime one, MSVC calls `memcpy` for every pixel's tail
+  bytes, and the conversion loop stays generic.
+
+PC, MSVC, scalar / QImage, 8ca3148 -> the next commit. Three alternating rounds, averaged; the SIMD rows held within 1%,
+64x64 within 6%. The threaded rows spread up to 21% between rounds.
+
+| Scenario | Single-threaded | Threads |
+|---|---|---|
+| 24 MP -> 1080p | 8.39 -> 6.33 | 2.38 -> 1.77 |
+| 4K -> 1080p RGB32 | 8.24 -> 7.25 | - |
+| 4K -> 1080p RGBA32 | 6.09 -> 4.48 | 1.74 -> 1.24 |
+| 4K -> 1080p Grayscale8 | 1.51 -> 1.06 | - |
+| 4K -> 1080p RGB24 | 3.45 -> 2.93 | - |
+| 720p -> 4K RGB32 | 1.81 -> 1.99 | - |
+| 720p -> 4K RGBA32 | 1.62 -> 1.40 | 0.43 -> 0.37 |
+| 720p -> 4K Grayscale8 | 1.17 -> 0.90 | - |
+| 720p -> 4K RGB24 | 1.86 -> 2.09 | 0.59 -> 0.53 |
+| 1080p -> 1440p | 2.80 -> 3.30 | 0.88 -> 0.84 |
+| 1080p -> 240p | 11.65 -> 8.26 | 3.48 -> 2.46 |
+| 4K -> 64x64 | 15.83 -> 11.65 | 4.69 -> 4.08 |
+| 101 MP -> 720p | 12.61 -> 9.46 | 3.52 -> 2.57 |
+
+- RGBA32 gains the most: the premultiply ran at every tap. The same upscale gains 13% as RGBA32 and loses 7% as RGB32.
+- Three-channel upscales lose 7-13% single-threaded and gain with threads: open lead 3. The Grayscale8 upscale gains 23%.
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -258,6 +290,10 @@ Pi, single-threaded. Columns: 1ecd630 / f116725 (out-of-line call) / 1199012 (in
    - It would win back the x64 upscale cost of pre-conversion: in one PC session, 1080p -> 1440p took 7.25 ms at 7919eaf
      and 8.5-8.7 ms with the sliding buffer.
    - It would add a second horizontal pass selected by platform and window size.
+7. **A byte-to-float lookup table in the scalar conversion** (not committed).
+   - Aimed at a suspected dependency chain through `cvtsi2ss`. MSVC already breaks it with `xorps`.
+   - PC: scalar downscales 2-5% faster, 1080p -> 1440p unchanged, across sessions.
+   - Dropped: unmeasured on ARM, where a table lookup blocks vectorizing the conversion.
 
 ## Open leads
 
@@ -265,8 +301,12 @@ Pi, single-threaded. Columns: 1ecd630 / f116725 (out-of-line call) / 1199012 (in
    fixed the same regression on MSVC: 1.84, 2.66, 1.76.
 2. **Native size on the x64 runners:** resizer / `QImage::copy` 7.59 (GCC) and 7.26 (Clang) at d436d41, about 1.0 on ARM.
    Not investigated.
-3. **Scalar straight alpha:** after 003d5e6, the PC's 4K -> 1080p RGBA32 scalar / SIMD ratio rose from 5.6-5.7x to 7.6x,
-   while the SIMD row held steady against Qt. The scalar path premultiplies at every tap: about 6 times per source pixel
-   in a 2x Lanczos downscale. Converting each row once, as the SIMD path does, would fix it.
+3. **Pre-conversion costs x64 upscales 7-17%**, on both paths: SIMD 1080p -> 1440p 7.25 -> 8.5-8.7 ms (experiment 6),
+   scalar three-channel upscales 7-13% single-threaded (the scalar ring section). Scalar 1080p -> 1440p phase timings on
+   the PC, Mcycles per resize:
+   - The horizontal filter reading floats takes 68-69, against 55-56 reading bytes, despite fewer instructions per tap.
+   - Skipping the vertical pass leaves it at 68-69, so the fused loop's other phases do not evict its data.
+   - Conversion takes 4.6; the ring saved 3-4 on the vertical pass.
+   - Unexplained. A suspect is the float row's L1 write-back and reload beside the 24-byte `TapRun` stream.
 4. **CPUs without AVX2 take the scalar path:** there is no SSE4.1 kernel yet. Baselines on a Sandy Bridge laptop and a
    Celeron N4100 come first.

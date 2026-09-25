@@ -227,10 +227,9 @@ namespace ImageProcessing::Detail
 
 			for (uint64_t dx = 0; dx < destWidth; ++dx)
 			{
-				const auto [srcStartOffset, weights] = xWeights.runFor(dx);
+				const auto [firstPixel, weights] = xWeights.runFor(dx);
 				const size_t tapCount = weights.size();
-				// The x offsets count 4 bytes per source pixel
-				const size_t runFloatOffset = source.prepareRun(srcStartOffset / 4, tapCount);
+				const size_t runFloatOffset = source.prepareRun(firstPixel, tapCount);
 				const float* srcPixelA = source.floats[0] + runFloatOffset;
 				[[maybe_unused]] const float* srcPixelB = source.floats[Rows - 1] + runFloatOffset;
 
@@ -327,17 +326,10 @@ namespace ImageProcessing::Detail
 			}
 		}
 
-		// A tap window's temp rows as they sit in the ring: contiguous except for at most one wrap
-		struct TempRowSegment
-		{
-			const float* firstRow;
-			size_t rowCount;
-		};
-
 		// Writes one destination row from its y tap window. rowWeights covers both segments in order.
 		template <size_t Channels>
 		IMAGE_PROCESSING_SIMD_INLINE void filterVerticalDestRow(
-			const TempRowSegment (&segments)[2],
+			const std::array<TempRowSegment, 2>& segments,
 			std::span<const float> rowWeights,
 			size_t tempRowStride,
 			uint8_t pixelTailValue,
@@ -417,15 +409,10 @@ namespace ImageProcessing::Detail
 		}
 	}
 
-	// Fully resizes destination rows [destRowBegin, destRowEnd): temp rows are produced (in pairs) into a ring
-	// barely larger than the y tap window and consumed immediately, so the intermediate rows stay cache-resident
-	// instead of a whole-image temp buffer making a DRAM round trip between the passes. The ring is also what
-	// lets the pair write two store streams safely: into cold full-size temp, the interleaved streams defeat the
-	// prefetch that hides each line's ownership read (measured ~1.2 cycles per temp byte, and software prefetch
+	// Fully resizes destination rows [destRowBegin, destRowEnd), producing temp rows in pairs into a TempRowRing.
+	// The ring is also what lets the pair write two store streams safely: into cold full-size temp, the interleaved streams
+	// defeat the prefetch that hides each line's ownership read (measured ~1.2 cycles per temp byte, and software prefetch
 	// does not recover it) - the ring is rewritten every few rows and stays cache-owned.
-	// Bands are independent: each computes every temp row its windows need, so neighbors re-do the shared boundary
-	// rows rather than hand them off.
-	// yWeights.startOffset must be the plain source row index - the ring decides the actual location.
 	template <size_t Channels>
 	IMAGE_PROCESSING_SIMD_TARGET void resizeRows4BytePixelsSimd(
 		const ImageView<true>& source,
@@ -443,23 +430,7 @@ namespace ImageProcessing::Detail
 		const size_t destWidth = static_cast<size_t>(dest.width);
 		const size_t tempRowStride = destWidth * Channels;
 
-		// Ring capacity: while writing dest row dy, production has reached at most one row past dy's window
-		// (pair production), and end-trimming lets a later window start slightly before an earlier one - so
-		// measure each window's end against the earliest start any not-yet-written row still needs.
-		uint64_t firstNeededRow = UINT64_MAX;
-		size_t ringRows = 0;
-		for (uint64_t dy = destRowEnd; dy-- > destRowBegin;)
-		{
-			const auto run = yWeights.runFor(dy);
-			firstNeededRow = std::min(firstNeededRow, static_cast<uint64_t>(run.startOffset));
-			ringRows = std::max(ringRows, run.startOffset + run.weights.size() + 1 - static_cast<size_t>(firstNeededRow));
-		}
-
-		const auto ring = std::make_unique_for_overwrite<float[]>(ringRows * tempRowStride);
-		const auto ringRow = [&ring, ringRows, tempRowStride](uint64_t srcRow) noexcept
-		{
-			return ring.get() + static_cast<size_t>(srcRow % ringRows) * tempRowStride;
-		};
+		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2 };
 
 		const size_t srcWidth = static_cast<size_t>(srcRect.w);
 		size_t longestXRun = 0;
@@ -476,7 +447,7 @@ namespace ImageProcessing::Detail
 		};
 		const bool premultiplyAlpha = hasStraightAlpha(source);
 
-		uint64_t produced = firstNeededRow;
+		uint64_t produced = ring.firstNeededRow();
 		for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
 		{
 			const auto [firstWindowRow, rowWeights] = yWeights.runFor(dy);
@@ -488,28 +459,21 @@ namespace ImageProcessing::Detail
 				if (produced + 2 <= srcRect.h)
 				{
 					SlidingSourceFloats<2> sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, srcWidth, premultiplyAlpha };
-					float* const tempRows[2] = { ringRow(produced), ringRow(produced + 1) };
+					float* const tempRows[2] = { ring.row(produced), ring.row(produced + 1) };
 					filterHorizontalRowGroup<Channels>(sourceRows, tempRows, destWidth, xWeights);
 					produced += 2;
 				}
 				else
 				{
 					SlidingSourceFloats<1> sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, srcWidth, premultiplyAlpha };
-					float* const tempRows[1] = { ringRow(produced) };
+					float* const tempRows[1] = { ring.row(produced) };
 					filterHorizontalRowGroup<Channels>(sourceRow, tempRows, destWidth, xWeights);
 					++produced;
 				}
 			}
 
-			// The window is contiguous in the ring except across the wrap, which splits it at most once
-			assert(produced - firstWindowRow <= ringRows);
-			const size_t firstSlot = static_cast<size_t>(firstWindowRow % ringRows);
-			const size_t rowsToRingEnd = std::min(rowWeights.size(), ringRows - firstSlot);
-			const TempRowSegment segments[2] = {
-				{ ring.get() + firstSlot * tempRowStride, rowsToRingEnd },
-				{ ring.get(), rowWeights.size() - rowsToRingEnd } };
-
-			filterVerticalDestRow<Channels>(segments, rowWeights, tempRowStride, pixelTailValue, dest.scanLine<uint8_t>(dy), destWidth);
+			assert(produced - firstWindowRow <= ring.rowCapacity());
+			filterVerticalDestRow<Channels>(ring.window(firstWindowRow, rowWeights.size()), rowWeights, tempRowStride, pixelTailValue, dest.scanLine<uint8_t>(dy), destWidth);
 		}
 
 		SimdSupport::clearAvxUpperState();
