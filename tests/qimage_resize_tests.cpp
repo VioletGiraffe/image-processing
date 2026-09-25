@@ -32,7 +32,6 @@ namespace
 		AlphaKind alphaKind = AlphaKind::Straight;
 	};
 
-	// Format_RGBX8888 is absent: the bridge maps it to nothing, see doc/tests_spec.md.
 	constexpr FormatMapping mappedFormats[] = {
 		{ QImage::Format_Grayscale8, "Grayscale8", 1, 1, 1 },
 		{ QImage::Format_Indexed8, "Indexed8", 1, 1, 1 },
@@ -52,6 +51,7 @@ namespace
 		QImage::Format_RGB16,
 		QImage::Format_RGB666,
 		QImage::Format_BGR30,
+		QImage::Format_RGBX8888,
 	};
 
 	// 9 columns pads the row in the 1- and 3-byte pixel formats: Qt aligns bytesPerLine to 4 bytes, so a stride mistake shows up there.
