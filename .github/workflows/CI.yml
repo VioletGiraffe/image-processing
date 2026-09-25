@@ -17,6 +17,8 @@ jobs:
             compiler: clang
           - os: ubuntu-24.04-arm
             compiler: clang
+          - os: windows-latest
+            compiler: clang
 
     steps:
     - name: Checkout
@@ -49,13 +51,24 @@ jobs:
 
     # cmd's exit status is the last command's, so every command fails the step itself
     - name: Build tests on Windows
-      if: startsWith(matrix.os, 'windows')
+      if: startsWith(matrix.os, 'windows') && matrix.compiler != 'clang'
       shell: cmd
       working-directory: tests
       run: |
         %QT_ROOT_DIR%\bin\qmake.exe -v
         %QT_ROOT_DIR%\bin\qmake.exe -tp vc image-processing-tests.pro || exit /b 1
         msbuild image-processing-tests.vcxproj /t:Build /p:Configuration=Release || exit /b 1
+
+    # The image's standalone LLVM goes first on PATH: the spec calls clang-cl, lld-link and llvm-lib by name
+    - name: Build tests on Windows with clang-cl
+      if: startsWith(matrix.os, 'windows') && matrix.compiler == 'clang'
+      shell: cmd
+      working-directory: tests
+      run: |
+        set "PATH=C:\Program Files\LLVM\bin;%PATH%"
+        clang-cl --version || exit /b 1
+        %QT_ROOT_DIR%\bin\qmake.exe image-processing-tests.pro -spec win32-clang-msvc -config release CONFIG+=release CONFIG-=debug_and_release || exit /b 1
+        nmake || exit /b 1
 
     - name: Build tests on macOS
       if: startsWith(matrix.os, 'macos')

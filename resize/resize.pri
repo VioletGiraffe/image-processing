@@ -16,10 +16,10 @@ else: QMAKE_CXXFLAGS += -isystem $$shell_quote($$SIMDE_INCLUDE_ROOT)
 
 # The SIMD kernels need every intrinsic VEX-encoded, the 128-bit ones included: a legacy SSE encoding stalls for
 # tens of cycles per instruction whenever the process left the upper YMM state dirty, which any AVX-using host
-# does. GCC and Clang get that per function from the target attribute; MSVC only has the per-TU switch, so its
-# kernels compile as a separate object. Flags are expanded here rather than taken from $(CXXFLAGS) because the
-# VS project generator emits fully expanded command lines and has no makefile macros.
-*msvc* {
+# does. GCC and Clang, clang-cl included, get that per function from the target attribute; MSVC only has the per-TU
+# switch, so its kernels compile as a separate object. Flags are expanded here rather than taken from $(CXXFLAGS)
+# because the VS project generator emits fully expanded command lines and has no makefile macros.
+*msvc*:!contains(QMAKE_COMPILER, clang_cl) {
 	AVX2_CXXFLAGS = $$QMAKE_CXXFLAGS /arch:AVX2
 	CONFIG(debug, debug|release): AVX2_CXXFLAGS += $$QMAKE_CXXFLAGS_DEBUG
 	else: AVX2_CXXFLAGS += $$QMAKE_CXXFLAGS_RELEASE
