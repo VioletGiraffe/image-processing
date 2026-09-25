@@ -421,10 +421,13 @@ namespace
 		requireResizeMatchesReference(actual, source);
 	}
 
+// HIDDEN_IN_DEBUG: Catch's hidden tag for cases whose input debug builds assert on
 #ifdef _DEBUG
 	constexpr bool debugBuild = true;
+	#define HIDDEN_IN_DEBUG "[.]"
 #else
 	constexpr bool debugBuild = false;
+	#define HIDDEN_IN_DEBUG ""
 #endif
 
 	struct ResizeJob
@@ -465,6 +468,9 @@ namespace
 	constexpr PixelLayout pixelLayouts[] = {
 		{ 4, 4 }, { 3, 4 }, { 4, 4, SimdUsage::Disabled }, { 3, 4, SimdUsage::Disabled }, { 3, 3 }, { 1, 1 }, { 2, 2 }
 	};
+
+	// For tests on 4-byte pixels: the scalar path runs on CPUs without AVX2 and on platforms without SIMD
+	constexpr SimdUsage simdUsages[] = { SimdUsage::Auto, SimdUsage::Disabled };
 }
 
 TEST_CASE("Bicubic upscaling matches independently generated golden pixels", "[resize][bicubic][golden]")
@@ -556,12 +562,18 @@ TEST_CASE("Constant images remain constant when resized", "[resize]")
 				setPixel(rgbaSource, x, y, { 11, 22, 33, 44 });
 		}
 
-		TestImage dest(11, 5, 4, 4);
-		resize(dest, rgbaSource);
-		for (uint64_t y = 0; y < dest.height; ++y)
+		for (const SimdUsage simd : simdUsages)
 		{
-			for (uint64_t x = 0; x < dest.width; ++x)
-				requirePixel(dest, x, y, { 11, 22, 33, 44 });
+			const bool simdDisabled = simd == SimdUsage::Disabled;
+			CAPTURE(simdDisabled);
+
+			TestImage dest(11, 5, 4, 4);
+			resize(dest, rgbaSource, {}, nullptr, simd);
+			for (uint64_t y = 0; y < dest.height; ++y)
+			{
+				for (uint64_t x = 0; x < dest.width; ++x)
+					requirePixel(dest, x, y, { 11, 22, 33, 44 });
+			}
 		}
 	}
 }
@@ -581,21 +593,28 @@ TEST_CASE("Filtered resize initializes bytes outside the logical channels", "[re
 		setPixel(packedSource, 0, 1, { 70, 80, 90 });
 		setPixel(packedSource, 1, 1, { 100, 110, 120 });
 
-		TestImage dest(13, 3, 3, 4, 0, 0);
 		TestImage packedDest(13, 3, 3, 3, 0, 0);
-		resize(dest, source);
 		resize(packedDest, packedSource);
 
-		for (uint64_t y = 0; y < dest.height; ++y)
+		for (const SimdUsage simd : simdUsages)
 		{
-			for (uint64_t x = 0; x < dest.width; ++x)
+			const bool simdDisabled = simd == SimdUsage::Disabled;
+			CAPTURE(simdDisabled);
+
+			TestImage dest(13, 3, 3, 4, 0, 0);
+			resize(dest, source, {}, nullptr, simd);
+
+			for (uint64_t y = 0; y < dest.height; ++y)
 			{
-				for (size_t channel = 0; channel < 3; ++channel)
+				for (uint64_t x = 0; x < dest.width; ++x)
 				{
-					const int difference = static_cast<int>(dest.pixel(x, y)[channel]) - static_cast<int>(packedDest.pixel(x, y)[channel]);
-					CHECK(std::max(difference, -difference) <= 1);
+					for (size_t channel = 0; channel < 3; ++channel)
+					{
+						const int difference = static_cast<int>(dest.pixel(x, y)[channel]) - static_cast<int>(packedDest.pixel(x, y)[channel]);
+						CHECK(std::max(difference, -difference) <= 1);
+					}
+					CHECK(+dest.pixel(x, y)[3] == 0xff);
 				}
-				CHECK(+dest.pixel(x, y)[3] == 0xff);
 			}
 		}
 	}
@@ -617,9 +636,10 @@ TEST_CASE("Filtered resize initializes bytes outside the logical channels", "[re
 
 TEST_CASE("Scaled crops match equivalent tightly packed images", "[resize][source-rect]")
 {
-	auto requireCropEquivalence = [](uint8_t channels, uint8_t pixelStride)
+	auto requireCropEquivalence = [](uint8_t channels, uint8_t pixelStride, SimdUsage simd)
 	{
-		CAPTURE(channels, pixelStride);
+		const bool simdDisabled = simd == SimdUsage::Disabled;
+		CAPTURE(channels, pixelStride, simdDisabled);
 		TestImage source(6, 5, channels, pixelStride, 5, 0xe1);
 		for (uint64_t y = 0; y < source.height; ++y)
 		{
@@ -635,19 +655,20 @@ TEST_CASE("Scaled crops match equivalent tightly packed images", "[resize][sourc
 		TestImage croppedResult(5, 2, channels, pixelStride, 3, 0x1c);
 		TestImage packedResult(5, 2, channels, pixelStride, 1, 0xe3);
 
-		resize(croppedResult, source, sourceRect);
-		resize(packedResult, packedCrop);
+		resize(croppedResult, source, sourceRect, nullptr, simd);
+		resize(packedResult, packedCrop, {}, nullptr, simd);
 		requirePixelsEqual(croppedResult, packedResult);
 	};
 
 	SECTION("Specialized channel-count path")
 	{
-		requireCropEquivalence(3, 4);
+		for (const SimdUsage simd : simdUsages)
+			requireCropEquivalence(3, 4, simd);
 	}
 
 	SECTION("Runtime channel-count path")
 	{
-		requireCropEquivalence(2, 4);
+		requireCropEquivalence(2, 4, SimdUsage::Auto);
 	}
 }
 
@@ -868,21 +889,21 @@ TEST_CASE("Pixel layouts agree on identical channel data", "[resize][pixel-layou
 	TestImage grayscaleSource(sourceWidth, sourceHeight, 1, 1);
 	fillDeterministicPattern(grayscaleSource);
 
-	struct Layout { uint8_t channels; uint8_t pixelStride; };
 	for (const auto [destWidth, destHeight] : { std::pair<uint64_t, uint64_t>{ 77, 51 }, { 480, 361 } })
 	{
 		CAPTURE(destWidth, destHeight);
 		TestImage grayscaleDest(destWidth, destHeight, 1, 1);
 		resize(grayscaleDest, grayscaleSource);
 
-		for (const auto [channels, pixelStride] : { Layout{ 3, 4 }, Layout{ 3, 3 }, Layout{ 4, 4 }, Layout{ 2, 2 } })
+		for (const auto [channels, pixelStride, simd] : pixelLayouts)
 		{
-			CAPTURE(+channels, +pixelStride);
+			const bool simdDisabled = simd == SimdUsage::Disabled;
+			CAPTURE(+channels, +pixelStride, simdDisabled);
 			TestImage source(sourceWidth, sourceHeight, channels, pixelStride);
 			fillDeterministicPattern(source);
 
 			TestImage dest(destWidth, destHeight, channels, pixelStride);
-			resize(dest, source);
+			resize(dest, source, {}, nullptr, simd);
 
 			for (uint64_t y = 0; y < destHeight; ++y)
 			{
@@ -897,7 +918,7 @@ TEST_CASE("Pixel layouts agree on identical channel data", "[resize][pixel-layou
 	}
 }
 
-TEST_CASE("Images with more than four channels are rejected", "[resize][validation]")
+TEST_CASE("Images with more than four channels are rejected", "[resize][validation]" HIDDEN_IN_DEBUG)
 {
 	constexpr uint8_t sentinel = 0x7b;
 	TestImage source(2, 2, 5, 5, 0, 0x42);
@@ -909,7 +930,7 @@ TEST_CASE("Images with more than four channels are rejected", "[resize][validati
 		CHECK(+value == +sentinel);
 }
 
-TEST_CASE("Images with 16-bit channels are rejected", "[resize][validation]")
+TEST_CASE("Images with 16-bit channels are rejected", "[resize][validation]" HIDDEN_IN_DEBUG)
 {
 	constexpr uint8_t sentinel = 0x7b;
 	std::vector<uint8_t> sourceData(8, 0x42);
@@ -950,12 +971,20 @@ TEST_CASE("Seeded randomized small images preserve resize properties", "[resize]
 			const TestImage packedCrop = tightlyPackedCrop(source, sourceRect);
 			const uint64_t destWidth = randomInRange(randomEngine, 1, 8);
 			const uint64_t destHeight = randomInRange(randomEngine, 1, 8);
-			TestImage croppedResult(destWidth, destHeight, channels, pixelStride, randomInRange(randomEngine, 0, 4), 0x1c);
-			TestImage packedResult(destWidth, destHeight, channels, pixelStride, randomInRange(randomEngine, 0, 4), 0xe3);
+			const size_t croppedResultPadding = randomInRange(randomEngine, 0, 4);
+			const size_t packedResultPadding = randomInRange(randomEngine, 0, 4);
 
-			resize(croppedResult, source, sourceRect);
-			resize(packedResult, packedCrop);
-			requirePixelsEqual(croppedResult, packedResult);
+			for (const SimdUsage simd : simdUsages)
+			{
+				const bool simdDisabled = simd == SimdUsage::Disabled;
+				CAPTURE(simdDisabled);
+
+				TestImage croppedResult(destWidth, destHeight, channels, pixelStride, croppedResultPadding, 0x1c);
+				TestImage packedResult(destWidth, destHeight, channels, pixelStride, packedResultPadding, 0xe3);
+				resize(croppedResult, source, sourceRect, nullptr, simd);
+				resize(packedResult, packedCrop, {}, nullptr, simd);
+				requirePixelsEqual(croppedResult, packedResult);
+			}
 		}
 	}
 
@@ -1010,16 +1039,24 @@ TEST_CASE("Seeded randomized small images preserve resize properties", "[resize]
 					std::copy(pixelValues.begin(), pixelValues.end(), source.pixel(x, y));
 			}
 
-			TestImage dest(randomInRange(randomEngine, 1, 8), randomInRange(randomEngine, 1, 8), channels, pixelStride);
-			resize(dest, source);
-			for (uint64_t y = 0; y < dest.height; ++y)
+			const uint64_t destWidth = randomInRange(randomEngine, 1, 8);
+			const uint64_t destHeight = randomInRange(randomEngine, 1, 8);
+			for (const SimdUsage simd : simdUsages)
 			{
-				for (uint64_t x = 0; x < dest.width; ++x)
+				const bool simdDisabled = simd == SimdUsage::Disabled;
+				CAPTURE(simdDisabled);
+
+				TestImage dest(destWidth, destHeight, channels, pixelStride);
+				resize(dest, source, {}, nullptr, simd);
+				for (uint64_t y = 0; y < dest.height; ++y)
 				{
-					for (size_t byte = 0; byte < pixelStride; ++byte)
+					for (uint64_t x = 0; x < dest.width; ++x)
 					{
-						CAPTURE(x, y, byte);
-						CHECK(+dest.pixel(x, y)[byte] == +pixelValues[byte]);
+						for (size_t byte = 0; byte < pixelStride; ++byte)
+						{
+							CAPTURE(x, y, byte);
+							CHECK(+dest.pixel(x, y)[byte] == +pixelValues[byte]);
+						}
 					}
 				}
 			}

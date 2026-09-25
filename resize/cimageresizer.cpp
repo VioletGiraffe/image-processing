@@ -550,6 +550,11 @@ namespace
 	}
 }
 
+bool ImageProcessing::simdAvailable() noexcept
+{
+	return SimdSupport::canUseSimd();
+}
+
 void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, SimdUsage simd)
 {
 	assert(source.width > 0 && source.height > 0);

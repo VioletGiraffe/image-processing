@@ -137,10 +137,10 @@ namespace
 			qImageFormat);
 		REQUIRE(!qImageSource.isNull());
 
-		// Only the 4-byte layouts have SIMD kernels, and an unscaled copy runs neither path.
+		// A scalar run only where the default one takes a SIMD kernel: 4-byte layouts, scaled, on a CPU that has the kernels.
 		// report_benchmark_ratios.py matches a scalar run to its SIMD run by the scenario name.
 		std::vector<SimdUsage> simdUsages{ SimdUsage::Auto };
-		if (pixelStrideBytes == 4 && channels >= 3 && (sourceWidth != destWidth || sourceHeight != destHeight))
+		if (ImageProcessing::simdAvailable() && pixelStrideBytes == 4 && channels >= 3 && (sourceWidth != destWidth || sourceHeight != destHeight))
 			simdUsages.push_back(SimdUsage::Disabled);
 
 		const auto resizerName = [name](SimdUsage simd) {

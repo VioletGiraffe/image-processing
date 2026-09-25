@@ -62,6 +62,9 @@ namespace ImageProcessing
 		Disabled,
 	};
 
+	// Whether SimdUsage::Auto reaches the SIMD kernels on this CPU
+	[[nodiscard]] bool simdAvailable() noexcept;
+
 	// The callback must run body(0) .. body(count - 1) concurrently and must not return until all of them have completed.
 	// When empty, the work runs on the calling thread; either way resize() returns only once the destination is complete.
 	using ParallelForFn = std::function<void(size_t count, const std::function<void(size_t index)>& body)>;
