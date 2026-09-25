@@ -261,6 +261,7 @@ TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 
 	benchmarkResize("24 MP photo to 1080p viewport - RGB32", 6000, 4000, 1620, 1080, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("4K to 1080p - RGBA32", 3840, 2160, 1920, 1080, 4, 4, QImage::Format_RGBA8888, &pool);
+	benchmarkResize("4K to 1080p - RGB24", 3840, 2160, 1920, 1080, 3, 3, QImage::Format_RGB888, &pool);
 	benchmarkResize("720p image to 4K - RGBA32", 1280, 720, 3840, 2160, 4, 4, QImage::Format_RGBA8888, &pool);
 	benchmarkResize("720p to 4K - RGB24", 1280, 720, 3840, 2160, 3, 3, QImage::Format_RGB888, &pool);
 	benchmarkResize("1080p image to 1440p - RGB32", 1920, 1080, 2560, 1440, 3, 4, QImage::Format_RGB32, &pool);
