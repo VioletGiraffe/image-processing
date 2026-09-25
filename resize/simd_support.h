@@ -73,7 +73,14 @@
 	#define IMAGE_PROCESSING_SIMD_INLINE __forceinline
 #else
 	#define IMAGE_PROCESSING_SIMD_TARGET
-	#define IMAGE_PROCESSING_SIMD_INLINE inline
+	// Forced as on x64: the kernel's per-column and per-pixel helpers must not become calls
+	#if defined(_MSC_VER)
+		#define IMAGE_PROCESSING_SIMD_INLINE __forceinline
+	#elif defined(__GNUC__) || defined(__clang__)
+		#define IMAGE_PROCESSING_SIMD_INLINE inline __attribute__((always_inline))
+	#else
+		#define IMAGE_PROCESSING_SIMD_INLINE inline
+	#endif
 #endif
 
 namespace ImageProcessing::SimdSupport
