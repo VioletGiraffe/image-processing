@@ -33,23 +33,24 @@ the table. Every table names the commit it was measured at: re-measure after cha
 
 ## Standing against Qt
 
-Resizer / QImage, lower is better. PC at 003d5e6, Pi at 1ecd630. "-": not measured at that commit.
+Resizer / QImage, lower is better. PC at 003d5e6, Pi at 1199012. "-": not measured at that commit.
 
 | Scenario | PC | PC, threads | Pi | Pi, threads |
 |---|---|---|---|---|
-| 24 MP -> 1080p | 1.77 | 0.57 | 2.94 | 1.51 |
-| 4K -> 1080p RGB32 | 2.01 | - | 4.84 | 3.16 |
-| 4K -> 1080p RGBA32 | 0.89 | 0.31 | - | - |
-| 720p -> 4K RGBA32 | 0.32 | 0.07 | - | - |
-| 1080p -> 1440p | 0.93 | 0.26 | 1.92 | 0.63 |
-| 1080p -> 240p | 2.57 | 1.41 | 3.63 | 1.42 |
-| 4K -> 64x64 | 2.36 | 1.13 | 3.62 | 1.40 |
-| 101 MP -> 720p | 2.24 | 0.66 | 4.32 | 1.48 |
-| 1080p, native size | 1.02 | - | 1.00 | - |
-| 4K -> 1080p Grayscale8 (scalar) | 1.28 | - | 1.39 | - |
-| 4K -> 1080p RGB24 (scalar) | 3.13 | - | 5.49 | - |
+| 24 MP -> 1080p | 1.77 | 0.57 | 2.97 | 1.51 |
+| 4K -> 1080p RGB32 | 2.01 | - | 4.87 | - |
+| 4K -> 1080p RGBA32 | 0.89 | 0.31 | 2.47 | 1.86 |
+| 720p -> 4K RGBA32 | 0.32 | 0.07 | 0.34 | 0.25 |
+| 1080p -> 1440p | 0.93 | 0.26 | 1.85 | 0.55 |
+| 1080p -> 240p | 2.57 | 1.41 | 3.70 | 1.30 |
+| 4K -> 64x64 | 2.36 | 1.13 | 3.41 | 1.36 |
+| 101 MP -> 720p | 2.24 | 0.66 | 4.29 | 1.55 |
+| 1080p, native size | 1.02 | - | 0.99 | - |
+| 4K -> 1080p Grayscale8 (scalar) | 1.28 | - | 1.38 | - |
+| 4K -> 1080p RGB24 (scalar) | 3.13 | - | 5.50 | - |
 
-- Upscales and straight-alpha images beat Qt; Qt premultiplies alpha in a separate pass.
+- PC: upscales and straight-alpha images beat Qt; Qt premultiplies alpha in a separate pass.
+- Pi: large upscales beat Qt single-threaded, and every upscale does with threads.
 - Opaque downscales stay about 2x behind Qt single-threaded on the PC and 3-5x on the Pi.
 - RGB24 and Grayscale8 are the weak spots: they have no SIMD kernel.
 
@@ -183,8 +184,49 @@ Net on the Pi, 7919eaf -> 1ecd630, ms:
 Qt converts straight alpha to `ARGB32_Premultiplied` before scaling. That pass is the difference between its RGBA32 and
 RGB32 4K -> 1080p controls: 18.7 against 8.1 ms on the PC, 87.9 against 40.2 on the Pi. The same conversion in our Qt bridge
 would add a pass and a 33 MB temporary per 4K frame. Premultiplying while converting to float costs nothing measurable on
-the SIMD path: at 1ecd630 the 4K -> 1080p RGBA32 ratio was 0.858 and 0.797 in two runs, and at 003d5e6 it was 0.885. The
-untouched RGB32 row moved by as much in the same runs.
+the SIMD path on the PC: at 1ecd630 the 4K -> 1080p RGBA32 ratio was 0.858 and 0.797 in two runs, and at 003d5e6 it was
+0.885. The untouched RGB32 row moved by as much in the same runs. On the Pi it costs about 5% single-threaded: 2.36 at
+1ecd630, 2.47 at 1199012.
+
+### 128-bit packs for the output bytes (e16c6c4)
+
+The vertical pass rounds floats to bytes:
+- 256-bit packs work per 128-bit lane. Joining the lanes takes a lane-crossing `permutevar8x32`, which SIMDe emulates
+  element by element on NEON.
+- 128-bit packs keep element order, so the permute is not needed.
+
+Resizer / QImage, before -> after. On the ARM runner and the Pi, both builds called `prepareRun` out of line (see the next
+section).
+
+| Scenario | ARM Clang CI | Pi | PC |
+|---|---|---|---|
+| 720p -> 4K RGBA32 | 0.31 -> 0.28 | 0.39 -> 0.37 | 0.31 -> 0.31 |
+| 720p -> 4K RGBA32, threads | 0.081 -> 0.072 | 0.31 -> 0.28 | 0.074 -> 0.068 |
+| 1080p -> 1440p | 2.07 -> 1.95 | 2.10 -> 2.01 | 0.92 -> 0.87 |
+
+Downscales stayed within about 4% on all three.
+
+### Forced inlining on every platform (1199012)
+
+The kernel's helpers run per pixel or per output column, so `IMAGE_PROCESSING_SIMD_INLINE` forces inlining on every
+platform:
+- On x64 the forcing came with the AVX2 target attribute.
+- On ARM the macro was plain `inline`. Once 003d5e6 enlarged `prepareRun`, Clang called it out of line, once per output
+  column.
+- A per-column cost weighs most on upscales, which have the most columns per source pixel.
+
+ARM Clang runner, 1ecd630 -> 003d5e6: 24 MP 2.32 -> 2.58, 4K -> 1080p 3.64 -> 4.09, 1080p -> 1440p 1.79 -> 2.07,
+4K -> 64x64 3.09 -> 3.26.
+
+Pi, single-threaded. Columns: 1ecd630 / f116725 (out-of-line call) / 1199012 (inlined, with the 128-bit packs):
+
+| Scenario | Resizer / QImage |
+|---|---|
+| 24 MP -> 1080p | 2.94 / 3.11 / 2.97 |
+| 4K -> 1080p RGB32 | 4.96 / 5.24 / 4.83 |
+| 1080p -> 1440p | 1.92 / 2.10 / 1.85 |
+| 4K -> 64x64 | 3.62 / 3.63 / 3.41 |
+| 101 MP -> 720p | 4.32 / 4.47 / 4.29 |
 
 ## Experiments that lost
 
@@ -221,12 +263,10 @@ untouched RGB32 row moved by as much in the same runs.
 
 1. **x64 GCC runners, 4K -> 64x64:** resizer / QImage 3.55 at f435b80, 4.04 at d436d41, 3.95 at 1ecd630. The sliding buffer
    fixed the same regression on MSVC: 1.84, 2.66, 1.76.
-2. **`packEightFloatsToBytes` on ARM:** SIMDe emulates its `permutevar8x32_epi32` on NEON, once per 8 output pixels. The
-   ARM runners' upscale ratio lags: 64x64 -> 4K was 0.92 on ARM Clang against 0.40 on x64 Clang at d436d41.
-3. **Native size on the x64 runners:** resizer / `QImage::copy` 7.59 (GCC) and 7.26 (Clang) at d436d41, about 1.0 on ARM.
+2. **Native size on the x64 runners:** resizer / `QImage::copy` 7.59 (GCC) and 7.26 (Clang) at d436d41, about 1.0 on ARM.
    Not investigated.
-4. **Scalar straight alpha:** after 003d5e6, the PC's 4K -> 1080p RGBA32 scalar / SIMD ratio rose from 5.6-5.7x to 7.6x,
+3. **Scalar straight alpha:** after 003d5e6, the PC's 4K -> 1080p RGBA32 scalar / SIMD ratio rose from 5.6-5.7x to 7.6x,
    while the SIMD row held steady against Qt. The scalar path premultiplies at every tap: about 6 times per source pixel
    in a 2x Lanczos downscale. Converting each row once, as the SIMD path does, would fix it.
-5. **CPUs without AVX2 take the scalar path:** there is no SSE4.1 kernel yet. Baselines on a Sandy Bridge laptop and a
+4. **CPUs without AVX2 take the scalar path:** there is no SSE4.1 kernel yet. Baselines on a Sandy Bridge laptop and a
    Celeron N4100 come first.
