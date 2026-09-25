@@ -36,6 +36,12 @@ namespace ImageProcessing::Detail
 			return simde_mm256_castsi256_si128(contiguousBytes);
 		}
 
+		// Color is capped at alpha, as writePixelBytes does
+		IMAGE_PROCESSING_SIMD_INLINE simde__m256 capColorAtAlpha(simde__m256 twoPixels) noexcept
+		{
+			return simde_mm256_min_ps(twoPixels, simde_mm256_shuffle_ps(twoPixels, twoPixels, SIMDE_MM_SHUFFLE(3, 3, 3, 3)));
+		}
+
 		IMAGE_PROCESSING_SIMD_INLINE void writeEightRgbaPixels(
 			uint8_t* dest,
 			simde__m256 values0,
@@ -43,10 +49,10 @@ namespace ImageProcessing::Detail
 			simde__m256 values2,
 			simde__m256 values3) noexcept
 		{
-			const simde__m128i bytes0 = packEightFloatsToBytes(values0);
-			const simde__m128i bytes1 = packEightFloatsToBytes(values1);
-			const simde__m128i bytes2 = packEightFloatsToBytes(values2);
-			const simde__m128i bytes3 = packEightFloatsToBytes(values3);
+			const simde__m128i bytes0 = packEightFloatsToBytes(capColorAtAlpha(values0));
+			const simde__m128i bytes1 = packEightFloatsToBytes(capColorAtAlpha(values1));
+			const simde__m128i bytes2 = packEightFloatsToBytes(capColorAtAlpha(values2));
+			const simde__m128i bytes3 = packEightFloatsToBytes(capColorAtAlpha(values3));
 			simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest), simde_mm_unpacklo_epi64(bytes0, bytes1));
 			simde_mm_storeu_si128(reinterpret_cast<simde__m128i*>(dest + 16), simde_mm_unpacklo_epi64(bytes2, bytes3));
 		}
@@ -82,18 +88,48 @@ namespace ImageProcessing::Detail
 			return simde_mm_cvtepi32_ps(simde_mm_cvtepu8_epi32(simde_mm_cvtsi32_si128(packedPixel)));
 		}
 
+		// Color times alpha / 255; the alpha lanes keep the source value
+		IMAGE_PROCESSING_SIMD_INLINE simde__m256 premultiplyTwoPixels(simde__m256 twoPixels) noexcept
+		{
+			const simde__m256 alpha = simde_mm256_shuffle_ps(twoPixels, twoPixels, SIMDE_MM_SHUFFLE(3, 3, 3, 3));
+			const simde__m256 premultiplied = simde_mm256_mul_ps(twoPixels, simde_mm256_mul_ps(alpha, simde_mm256_set1_ps(1.0f / 255.0f)));
+			return simde_mm256_blend_ps(premultiplied, twoPixels, 0x88);
+		}
+
+		IMAGE_PROCESSING_SIMD_INLINE simde__m128 premultiplyPixel(simde__m128 pixel) noexcept
+		{
+			const simde__m128 alpha = simde_mm_shuffle_ps(pixel, pixel, SIMDE_MM_SHUFFLE(3, 3, 3, 3));
+			const simde__m128 premultiplied = simde_mm_mul_ps(pixel, simde_mm_mul_ps(alpha, simde_mm_set1_ps(1.0f / 255.0f)));
+			return simde_mm_blend_ps(premultiplied, pixel, 0x8);
+		}
+
+		template <bool PremultiplyAlpha>
 		IMAGE_PROCESSING_SIMD_INLINE void convertPixelsToFloats(const uint8_t* pixels, float* floats, size_t pixelCount) noexcept
 		{
 			size_t pixel = 0;
 			for (; pixel + 4 <= pixelCount; pixel += 4)
 			{
 				const simde__m128i bytes = simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(pixels + pixel * 4));
-				simde_mm256_storeu_ps(floats + pixel * 4, simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(bytes)));
-				simde_mm256_storeu_ps(floats + pixel * 4 + 8, simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(simde_mm_unpackhi_epi64(bytes, bytes))));
+				simde__m256 pixels01 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(bytes));
+				simde__m256 pixels23 = simde_mm256_cvtepi32_ps(simde_mm256_cvtepu8_epi32(simde_mm_unpackhi_epi64(bytes, bytes)));
+				if constexpr (PremultiplyAlpha)
+				{
+					pixels01 = premultiplyTwoPixels(pixels01);
+					pixels23 = premultiplyTwoPixels(pixels23);
+				}
+
+				simde_mm256_storeu_ps(floats + pixel * 4, pixels01);
+				simde_mm256_storeu_ps(floats + pixel * 4 + 8, pixels23);
 			}
 
 			for (; pixel < pixelCount; ++pixel)
-				simde_mm_storeu_ps(floats + pixel * 4, loadPixelAsFloats(pixels + pixel * 4));
+			{
+				simde__m128 pixelFloats = loadPixelAsFloats(pixels + pixel * 4);
+				if constexpr (PremultiplyAlpha)
+					pixelFloats = premultiplyPixel(pixelFloats);
+
+				simde_mm_storeu_ps(floats + pixel * 4, pixelFloats);
+			}
 		}
 
 		// A row group's source pixels as floats, 4 per pixel, over a span that slides along the rows as the x runs advance.
@@ -136,7 +172,14 @@ namespace ImageProcessing::Detail
 				{
 					const size_t convertedTarget = std::min({ std::max(end, converted + conversionChunk), base + capacity, pixelCount });
 					for (size_t row = 0; row < Rows; ++row)
-						convertPixelsToFloats(pixels[row] + converted * 4, floats[row] + (converted - base) * 4, convertedTarget - converted);
+					{
+						const uint8_t* rowPixels = pixels[row] + converted * 4;
+						float* rowFloats = floats[row] + (converted - base) * 4;
+						if (premultiplyAlpha)
+							convertPixelsToFloats<true>(rowPixels, rowFloats, convertedTarget - converted);
+						else
+							convertPixelsToFloats<false>(rowPixels, rowFloats, convertedTarget - converted);
+					}
 
 					converted = convertedTarget;
 				}
@@ -148,6 +191,7 @@ namespace ImageProcessing::Detail
 			float* const floats[Rows];
 			const size_t capacity; // In pixels
 			const size_t pixelCount;
+			const bool premultiplyAlpha;
 			size_t base = 0; // The source pixel at floats[row][0]
 			size_t converted = 0; // Pixels [base, converted) are in the buffers
 		};
@@ -369,8 +413,7 @@ namespace ImageProcessing::Detail
 				}
 
 				uint8_t* destPixel = destRow + pixel * 4;
-				for (size_t channel = 0; channel < Channels; ++channel)
-					destPixel[channel] = clampToByte(accum[channel]);
+				writePixelBytes(destPixel, accum.data(), Channels);
 
 				if constexpr (Channels == 3)
 					destPixel[3] = pixelTailValue;
@@ -435,6 +478,7 @@ namespace ImageProcessing::Detail
 		{
 			return source.scanLine<uint8_t>(srcRect.top + srcRow) + srcRect.left * 4;
 		};
+		const bool premultiplyAlpha = hasStraightAlpha(source);
 
 		uint64_t produced = firstNeededRow;
 		for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
@@ -447,14 +491,14 @@ namespace ImageProcessing::Detail
 			{
 				if (produced + 2 <= srcRect.h)
 				{
-					SlidingSourceFloats<2> sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, srcWidth };
+					SlidingSourceFloats<2> sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, srcWidth, premultiplyAlpha };
 					float* const tempRows[2] = { ringRow(produced), ringRow(produced + 1) };
 					filterHorizontalRowGroup<Channels>(sourceRows, tempRows, destWidth, xWeights);
 					produced += 2;
 				}
 				else
 				{
-					SlidingSourceFloats<1> sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, srcWidth };
+					SlidingSourceFloats<1> sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, srcWidth, premultiplyAlpha };
 					float* const tempRows[1] = { ringRow(produced) };
 					filterHorizontalRowGroup<Channels>(sourceRow, tempRows, destWidth, xWeights);
 					++produced;

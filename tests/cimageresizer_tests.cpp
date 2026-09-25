@@ -22,6 +22,8 @@ RESTORE_COMPILER_WARNINGS
 
 namespace
 {
+	using ImageProcessing::AlphaKind;
+	using ImageProcessing::hasAlphaChannel;
 	using ImageProcessing::ImageView;
 	using ImageProcessing::Rect;
 	using ImageProcessing::SimdUsage;
@@ -40,12 +42,12 @@ namespace
 
 		[[nodiscard]] ImageView<true> constView() const noexcept
 		{
-			return { width, height, channels, 1, pixelStrideBytes, bytesPerLine, data.data() };
+			return { width, height, channels, alphaKind, 1, pixelStrideBytes, bytesPerLine, data.data() };
 		}
 
 		[[nodiscard]] ImageView<false> mutableView() noexcept
 		{
-			return { width, height, channels, 1, pixelStrideBytes, bytesPerLine, data.data() };
+			return { width, height, channels, alphaKind, 1, pixelStrideBytes, bytesPerLine, data.data() };
 		}
 
 		[[nodiscard]] uint8_t* pixel(uint64_t x, uint64_t y) noexcept
@@ -61,6 +63,7 @@ namespace
 		uint64_t width;
 		uint64_t height;
 		uint8_t channels;
+		AlphaKind alphaKind = AlphaKind::Premultiplied; // As a destination must be
 		uint8_t pixelStrideBytes;
 		size_t bytesPerLine;
 		std::vector<uint8_t> data;
@@ -206,17 +209,6 @@ namespace
 		return result;
 	}
 
-	TestImage extractChannel(const TestImage& source, uint8_t channel)
-	{
-		TestImage result(source.width, source.height, 1, 1);
-		for (uint64_t y = 0; y < source.height; ++y)
-		{
-			for (uint64_t x = 0; x < source.width; ++x)
-				result.pixel(x, y)[0] = source.pixel(x, y)[channel];
-		}
-		return result;
-	}
-
 	TestImage grayscaleGrid(uint64_t width, uint64_t height)
 	{
 		TestImage image(width, height, 1, 1);
@@ -323,8 +315,19 @@ namespace
 		return result;
 	}
 
+	// Straight color is filtered premultiplied
+	[[nodiscard]] double filteredChannelValue(const TestImage& image, uint64_t x, uint64_t y, uint8_t channel)
+	{
+		const uint8_t* pixel = image.pixel(x, y);
+		const size_t alphaChannel = image.channels - 1u;
+		if (image.alphaKind == AlphaKind::Straight && hasAlphaChannel(image.channels) && channel != alphaChannel)
+			return static_cast<double>(pixel[channel]) * static_cast<double>(pixel[alphaChannel]) / 255.0;
+
+		return static_cast<double>(pixel[channel]);
+	}
+
 	// A direct 2D convolution keeps the test oracle structurally independent from the production two-pass implementation.
-	[[nodiscard]] std::vector<double> referenceResizeSingleChannel(const TestImage& source, uint64_t destWidth, uint64_t destHeight)
+	[[nodiscard]] std::vector<double> referenceResizeChannel(const TestImage& source, uint8_t channel, uint64_t destWidth, uint64_t destHeight)
 	{
 		const ReferenceAxisWeights xWeights = buildReferenceAxisWeights(source.width, destWidth);
 		const ReferenceAxisWeights yWeights = buildReferenceAxisWeights(source.height, destHeight);
@@ -338,7 +341,7 @@ namespace
 				for (const ReferenceTap& yTap : yWeights[destY])
 				{
 					for (const ReferenceTap& xTap : xWeights[destX])
-						value += static_cast<double>(source.pixel(xTap.coordinate, yTap.coordinate)[0]) * xTap.weight * yTap.weight;
+						value += filteredChannelValue(source, xTap.coordinate, yTap.coordinate, channel) * xTap.weight * yTap.weight;
 				}
 				result[static_cast<size_t>(destY) * destWidth + destX] = value;
 			}
@@ -353,12 +356,9 @@ namespace
 		return static_cast<uint8_t>(std::clamp(rounded, int64_t{ 0 }, int64_t{ 255 }));
 	}
 
-	// Channels are filtered independently, so one extracted channel against the single-channel oracle is a complete check.
-	void requireChannelMatchesReference(const TestImage& actual, const TestImage& source, uint8_t channel)
+	void requireChannelMatchesReference(const TestImage& actual, const TestImage& source, const std::vector<double>& reference, uint8_t channel)
 	{
 		CAPTURE(+channel);
-		const std::vector<double> reference = referenceResizeSingleChannel(extractChannel(source, channel), actual.width, actual.height);
-
 		for (uint64_t y = 0; y < actual.height; ++y)
 		{
 			for (uint64_t x = 0; x < actual.width; ++x)
@@ -381,12 +381,34 @@ namespace
 		}
 	}
 
+	// Channels are filtered independently; only the output cap ties color to alpha
 	void requireResizeMatchesReference(const TestImage& actual, const TestImage& source)
 	{
 		REQUIRE(+actual.channels == +source.channels);
 
+		const bool hasAlpha = hasAlphaChannel(source.channels);
+		const uint8_t alphaChannel = static_cast<uint8_t>(source.channels - 1);
+		std::vector<double> alphaReference;
+		if (hasAlpha)
+			alphaReference = referenceResizeChannel(source, alphaChannel, actual.width, actual.height);
+
 		for (uint8_t channel = 0; channel < source.channels; ++channel)
-			requireChannelMatchesReference(actual, source, channel);
+		{
+			if (hasAlpha && channel == alphaChannel)
+			{
+				requireChannelMatchesReference(actual, source, alphaReference, channel);
+				continue;
+			}
+
+			std::vector<double> reference = referenceResizeChannel(source, channel, actual.width, actual.height);
+			if (hasAlpha)
+			{
+				for (size_t i = 0; i < reference.size(); ++i)
+					reference[i] = std::min(reference[i], alphaReference[i]);
+			}
+
+			requireChannelMatchesReference(actual, source, reference, channel);
+		}
 	}
 
 	void requireNearUnityResizeMatchesReference(uint64_t sourceWidth, uint64_t sourceHeight, uint64_t destWidth, uint64_t destHeight)
@@ -665,8 +687,8 @@ TEST_CASE("Identity crops copy only logical row bytes", "[resize][source-rect][p
 	auto* destData = destStorage.data() + guardSize;
 	std::fill_n(destData, destBytes, destPadding);
 
-	const ImageView<true> sourceView{ sourceWidth, sourceHeight, channels, 1, pixelStride, sourceBytesPerLine, sourceData };
-	ImageView<false> destView{ destWidth, destHeight, channels, 1, pixelStride, destBytesPerLine, destData };
+	const ImageView<true> sourceView{ sourceWidth, sourceHeight, channels, AlphaKind::Straight, 1, pixelStride, sourceBytesPerLine, sourceData };
+	ImageView<false> destView{ destWidth, destHeight, channels, AlphaKind::Premultiplied, 1, pixelStride, destBytesPerLine, destData };
 	ImageProcessing::resize(destView, sourceView, Rect{ 2, 1, destWidth, destHeight });
 
 	for (uint64_t y = 0; y < destHeight; ++y)
@@ -828,6 +850,7 @@ TEST_CASE("Every pixel layout and geometry matches a direct double-precision ref
 
 			CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
 			TestImage source(job.srcWidth, job.srcHeight, channels, pixelStride);
+			source.alphaKind = AlphaKind::Straight; // Random color may exceed alpha
 			fillLogicalBytes(source, randomEngine);
 
 			TestImage dest(job.destWidth, job.destHeight, channels, pixelStride);
@@ -892,8 +915,8 @@ TEST_CASE("Images with 16-bit channels are rejected", "[resize][validation]")
 	std::vector<uint8_t> sourceData(8, 0x42);
 	std::vector<uint8_t> destData(18, sentinel);
 	const std::vector<uint8_t> originalDestData = destData;
-	const ImageView<true> source{ 2, 2, 1, 2, 2, 4, sourceData.data() };
-	ImageView<false> dest{ 3, 3, 1, 2, 2, 6, destData.data() };
+	const ImageView<true> source{ 2, 2, 1, AlphaKind::Straight, 2, 2, 4, sourceData.data() };
+	ImageView<false> dest{ 3, 3, 1, AlphaKind::Premultiplied, 2, 2, 6, destData.data() };
 
 	ImageProcessing::resize(dest, source);
 
@@ -973,6 +996,14 @@ TEST_CASE("Seeded randomized small images preserve resize properties", "[resize]
 			std::vector<uint8_t> pixelValues(pixelStride);
 			for (uint8_t& value : pixelValues)
 				value = static_cast<uint8_t>(randomInRange(randomEngine, 0, 255));
+
+			// Valid premultiplied pixels: color never exceeds alpha
+			if (hasAlphaChannel(channels))
+			{
+				for (size_t channel = 0; channel + 1 < channels; ++channel)
+					pixelValues[channel] = std::min(pixelValues[channel], pixelValues[channels - 1]);
+			}
+
 			for (uint64_t y = 0; y < source.height; ++y)
 			{
 				for (uint64_t x = 0; x < source.width; ++x)
@@ -1045,6 +1076,7 @@ TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading
 
 			CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
 			TestImage source(job.srcWidth, job.srcHeight, channels, pixelStride);
+			source.alphaKind = AlphaKind::Straight; // Random color may exceed alpha
 			fillLogicalBytes(source, randomEngine);
 
 			TestImage serialDest(job.destWidth, job.destHeight, channels, pixelStride);

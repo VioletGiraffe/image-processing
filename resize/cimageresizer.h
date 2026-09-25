@@ -7,6 +7,18 @@
 
 namespace ImageProcessing
 {
+	// Only 2- and 4-channel images carry alpha, always as the last channel
+	[[nodiscard]] constexpr bool hasAlphaChannel(size_t channels) noexcept
+	{
+		return channels == 2 || channels == 4;
+	}
+
+	enum class AlphaKind : uint8_t
+	{
+		Straight,
+		Premultiplied,
+	};
+
 	template <bool ConstView = true>
 	struct ImageView
 	{
@@ -15,6 +27,7 @@ namespace ImageProcessing
 		uint64_t width = 0;
 		uint64_t height = 0;
 		uint8_t channels = 0;
+		AlphaKind alphaKind = AlphaKind::Straight; // Ignored without an alpha channel
 		uint8_t bytesPerChannel = 0;
 		uint8_t pixelStrideBytes = 0;
 		size_t bytesPerLine = 0;
@@ -53,6 +66,7 @@ namespace ImageProcessing
 	// When empty, the work runs on the calling thread; either way resize() returns only once the destination is complete.
 	using ParallelForFn = std::function<void(size_t count, const std::function<void(size_t index)>& body)>;
 
+	// The output is premultiplied, so an alpha destination must be marked Premultiplied; a straight source is premultiplied as it is read.
 	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, const ParallelForFn& parallelFor = {},
 		ResizeKernel kernel = ResizeKernel::Auto, SimdUsage simd = SimdUsage::Auto);
 }

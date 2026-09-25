@@ -213,18 +213,49 @@ namespace
 		::memcpy(destPixel + channels, sourcePixel + channels, pixelStride - channels);
 	}
 
+	// Rounds to nearest, as the float premultiply of the filtering paths does
+	inline void premultiplyPixelBytes(uint8_t* pixel, size_t channels) noexcept
+	{
+		const unsigned alpha = pixel[channels - 1];
+		for (size_t channel = 0; channel + 1 < channels; ++channel)
+			pixel[channel] = static_cast<uint8_t>((pixel[channel] * alpha + 127) / 255);
+	}
+
 	inline void copyUnscaledCrop(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, size_t pixelStride)
 	{
+		const bool premultiplyAlpha = hasStraightAlpha(source);
 		const size_t logicalRowBytes = static_cast<size_t>(dest.width) * pixelStride;
 		for (uint64_t y = 0; y < dest.height; ++y)
 		{
 			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + y) + srcRect.left * pixelStride;
 			auto* dstRow = dest.scanLine<uint8_t>(y);
 			::memcpy(dstRow, srcRow, logicalRowBytes);
+
+			if (premultiplyAlpha)
+			{
+				for (uint64_t x = 0; x < dest.width; ++x)
+					premultiplyPixelBytes(dstRow + static_cast<size_t>(x) * pixelStride, source.channels);
+			}
 		}
 	}
 
-	template <size_t Channels, size_t PixelStride>
+	inline void accumulateWeightedPixel(float* accum, const uint8_t* pixel, size_t channels, bool premultiplyAlpha, float weight) noexcept
+	{
+		if (premultiplyAlpha)
+		{
+			const float premultiplier = static_cast<float>(pixel[channels - 1]) * (1.0f / 255.0f);
+			for (size_t channel = 0; channel + 1 < channels; ++channel)
+				accum[channel] += static_cast<float>(pixel[channel]) * premultiplier * weight;
+
+			accum[channels - 1] += static_cast<float>(pixel[channels - 1]) * weight;
+			return;
+		}
+
+		for (size_t channel = 0; channel < channels; ++channel)
+			accum[channel] += static_cast<float>(pixel[channel]) * weight;
+	}
+
+	template <size_t Channels, size_t PixelStride, bool PremultiplyAlpha>
 	void filterHorizontalRows(
 		float* temp,
 		size_t tempRowStride,
@@ -249,9 +280,7 @@ namespace
 
 				for (const float weight : weights)
 				{
-					for (size_t c = 0; c < Channels; ++c)
-						accum[c] += static_cast<float>(srcPixel[c]) * weight;
-
+					accumulateWeightedPixel(accum.data(), srcPixel, Channels, PremultiplyAlpha, weight);
 					srcPixel += PixelStride;
 				}
 
@@ -363,9 +392,13 @@ namespace
 
 		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
 
+		// A layout without alpha never instantiates the premultiplying variant
+		auto* const filterRows = hasStraightAlpha(source)
+			? &filterHorizontalRows<Channels, PixelStride, hasAlphaChannel(Channels)>
+			: &filterHorizontalRows<Channels, PixelStride, false>;
 		forEachRowBand(parallelFor, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
 		{
-			filterHorizontalRows<Channels, PixelStride>(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
+			filterRows(temp.get(), tempRowStride, source, srcRect, dest.width, xWeights, rowBegin, rowEnd);
 		});
 
 		const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * PixelStride;
@@ -377,10 +410,7 @@ namespace
 				for (uint64_t dx = 0; dx < dest.width; ++dx)
 				{
 					auto* dstPixel = dstRow + static_cast<size_t>(dx) * PixelStride;
-					const float* accumPixel = accumRow + static_cast<size_t>(dx) * Channels;
-
-					for (size_t c = 0; c < Channels; ++c)
-						dstPixel[c] = clampToByte(accumPixel[c]);
+					writePixelBytes(dstPixel, accumRow + static_cast<size_t>(dx) * Channels, Channels);
 
 					if constexpr (PixelStride > Channels)
 						copyPixelTail(dstPixel, pixelTailSource, Channels, PixelStride);
@@ -428,6 +458,7 @@ namespace
 
 		const auto temp = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.h) * tempRowStride);
 
+		const bool premultiplyAlpha = hasStraightAlpha(source);
 		forEachRowBand(parallelFor, srcRect.h, tempRowStride, [&](uint64_t rowBegin, uint64_t rowEnd)
 		{
 			for (uint64_t ty = rowBegin; ty < rowEnd; ++ty)
@@ -446,9 +477,7 @@ namespace
 
 					for (const float weight : weights)
 					{
-						for (size_t c = 0; c < numChannels; ++c)
-							outPixel[c] += static_cast<float>(srcPixel[c]) * weight;
-
+						accumulateWeightedPixel(outPixel, srcPixel, numChannels, premultiplyAlpha, weight);
 						srcPixel += pixelStride;
 					}
 				}
@@ -462,10 +491,7 @@ namespace
 			for (uint64_t dx = 0; dx < dest.width; ++dx)
 			{
 				auto* dstPixel = dstRow + static_cast<size_t>(dx) * pixelStride;
-				const float* accumPixel = accumRow + static_cast<size_t>(dx) * numChannels;
-
-				for (size_t c = 0; c < numChannels; ++c)
-					dstPixel[c] = clampToByte(accumPixel[c]);
+				writePixelBytes(dstPixel, accumRow + static_cast<size_t>(dx) * numChannels, numChannels);
 
 				if (pixelStride > numChannels)
 					copyPixelTail(dstPixel, pixelTailSource, numChannels, pixelStride);
@@ -532,6 +558,7 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 	assert(source.channels == dest.channels);
 	assert(source.bytesPerChannel == dest.bytesPerChannel);
 	assert(source.pixelStrideBytes == dest.pixelStrideBytes);
+	assert(!hasAlphaChannel(dest.channels) || dest.alphaKind == AlphaKind::Premultiplied);
 
 	if (source.channels > 4 || dest.channels > 4)
 	{

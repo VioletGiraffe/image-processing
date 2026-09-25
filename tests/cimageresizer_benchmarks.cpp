@@ -27,6 +27,7 @@ RESTORE_COMPILER_WARNINGS
 
 namespace
 {
+	using ImageProcessing::AlphaKind;
 	using ImageProcessing::ImageView;
 	using ImageProcessing::SimdUsage;
 
@@ -43,14 +44,15 @@ namespace
 		{
 		}
 
+		// Straight alpha, as in Format_RGBA8888: fillPhotoLikeContent lets color exceed alpha
 		[[nodiscard]] ImageView<true> constView() const noexcept
 		{
-			return { width, height, channels, 1, pixelStrideBytes, bytesPerLine, data.get() };
+			return { width, height, channels, AlphaKind::Straight, 1, pixelStrideBytes, bytesPerLine, data.get() };
 		}
 
 		[[nodiscard]] ImageView<false> mutableView() noexcept
 		{
-			return { width, height, channels, 1, pixelStrideBytes, bytesPerLine, data.get() };
+			return { width, height, channels, AlphaKind::Premultiplied, 1, pixelStrideBytes, bytesPerLine, data.get() };
 		}
 
 		uint64_t width;
@@ -221,7 +223,7 @@ TEST_CASE("Common display resize scenarios", "[!benchmark][resize]")
 {
 	benchmarkResize("24 MP photo to 1080p viewport - RGB32", 6000, 4000, 1620, 1080, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("4K image to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32, nullptr, true);
-	benchmarkResize("720p image to 1080p - RGB32", 1280, 720, 1920, 1080, 3, 4, QImage::Format_RGB32);
+	benchmarkResize("720p image to 4K - RGBA32", 1280, 720, 3840, 2160, 4, 4, QImage::Format_RGBA8888);
 	benchmarkResize("1080p image to 1440p - RGB32", 1920, 1080, 2560, 1440, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("1080p to 240p thumbnail - RGB32", 1920, 1080, 426, 240, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("1080p image at native size - RGB32", 1920, 1080, 1920, 1080, 3, 4, QImage::Format_RGB32);
@@ -235,11 +237,10 @@ TEST_CASE("Common pixel layouts", "[!benchmark][resize]")
 	benchmarkResize("4K to 1080p - RGBA32", 3840, 2160, 1920, 1080, 4, 4, QImage::Format_RGBA8888);
 }
 
-// The two ends of the cost model: hundreds of filter taps per output pixel downscaling, four taps upscaling.
+// The downscaling end of the cost model: hundreds of filter taps per output pixel
 TEST_CASE("Extreme scale factors", "[!benchmark][resize]")
 {
 	benchmarkResize("4K image to 64x64 - RGB32", 3840, 2160, 64, 64, 3, 4, QImage::Format_RGB32);
-	benchmarkResize("64x64 image to 4K - RGB32", 64, 64, 3840, 2160, 3, 4, QImage::Format_RGB32);
 }
 
 // Separate from the common scenarios because of the 404 MB source alone
@@ -256,11 +257,10 @@ TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 	std::cout << "Parallel resize benchmarks: " << pool.maxWorkersCount() + 1 << " executors\n";
 
 	benchmarkResize("24 MP photo to 1080p viewport - RGB32", 6000, 4000, 1620, 1080, 3, 4, QImage::Format_RGB32, &pool);
-	benchmarkResize("4K image to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32, &pool);
-	benchmarkResize("720p image to 1080p - RGB32", 1280, 720, 1920, 1080, 3, 4, QImage::Format_RGB32, &pool);
+	benchmarkResize("4K to 1080p - RGBA32", 3840, 2160, 1920, 1080, 4, 4, QImage::Format_RGBA8888, &pool);
+	benchmarkResize("720p image to 4K - RGBA32", 1280, 720, 3840, 2160, 4, 4, QImage::Format_RGBA8888, &pool);
 	benchmarkResize("1080p image to 1440p - RGB32", 1920, 1080, 2560, 1440, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("1080p to 240p thumbnail - RGB32", 1920, 1080, 426, 240, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("4K image to 64x64 - RGB32", 3840, 2160, 64, 64, 3, 4, QImage::Format_RGB32, &pool);
-	benchmarkResize("64x64 image to 4K - RGB32", 64, 64, 3840, 2160, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("101 MP photo to 720p - RGB32", 11608, 8708, 1280, 720, 3, 4, QImage::Format_RGB32, &pool);
 }

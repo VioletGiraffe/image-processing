@@ -8,6 +8,7 @@
 
 DISABLE_COMPILER_WARNINGS
 #include <QImage>
+#include <QPixelFormat>
 #include <QRect>
 RESTORE_COMPILER_WARNINGS
 
@@ -73,6 +74,7 @@ namespace ImageProcessing
 			return view;
 		}
 
+		view.alphaKind = image.pixelFormat().premultiplied() == QPixelFormat::Premultiplied ? AlphaKind::Premultiplied : AlphaKind::Straight;
 		view.bytesPerLine = static_cast<size_t>(image.bytesPerLine());
 
 		if constexpr (ConstView)
@@ -85,8 +87,20 @@ namespace ImageProcessing
 		return view;
 	}
 
+	// The same pixel layout with premultiplied alpha, for the 8-bit straight formats the resizer handles; any other format maps to itself
+	[[nodiscard]] constexpr QImage::Format premultipliedFormat(QImage::Format format) noexcept
+	{
+		switch (format)
+		{
+		case QImage::Format_ARGB32: return QImage::Format_ARGB32_Premultiplied;
+		case QImage::Format_RGBA8888: return QImage::Format_RGBA8888_Premultiplied;
+		default: return format;
+		}
+	}
+
 	// False when either format has no view: the caller picks the fallback, QImage::scaled typically.
 	// dest arrives at the target size; an empty srcRect means the whole source.
+	// A straight-alpha dest is switched to premultipliedFormat(): the output is premultiplied.
 	[[nodiscard]] inline bool resize(QImage& dest, const QImage& source, const QRect& srcRect = {}, const ParallelForFn& parallelFor = {},
 		ResizeKernel kernel = ResizeKernel::Auto, SimdUsage simd = SimdUsage::Auto)
 	{
@@ -96,6 +110,7 @@ namespace ImageProcessing
 		if (!sourceView.data)
 			return false;
 
+		dest.reinterpretAsFormat(premultipliedFormat(dest.format()));
 		auto destView = imageView<false>(dest);
 		if (!destView.data)
 			return false;

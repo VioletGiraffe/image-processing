@@ -9,14 +9,19 @@ RESTORE_COMPILER_WARNINGS
 DISABLE_COMPILER_WARNINGS
 #include <QColor>
 #include <QImage>
+#include <QSize>
 RESTORE_COMPILER_WARNINGS
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <initializer_list>
 #include <utility>
 
 namespace
 {
+	using ImageProcessing::AlphaKind;
+
 	struct FormatMapping
 	{
 		QImage::Format format;
@@ -24,6 +29,7 @@ namespace
 		uint8_t channels;
 		uint8_t bytesPerChannel;
 		uint8_t pixelStrideBytes;
+		AlphaKind alphaKind = AlphaKind::Straight;
 	};
 
 	// Format_RGBX8888 is absent: the bridge maps it to nothing, see doc/tests_spec.md.
@@ -34,9 +40,9 @@ namespace
 		{ QImage::Format_RGB888, "RGB888", 3, 1, 3 },
 		{ QImage::Format_RGB32, "RGB32", 3, 1, 4 },
 		{ QImage::Format_ARGB32, "ARGB32", 4, 1, 4 },
-		{ QImage::Format_ARGB32_Premultiplied, "ARGB32_Premultiplied", 4, 1, 4 },
+		{ QImage::Format_ARGB32_Premultiplied, "ARGB32_Premultiplied", 4, 1, 4, AlphaKind::Premultiplied },
 		{ QImage::Format_RGBA8888, "RGBA8888", 4, 1, 4 },
-		{ QImage::Format_RGBA8888_Premultiplied, "RGBA8888_Premultiplied", 4, 1, 4 },
+		{ QImage::Format_RGBA8888_Premultiplied, "RGBA8888_Premultiplied", 4, 1, 4, AlphaKind::Premultiplied },
 		{ QImage::Format_RGBA64, "RGBA64", 4, 2, 8 },
 		{ QImage::Format_RGBX64, "RGBX64", 3, 2, 8 },
 	};
@@ -87,6 +93,60 @@ namespace
 			}
 		}
 	}
+
+	struct AlphaFormat
+	{
+		QImage::Format straight;
+		QImage::Format premultiplied;
+		const char* name;
+	};
+
+	constexpr AlphaFormat alphaFormats[] = {
+		{ QImage::Format_ARGB32, QImage::Format_ARGB32_Premultiplied, "ARGB32" },
+		{ QImage::Format_RGBA8888, QImage::Format_RGBA8888_Premultiplied, "RGBA8888" },
+	};
+
+	// Catmull-Rom upscaling, Lanczos3 downscaling, and the unscaled copy
+	struct AlphaResizeGeometry
+	{
+		QSize source;
+		QSize dest;
+		const char* name;
+	};
+
+	constexpr AlphaResizeGeometry alphaResizeGeometries[] = {
+		{ { 12, 4 }, { 37, 9 }, "upscale" },
+		{ { 40, 6 }, { 13, 3 }, "downscale" },
+		{ { 12, 4 }, { 12, 4 }, "unscaled" },
+	};
+
+	// Resizes a source made at each geometry's size into a dest of the source's format, with and without SIMD, and checks every destination pixel.
+	// QImage::pixel returns the stored value for every alpha format: a premultiplied pixel stays premultiplied.
+	void checkAlphaResizePixels(const AlphaFormat& format, const std::function<QImage(QSize)>& makeSource, const std::function<void(QRgb)>& checkPixel)
+	{
+		for (const AlphaResizeGeometry& geometry : alphaResizeGeometries)
+		{
+			for (const auto simd : { ImageProcessing::SimdUsage::Auto, ImageProcessing::SimdUsage::Disabled })
+			{
+				const bool simdDisabled = simd == ImageProcessing::SimdUsage::Disabled;
+				CAPTURE(geometry.name, simdDisabled);
+
+				const QImage source = makeSource(geometry.source);
+				QImage dest(geometry.dest, source.format());
+				REQUIRE(ImageProcessing::resize(dest, source, {}, {}, ImageProcessing::ResizeKernel::Auto, simd));
+				CHECK(dest.format() == format.premultiplied);
+
+				for (int y = 0; y < dest.height(); ++y)
+				{
+					for (int x = 0; x < dest.width(); ++x)
+					{
+						CAPTURE(x, y);
+						checkPixel(dest.pixel(x, y));
+					}
+				}
+			}
+		}
+	}
 }
 
 TEST_CASE("Mapped QImage formats produce the matching image view", "[resize][qimage]")
@@ -105,6 +165,7 @@ TEST_CASE("Mapped QImage formats produce the matching image view", "[resize][qim
 		CHECK(+view.channels == +mapping.channels);
 		CHECK(+view.bytesPerChannel == +mapping.bytesPerChannel);
 		CHECK(+view.pixelStrideBytes == +mapping.pixelStrideBytes);
+		CHECK(view.alphaKind == mapping.alphaKind);
 		CHECK(view.bytesPerLine == static_cast<size_t>(image.bytesPerLine()));
 		CHECK(view.data == image.constBits());
 
@@ -117,6 +178,7 @@ TEST_CASE("Mapped QImage formats produce the matching image view", "[resize][qim
 		CHECK(+mutableView.channels == +view.channels);
 		CHECK(+mutableView.bytesPerChannel == +view.bytesPerChannel);
 		CHECK(+mutableView.pixelStrideBytes == +view.pixelStrideBytes);
+		CHECK(mutableView.alphaKind == view.alphaKind);
 		CHECK(mutableView.bytesPerLine == view.bytesPerLine);
 		CHECK(mutableView.data == image.bits());
 	}
@@ -196,6 +258,7 @@ TEST_CASE("A destination view detaches, a source view does not", "[resize][qimag
 	}
 }
 
+// Straight alpha comes out premultiplied, rounded as Qt's own conversion rounds it
 TEST_CASE("An identity resize through the bridge reproduces every logical byte", "[resize][qimage]")
 {
 	for (const FormatMapping& mapping : mappedFormats)
@@ -213,6 +276,63 @@ TEST_CASE("An identity resize through the bridge reproduces every logical byte",
 		dest.fill(0);
 
 		REQUIRE(ImageProcessing::resize(dest, source));
-		requireLogicalBytesEqual(dest, source);
+		requireLogicalBytesEqual(dest, source.convertToFormat(ImageProcessing::premultipliedFormat(mapping.format)));
+	}
+}
+
+TEST_CASE("Transparent pixels contribute no color to a straight-alpha resize", "[resize][qimage][alpha]")
+{
+	for (const AlphaFormat& format : alphaFormats)
+	{
+		CAPTURE(format.name);
+
+		// Opaque red next to fully transparent green: premultiplied filtering leaves no green anywhere
+		const auto makeSource = [&format](QSize size) {
+			QImage source(size, format.straight);
+			for (int y = 0; y < size.height(); ++y)
+			{
+				for (int x = 0; x < size.width(); ++x)
+					source.setPixel(x, y, x < size.width() / 2 ? qRgba(255, 0, 0, 255) : qRgba(0, 255, 0, 0));
+			}
+			return source;
+		};
+
+		int edgePixels = 0;
+		checkAlphaResizePixels(format, makeSource, [&edgePixels](QRgb pixel) {
+			CHECK(qGreen(pixel) == 0);
+			CHECK(qBlue(pixel) == 0);
+			CHECK(qRed(pixel) <= qAlpha(pixel));
+			if (qAlpha(pixel) > 0 && qAlpha(pixel) < 255)
+				++edgePixels;
+		});
+
+		CHECK(edgePixels > 0);
+	}
+}
+
+// Negative filter lobes can push color above alpha
+TEST_CASE("Premultiplied resize output keeps every color channel within alpha", "[resize][qimage][alpha]")
+{
+	for (const AlphaFormat& format : alphaFormats)
+	{
+		CAPTURE(format.name);
+
+		// Opaque black, transparent, opaque white: black under a negative lobe lowers alpha but not color
+		const auto makeSource = [&format](QSize size) {
+			constexpr QRgb pattern[] = { qRgba(0, 0, 0, 255), qRgba(0, 0, 0, 0), qRgba(255, 255, 255, 255) };
+			QImage source(size, format.premultiplied);
+			for (int y = 0; y < size.height(); ++y)
+			{
+				for (int x = 0; x < size.width(); ++x)
+					source.setPixel(x, y, pattern[x % 3]);
+			}
+			return source;
+		};
+
+		checkAlphaResizePixels(format, makeSource, [](QRgb pixel) {
+			CHECK(qRed(pixel) <= qAlpha(pixel));
+			CHECK(qGreen(pixel) <= qAlpha(pixel));
+			CHECK(qBlue(pixel) <= qAlpha(pixel));
+		});
 	}
 }
