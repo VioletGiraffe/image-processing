@@ -308,27 +308,6 @@ namespace
 		}
 	}
 
-	struct SourceSpan
-	{
-		size_t begin;
-		size_t end;
-	};
-
-	// The source pixels read by the x runs of dest columns [destBegin, destEnd)
-	[[nodiscard]] SourceSpan sourceSpanFor(const AxisWeights& xWeights, size_t destBegin, size_t destEnd) noexcept
-	{
-		SourceSpan span{ SIZE_MAX, 0 };
-		// Every run is checked: end-trimming lets a run start before its predecessor
-		for (size_t dx = destBegin; dx < destEnd; ++dx)
-		{
-			const auto run = xWeights.runFor(dx);
-			span.begin = std::min(span.begin, run.firstSource);
-			span.end = std::max(span.end, run.firstSource + run.weights.size());
-		}
-
-		return span;
-	}
-
 	// Resizes dest rows [destRowBegin, destRowEnd) through a TempRowRing, one column strip at a time.
 	// Each source row's strip span is converted to floats once, whole: the x runs of neighboring columns overlap.
 	template <size_t Channels, size_t PixelStride>
@@ -360,7 +339,7 @@ namespace
 		{
 			const size_t stripEnd = std::min(stripBegin + stripWidth, destWidth);
 			const size_t stripElementCount = (stripEnd - stripBegin) * Channels;
-			const SourceSpan span = sourceSpanFor(xWeights, stripBegin, stripEnd);
+			const AxisWeights::SourceSpan span = xWeights.sourceSpan(stripBegin, stripEnd);
 
 			uint64_t produced = ring.firstNeededRow();
 			for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)

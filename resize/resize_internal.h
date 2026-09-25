@@ -32,10 +32,31 @@ namespace ImageProcessing::Detail
 			std::span<const float> weights;
 		};
 
+		struct SourceSpan
+		{
+			size_t begin;
+			size_t end;
+		};
+
 		[[nodiscard]] Run runFor(size_t coordinate) const noexcept
 		{
 			const TapRun& run = runs[coordinate];
 			return { run.firstSource, { weights.data() + run.firstWeight, run.weightCount } };
+		}
+
+		// The source indices read by the runs of dest coordinates [destBegin, destEnd)
+		[[nodiscard]] SourceSpan sourceSpan(size_t destBegin, size_t destEnd) const noexcept
+		{
+			SourceSpan span{ SIZE_MAX, 0 };
+			// Every run is checked: end-trimming lets a run start before its predecessor
+			for (size_t coordinate = destBegin; coordinate < destEnd; ++coordinate)
+			{
+				const TapRun& run = runs[coordinate];
+				span.begin = std::min(span.begin, run.firstSource);
+				span.end = std::max(span.end, run.firstSource + run.weightCount);
+			}
+
+			return span;
 		}
 
 		std::vector<float> weights;

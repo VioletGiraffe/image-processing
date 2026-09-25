@@ -166,7 +166,7 @@ namespace ImageProcessing::Detail
 
 				if (end > converted)
 				{
-					const size_t convertedTarget = std::min({ std::max(end, converted + conversionChunk), base + capacity, pixelCount });
+					const size_t convertedTarget = std::min({ std::max(end, converted + conversionChunk), base + capacity, pixelEnd });
 					for (size_t row = 0; row < Rows; ++row)
 					{
 						const uint8_t* rowPixels = pixels[row] + converted * 4;
@@ -186,7 +186,7 @@ namespace ImageProcessing::Detail
 			const uint8_t* const pixels[Rows];
 			float* const floats[Rows];
 			const size_t capacity; // In pixels
-			const size_t pixelCount;
+			const size_t pixelEnd; // Conversion never reaches this pixel
 			const bool premultiplyAlpha;
 			size_t base = 0; // The source pixel at floats[row][0]
 			size_t converted = 0; // Pixels [base, converted) are in the buffers
@@ -435,7 +435,6 @@ namespace ImageProcessing::Detail
 
 		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2 };
 
-		const size_t srcWidth = static_cast<size_t>(srcRect.w);
 		size_t longestXRun = 0;
 		for (const TapRun& run : xWeights.runs)
 			longestXRun = std::max(longestXRun, run.weightCount);
@@ -453,6 +452,8 @@ namespace ImageProcessing::Detail
 		for (size_t stripBegin = 0; stripBegin < destWidth; stripBegin += stripWidth)
 		{
 			const size_t stripEnd = std::min(stripBegin + stripWidth, destWidth);
+			// Conversion runs ahead in chunks, and must not pass the strip's source pixels
+			const size_t spanEnd = xWeights.sourceSpan(stripBegin, stripEnd).end;
 
 			uint64_t produced = ring.firstNeededRow();
 			for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
@@ -465,14 +466,14 @@ namespace ImageProcessing::Detail
 				{
 					if (produced + 2 <= srcRect.h)
 					{
-						SlidingSourceFloats<2> sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, srcWidth, premultiplyAlpha };
+						SlidingSourceFloats<2> sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, spanEnd, premultiplyAlpha };
 						float* const tempRows[2] = { ring.row(produced), ring.row(produced + 1) };
 						filterHorizontalRowGroup<Channels>(sourceRows, tempRows, stripBegin, stripEnd, xWeights);
 						produced += 2;
 					}
 					else
 					{
-						SlidingSourceFloats<1> sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, srcWidth, premultiplyAlpha };
+						SlidingSourceFloats<1> sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, spanEnd, premultiplyAlpha };
 						float* const tempRows[1] = { ring.row(produced) };
 						filterHorizontalRowGroup<Channels>(sourceRow, tempRows, stripBegin, stripEnd, xWeights);
 						++produced;
