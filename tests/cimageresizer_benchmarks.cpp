@@ -147,41 +147,31 @@ namespace
 			return std::string(simd == SimdUsage::Disabled ? "CImageResizer [scalar] | " : "CImageResizer | ") + name;
 		};
 
-		// The serial run of the same scenario provides the QImage control; report_benchmark_ratios.py matches it by stripping the suffix
+		ImageProcessing::ParallelForFn parallelFor;
 		if (threadPool)
 		{
-			// The destination is reused across iterations: allocating one per iteration would time its
-			// first-touch page faults, and those neither shrink with thread count nor belong to the resize.
-			BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
-			const ImageProcessing::ParallelForFn parallelFor = [threadPool](size_t count, const std::function<void(size_t)>& body)
+			parallelFor = [threadPool](size_t count, const std::function<void(size_t)>& body)
 			{
 				threadPool->parallelFor(count, body);
 			};
-
-			for (const SimdUsage simd : simdUsages)
-			{
-				BENCHMARK(resizerName(simd) + " [multithreaded]")
-				{
-					auto destView = dest.mutableView();
-					ImageProcessing::resize(destView, sourceView, {}, parallelFor, ImageProcessing::ResizeKernel::Auto, simd);
-					return dest.data[dest.dataSize / 2];
-				};
-			}
-			return;
 		}
 
-		// The QImage controls below allocate their destination inside the timed call with no way to exclude it,
-		// so the serial resize pays destination allocation and first touch as well to keep the ratios fair.
+		// The QImage controls allocate their destination inside the timed call with no way to exclude it,
+		// so the resize pays destination allocation and first touch as well to keep the ratios fair.
 		for (const SimdUsage simd : simdUsages)
 		{
-			BENCHMARK(resizerName(simd))
+			BENCHMARK(resizerName(simd) + (threadPool ? " [multithreaded]" : ""))
 			{
 				BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
 				auto destView = dest.mutableView();
-				ImageProcessing::resize(destView, sourceView, {}, {}, ImageProcessing::ResizeKernel::Auto, simd);
+				ImageProcessing::resize(destView, sourceView, {}, parallelFor, ImageProcessing::ResizeKernel::Auto, simd);
 				return dest.data[dest.dataSize / 2];
 			};
 		}
+
+		// The serial run of the same scenario provides the QImage control; report_benchmark_ratios.py matches it by stripping the suffix
+		if (threadPool)
+			return;
 
 		if (addReusedDestVariant)
 		{
