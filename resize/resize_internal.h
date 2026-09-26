@@ -113,6 +113,13 @@ namespace ImageProcessing::Detail
 		uint64_t _firstNeededRow;
 	};
 
+	// The ring budget resize() passes to resizeWithRingBudget, sized from the L2 once per process
+	[[nodiscard]] size_t detectedRingBudgetBytes();
+
+	// resize() with each thread's temp-row ring bounded to ringBudgetBytes, in place of the budget sized from the L2
+	void resizeWithRingBudget(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor,
+		ResizeKernel kernel, SimdUsage simd, size_t ringBudgetBytes);
+
 	[[nodiscard]] inline bool hasStraightAlpha(const ImageView<true>& image) noexcept
 	{
 		return hasAlphaChannel(image.channels) && image.alphaKind == AlphaKind::Straight;

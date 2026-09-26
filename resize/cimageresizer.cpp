@@ -1,4 +1,5 @@
 #include "resize_internal.h"
+#include "cpu_cache.h"
 
 #include "compiler/compiler_warnings_control.h"
 
@@ -370,11 +371,9 @@ namespace
 	}
 
 	// Dest columns per strip: each thread holds a ring of temp rows for one strip at a time, and the strip width bounds
-	// that ring to a share of a small L2 shared by all cores, such as the Pi 4's 1 MB.
-	[[nodiscard]] size_t stripWidthFor(uint64_t destWidth, const AxisWeights& yWeights, size_t channels) noexcept
+	// that ring to ringBudgetBytes, so that it stays in a small L2 shared by all cores, such as the Pi 4's.
+	[[nodiscard]] size_t stripWidthFor(uint64_t destWidth, const AxisWeights& yWeights, size_t channels, size_t ringBudgetBytes) noexcept
 	{
-		// Half of a four-core share of the Pi's L2: the source floats, weights and dest rows need the rest
-		constexpr size_t ringBudgetBytes = 128 * 1024;
 		// The SIMD vertical pass writes 8-pixel blocks, with a scalar tail per strip
 		constexpr size_t widthGranule = 8;
 
@@ -404,7 +403,7 @@ namespace
 	}
 
 	template <size_t Channels>
-	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, [[maybe_unused]] SimdUsage simd)
+	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, [[maybe_unused]] SimdUsage simd, size_t ringBudgetBytes)
 	{
 		static_assert(Channels >= 1 && Channels <= 4);
 
@@ -432,7 +431,7 @@ namespace
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * Channels;
 		// A dest row's work includes producing its share of temp rows, srcRect.h / dest.height of them
 		const size_t elementsPerDestRow = tempRowStride + tempRowStride * static_cast<size_t>(srcRect.h) / static_cast<size_t>(dest.height);
-		const size_t stripWidth = stripWidthFor(dest.width, yWeights, Channels);
+		const size_t stripWidth = stripWidthFor(dest.width, yWeights, Channels, ringBudgetBytes);
 		const bool touchDestPages = stripWidth < dest.width;
 
 #if IMAGE_PROCESSING_SIMD
@@ -496,6 +495,17 @@ Detail::TempRowRing::TempRowRing(const AxisWeights& yWeights, uint64_t destRowBe
 	_rows = std::make_unique_for_overwrite<float[]>(rowCount * rowStride);
 }
 
+// Each thread's temp-row ring gets half of its L2 share: the source floats, weights and dest rows need the rest.
+// An undetected L2 counts as the Pi 4's: 1 MB shared by four cores.
+size_t Detail::detectedRingBudgetBytes()
+{
+	static const size_t budget = [] {
+		const size_t l2Share = smallestL2BytesPerLogicalProcessor();
+		return (l2Share != 0 ? l2Share : 1024 * 1024 / 4) / 2;
+	}();
+	return budget;
+}
+
 bool ImageProcessing::simdAvailable() noexcept
 {
 	return SimdSupport::canUseSimd();
@@ -503,6 +513,12 @@ bool ImageProcessing::simdAvailable() noexcept
 
 void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, SimdUsage simd)
 {
+	resizeWithRingBudget(dest, source, srcRect, parallelFor, kernel, simd, detectedRingBudgetBytes());
+}
+
+void Detail::resizeWithRingBudget(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, SimdUsage simd, size_t ringBudgetBytes)
+{
+	assert(ringBudgetBytes > 0);
 	assert(source.width > 0 && source.height > 0);
 	assert(dest.width > 0 && dest.height > 0);
 
@@ -542,9 +558,9 @@ void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& sour
 
 	switch (source.channels)
 	{
-	case 1: resizeImpl<1>(dest, source, srcRect, parallelFor, kernel, simd); return;
-	case 2: resizeImpl<2>(dest, source, srcRect, parallelFor, kernel, simd); return;
-	case 3: resizeImpl<3>(dest, source, srcRect, parallelFor, kernel, simd); return;
-	case 4: resizeImpl<4>(dest, source, srcRect, parallelFor, kernel, simd); return;
+	case 1: resizeImpl<1>(dest, source, srcRect, parallelFor, kernel, simd, ringBudgetBytes); return;
+	case 2: resizeImpl<2>(dest, source, srcRect, parallelFor, kernel, simd, ringBudgetBytes); return;
+	case 3: resizeImpl<3>(dest, source, srcRect, parallelFor, kernel, simd, ringBudgetBytes); return;
+	case 4: resizeImpl<4>(dest, source, srcRect, parallelFor, kernel, simd, ringBudgetBytes); return;
 	}
 }

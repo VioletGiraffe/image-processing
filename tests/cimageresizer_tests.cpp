@@ -5,6 +5,8 @@ DISABLE_COMPILER_WARNINGS
 RESTORE_COMPILER_WARNINGS
 
 #include "resize/cimageresizer.h"
+#include "resize/cpu_cache.h"
+#include "resize/resize_internal.h"
 
 #include "threading/cthreadpool.h"
 
@@ -17,6 +19,7 @@ RESTORE_COMPILER_WARNINGS
 #include <limits>
 #include <numbers>
 #include <random>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -78,7 +81,9 @@ namespace
 		if (threadPool)
 			parallelFor = [threadPool](size_t count, const std::function<void(size_t)>& body) { threadPool->parallelFor(count, body); };
 
-		ImageProcessing::resize(destView, sourceView, sourceRect, parallelFor, ImageProcessing::ResizeKernel::Auto, simd);
+		// The Pi 4's ring budget on every machine: the detected one would change the column strips under test
+		constexpr size_t ringBudgetBytes = 128 * 1024;
+		ImageProcessing::Detail::resizeWithRingBudget(destView, sourceView, sourceRect, parallelFor, ImageProcessing::ResizeKernel::Auto, simd, ringBudgetBytes);
 	}
 
 	void setPixel(TestImage& image, uint64_t x, uint64_t y, std::initializer_list<uint8_t> values)
@@ -944,6 +949,15 @@ TEST_CASE("Images with 16-bit channels are rejected", "[resize][validation]" HID
 	ImageProcessing::resize(dest, source);
 
 	CHECK(destData == originalDestData);
+}
+
+// Printed: the detected share sets the column strips in resize(), and with them the benchmark numbers
+TEST_CASE("The L2 share per logical processor is unknown or plausible", "[resize][cpu-cache]")
+{
+	const size_t l2Share = ImageProcessing::Detail::smallestL2BytesPerLogicalProcessor();
+	const std::string l2ShareText = l2Share != 0 ? std::to_string(l2Share / 1024) + " KB" : "undetected, the Pi 4's assumed";
+	WARN("L2 per logical processor: " << l2ShareText << "; ring budget: " << ImageProcessing::Detail::detectedRingBudgetBytes() / 1024 << " KB");
+	CHECK((l2Share == 0 || l2Share >= 32 * 1024));
 }
 
 TEST_CASE("Seeded randomized small images preserve resize properties", "[resize][property]")

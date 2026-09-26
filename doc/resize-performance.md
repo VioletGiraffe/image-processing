@@ -308,8 +308,16 @@ RGB24 4K -> 1080p with threads: 8ca3148 with 2b371a2's benchmark file -> 2b371a2
 
 ### Column strips (b9fea7e)
 
-Each thread fills its ring for one column strip of the destination at a time. `stripWidthFor` bounds a ring to 128 KB, half
-of a four-core share of the Pi's 1 MB L2. The SIMD path converts only the strip's source span (29b97e9).
+Each thread fills its ring for one column strip of the destination at a time. `stripWidthFor` bounds a ring to half the
+smallest L2 share per logical processor, detected at runtime; an undetected L2 counts as the Pi's. The SIMD path converts
+only the strip's source span (29b97e9).
+
+| Machine | L2 share per logical processor | Ring budget |
+|---|---:|---:|
+| Pi 4 | 256 KB (1 MB, four cores) | 128 KB |
+| PC | 512 KB (E-core cluster: 2 MB, four cores) | 256 KB |
+
+The tests pass the Pi's budget on every machine, so they cover the same strip layouts everywhere.
 
 Full-width rings overflowed the Pi's shared L2 with four threads. Per thread, ring plus float row plus accumulator row came
 to about 350 KB for 720p -> 4K RGBA32, 390 KB for 4K -> 1080p RGB24, 500 KB for 24 MP -> 1080p, 1.2 MB for 101 MP -> 720p.

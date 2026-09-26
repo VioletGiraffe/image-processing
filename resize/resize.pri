@@ -1,11 +1,13 @@
 HEADERS += \
 	$$PWD/cimageresizer.h \
+	$$PWD/cpu_cache.h \
 	$$PWD/qimage_resize.h \
 	$$PWD/resize_internal.h \
 	$$PWD/simd_support.h
 
 SOURCES += \
-	$$PWD/cimageresizer.cpp
+	$$PWD/cimageresizer.cpp \
+	$$PWD/cpu_cache.cpp
 
 # SIMDe's root is on no consumer's include path, so it is added here. GCC and Clang need it as a system path:
 # an unguarded __int128 typedef in SIMDe is a build failure under -pedantic-errors. MSVC compiles it clean, and
