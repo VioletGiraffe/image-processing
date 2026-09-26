@@ -435,11 +435,7 @@ namespace ImageProcessing::Detail
 
 		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2 };
 
-		size_t longestXRun = 0;
-		for (const TapRun& run : xWeights.runs)
-			longestXRun = std::max(longestXRun, run.weightCount);
-
-		const size_t sourceFloatsCapacity = SlidingSourceFloats<2>::capacityFor(longestXRun);
+		const size_t sourceFloatsCapacity = SlidingSourceFloats<2>::capacityFor(xWeights.longestRun());
 		const auto sourceFloats = std::make_unique_for_overwrite<float[]>(2 * sourceFloatsCapacity * 4);
 		float* const sourceFloatsA = sourceFloats.get();
 		float* const sourceFloatsB = sourceFloatsA + sourceFloatsCapacity * 4;

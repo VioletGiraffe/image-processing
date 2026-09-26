@@ -12,10 +12,14 @@ the table. Every table names the commit it was measured at: re-measure after cha
 - Run-to-run noise:
   - PC: 5-8% on the few-ms rows, 1-2% elsewhere.
   - Pi: 5-10%.
-  - windows-latest runner: scalar times swing up to 30%.
-  - macos-latest runner: too noisy to read per scenario.
+  - windows-latest runner: most rows within 3%, some 10%; scalar times swing up to 30%.
+  - ubuntu-24.04-arm runner, Clang: about 1%.
+  - macos-latest runner: up to 2x, too noisy to read per scenario.
+- A CI comparison needs several samples per side: re-running the old commit's run alongside the new one gives same-time
+  pairs. A re-run is a new attempt of the same run, with its own logs.
 - `QT_NO_GUI_THREADPOOL=1` keeps the Qt control serial; `run_tests` sets it.
-- The serial benchmarks include destination allocation, as the Qt control does.
+- Every benchmark allocates a fresh destination inside the timing, as the Qt control does. Threaded rows measured up to
+  29b97e9 reused one destination.
 - Windows throttles an unfocused console process onto E-cores: such runs came out 2-4x slow. The test runner opts out
   through `runCatchSession` (cpp-template-utils).
 - A Pi 4 without cooling throttles under sustained load: `vcgencmd get_throttled` must print `0x0` after a run.
@@ -30,7 +34,7 @@ the table. Every table names the commit it was measured at: re-measure after cha
 | PC | Core i5-12600K, P-cores | 48 KB L1D, 1.25 MB private L2 per P-core | MSVC 2022, Qt 6.11.2 |
 | Raspberry Pi 4 | 4x Cortex-A72 | 32 KB L1D, 1 MB L2 shared by all cores | Clang 22 unless noted |
 | ubuntu-24.04-arm | Cobalt 100 (Neoverse N2), 4 cores | 1 MB private L2 per core | GCC and Clang jobs |
-| ubuntu-latest, windows-latest | 2 cores, 4 threads, varying by run. Seen: AMD EPYC 9V74 (Zen 4), EPYC 7763 (Zen 3), Xeon Platinum 8573C | 1 MB, 512 KB, 2 MB private L2 per core | GCC and Clang; MSVC and clang-cl |
+| ubuntu-latest, windows-latest | 2 cores, 4 threads, varying by run. Seen: AMD EPYC 9V45 (Zen 5), 9V74 (Zen 4), 7763 (Zen 3); Xeon Platinum 8573C, Xeon 6973P-C | Private L2 per core: 1 MB on Zen 4 and 5, 512 KB on Zen 3, 2 MB on the Xeons | GCC and Clang; MSVC and clang-cl |
 | macos-latest | Apple M1 (virtual), 3 cores | 12 MB L2 | Apple Clang |
 
 ## Standing against Qt
@@ -346,30 +350,40 @@ Pi, ms with threads, 2b371a2 -> b9fea7e. Scalar also against 8ca3148. Speedup: s
 - Weak rows: 4K -> 64x64, whose two strips each re-convert about 360 shared source pixels, and scalar 720p -> 4K RGBA32.
 - Single-threaded the Pi is about neutral: 101 MP SIMD gains 9-12% (its ring overflowed the L2 even alone), 4K -> 64x64 SIMD
   loses 8%.
-- CI shows only the cost: the runners' L2 is private, 512 KB or 1 MB per core, and full-width rings already fit.
+- Where full-width rings already fit, only the overhead shows. ARM Clang on Neoverse-N2 (1 MB private L2), CI,
+  2b371a2 -> 29b97e9, 3-4 samples per side:
+  - SIMD +1-5% single-threaded.
+  - Scalar downscales +5-11%, scalar upscales -5-6%.
+  - With threads within 4%, except scalar 24 MP and 101 MP: +8-9%.
 
-Strips cost x64 Windows single-threaded, the SIMD upscales most. CI, SIMD time, 2b371a2 -> b9fea7e: MSVC and clang-cl on
-EPYC 7763 +57-67% on 720p -> 4K and +15-17% on 4K -> 1080p RGB32; x64 GCC on the same CPU model 0-6%; ARM 0-6%.
-With threads every job stayed within -12% to +6%.
+Without the pre-touch below, strips cost x64 Windows single-threaded, the SIMD upscales most. CI, EPYC 7763, resizer / QImage, 2b371a2 -> 29b97e9,
+2-4 samples per side:
+- MSVC and clang-cl: SIMD 720p -> 4K +53-62%, 4K -> 1080p RGB32 +9-14%; scalar upscales +4-20%.
+- With threads: MSVC -8% to +7%, clang-cl gains 3-11%.
+- x64 Clang on Linux, same CPU model: within 4%.
 
-PC, MSVC, SIMD, mean ms of five alternating rounds.
+The cost is Windows' demand-zero page faults on a fresh destination:
+- A process-fault-counter probe on the PC: one fault per page with and without strips, but about 1.1-1.2 us each when strips
+  first write the pages out of address order, against 0.45 us in order.
+- With a reused destination strips cost the upscales -4% to +6%.
+- Finishing each page while cached does not help: see experiment 8.
+- `touchDestPagesInOrder` writes one byte per page in address order before a band's strips run.
+- Linux on the same CPU model shows no cost; why is unmeasured.
 
-| Scenario | 2b371a2 | b9fea7e | 29b97e9 (cap) |
+PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destinations, three runs.
+
+| Scenario | 2b371a2 | 29b97e9 (strips, cap) | Pre-touch |
 |---|---:|---:|---:|
-| 4K -> 1080p RGB32 | 15.42 | 18.28 (+19%) | 17.81 (+15%) |
-| 4K -> 1080p RGB32 [reused dest] | 14.55 | 15.97 (+10%) | 15.34 (+5%) |
-| 720p -> 4K RGBA32 | 12.75 | 18.74 (+47%) | 18.13 (+42%) |
-| 720p -> 4K RGB32 | 11.94 | 17.35 (+45%) | 16.78 (+41%) |
-| 24 MP -> 1080p | 34.87 | 37.37 (+7%) | 37.10 (+6%) |
-| 1080p -> 1440p (one strip) | 8.39 | 8.48 | 8.30 |
+| 720p -> 4K RGBA32 | 13.65 | 19.59 (+43%) | 13.93 (+2%) |
+| 720p -> 4K RGB32 | 12.72 | 18.56 (+46%) | 13.29 (+4%) |
+| 4K -> 1080p RGB32 | 15.89 | 18.53 (+17%) | 16.73 (+5%) |
+| 24 MP -> 1080p | 35.84 | 38.64 (+8%) | 36.93 (+3%) |
+| 720p -> 4K RGB32, scalar | 44.24 | 48.67 (+10%) | 44.85 (+1%) |
+| 720p -> 4K RGBA32, threads | 5.35 | 7.57 (+41%) | 5.47 (+2%) |
 
-- Most of the cost is first-touch page faults on the freshly allocated destination. The fault zeroes a page into the
-  cache; a strip fills only part of it, and the page is written back before the later strips fill the rest.
-- The fresh-destination premium on 4K -> 1080p RGB32 grew from 0.87-0.95 ms to 2.3-2.7 ms in each of three runs. An
-  upscale writes 9 times its source in destination, so it pays the most.
-- Linux on the same CPU does not pay it. Unverified explanation: glibc's dynamic `mmap` threshold keeps a freed large
-  block mapped, so the next allocation reuses faulted pages.
-- The scalar path pays 3-10% on the PC with several strips; it already converted only the strip's span.
+- The remaining 3-5% on downscales is strip overhead: the reused-destination rows show the same.
+- Pre-touching a reused destination costs nothing measurable, with or without threads.
+- The cap (29b97e9) took 4-5 points off the SIMD cost before the pre-touch.
 
 ## Experiments that lost
 
@@ -406,6 +420,12 @@ PC, MSVC, SIMD, mean ms of five alternating rounds.
    - PC: scalar downscales 2-5% faster, 1080p -> 1440p unchanged, across sessions.
    - Dropped: unmeasured on ARM, where a table lookup blocks vectorizing the conversion.
 
+8. **Row blocks for the Windows cost of strips** (not committed).
+   - What: each thread ran all strips over a block of about 2.7 MB of destination rows before the next block, so every
+     destination page filled while cached.
+   - Result: no change against strips alone, on fresh and reused destinations. The cost is in the faults (the column
+     strips section).
+
 ## Open leads
 
 1. **x64 GCC runners, 4K -> 64x64:** resizer / QImage 3.55 at f435b80, 4.04 at d436d41, 3.95 at 1ecd630. The sliding buffer
@@ -423,10 +443,6 @@ PC, MSVC, SIMD, mean ms of five alternating rounds.
      it with clang-cl's is the next step.
 4. **CPUs without AVX2 take the scalar path:** there is no SSE4.1 kernel yet. Baselines on a Sandy Bridge laptop and a
    Celeron N4100 come first.
-5. **Strips cost x64 Windows up to 42% on the PC's single-threaded SIMD upscales** (the column strips section), mostly in
-   first-touch faults on a fresh destination.
-   - Candidate: row blocks. Each thread finishes all strips of a block of destination rows before the next, so every
-     destination page fills while cached. The temp rows under the window at each block boundary get recomputed.
-   - A runtime L2-share budget does not remove it: a CI Windows runner's 512 KB L2, shared by two threads, yields the same
-     128 KB budget.
-6. **4K -> 64x64 with threads on the Pi:** scalar 59 ms against 47 for the whole-image temp (8ca3148).
+5. **4K -> 64x64 with threads on the Pi:** scalar 59 ms against 47 for the whole-image temp (8ca3148).
+6. **Strips cost up to 11% where the L2 is large:** Neoverse-N2's scalar downscales, 3-8% on the PC's (the column strips
+   section). A budget from the runtime L2 share would skip strips there.

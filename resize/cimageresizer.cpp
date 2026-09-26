@@ -378,16 +378,29 @@ namespace
 		// The SIMD vertical pass writes 8-pixel blocks, with a scalar tail per strip
 		constexpr size_t widthGranule = 8;
 
-		size_t longestYRun = 0;
-		for (const TapRun& run : yWeights.runs)
-			longestYRun = std::max(longestYRun, run.weightCount);
-
 		const size_t width = static_cast<size_t>(destWidth);
-		const size_t maxStripWidth = std::max(widthGranule, ringBudgetBytes / (longestYRun * channels * sizeof(float)));
+		const size_t maxStripWidth = std::max(widthGranule, ringBudgetBytes / (yWeights.longestRun() * channels * sizeof(float)));
 		const size_t stripCount = (width + maxStripWidth - 1) / maxStripWidth;
 		// Equal widths: a narrow last strip would pay the per-strip costs for little work
 		const size_t equalWidth = (width + stripCount - 1) / stripCount;
 		return std::min(width, (equalWidth + widthGranule - 1) / widthGranule * widthGranule);
+	}
+
+	// Faults in dest rows [rowBegin, rowEnd) in address order, writing one logical byte per page: the resize overwrites it.
+	// Windows charges ~2.5x per demand-zero fault when column strips touch fresh pages out of order.
+	void touchDestPagesInOrder(ImageView<false>& dest, uint64_t rowBegin, uint64_t rowEnd, size_t pixelStride) noexcept
+	{
+		constexpr size_t pageSize = 4096;
+		const size_t logicalRowBytes = static_cast<size_t>(dest.width) * pixelStride;
+		for (uint64_t y = rowBegin; y < rowEnd; ++y)
+		{
+			// Volatile: the store exists for its fault, and the resize's later store to the same byte would make it dead
+			volatile uint8_t* const row = dest.scanLine<uint8_t>(y);
+			for (size_t offset = 0; offset < logicalRowBytes; offset += pageSize)
+				row[offset] = 0;
+
+			row[logicalRowBytes - 1] = 0;
+		}
 	}
 
 	template <size_t Channels>
@@ -420,6 +433,7 @@ namespace
 		// A dest row's work includes producing its share of temp rows, srcRect.h / dest.height of them
 		const size_t elementsPerDestRow = tempRowStride + tempRowStride * static_cast<size_t>(srcRect.h) / static_cast<size_t>(dest.height);
 		const size_t stripWidth = stripWidthFor(dest.width, yWeights, Channels);
+		const bool touchDestPages = stripWidth < dest.width;
 
 #if IMAGE_PROCESSING_SIMD
 		if constexpr (Channels == 3 || Channels == 4)
@@ -429,6 +443,9 @@ namespace
 				const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * pixelStride;
 				forEachRowBand(parallelFor, dest.height, elementsPerDestRow, [&](uint64_t rowBegin, uint64_t rowEnd)
 				{
+					if (touchDestPages)
+						touchDestPagesInOrder(dest, rowBegin, rowEnd, pixelStride);
+
 					resizeRows4BytePixelsSimd<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
 				});
 				return;
@@ -448,6 +465,9 @@ namespace
 
 		forEachRowBand(parallelFor, dest.height, elementsPerDestRow, [&](uint64_t rowBegin, uint64_t rowEnd)
 		{
+			if (touchDestPages)
+				touchDestPagesInOrder(dest, rowBegin, rowEnd, pixelStride);
+
 			resizeRows(source, srcRect, dest, xWeights, yWeights, stripWidth, rowBegin, rowEnd);
 		});
 	}

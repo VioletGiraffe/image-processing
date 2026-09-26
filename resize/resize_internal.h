@@ -59,6 +59,15 @@ namespace ImageProcessing::Detail
 			return span;
 		}
 
+		[[nodiscard]] size_t longestRun() const noexcept
+		{
+			size_t longest = 0;
+			for (const TapRun& run : runs)
+				longest = std::max(longest, run.weightCount);
+
+			return longest;
+		}
+
 		std::vector<float> weights;
 		std::vector<TapRun> runs;
 	};
