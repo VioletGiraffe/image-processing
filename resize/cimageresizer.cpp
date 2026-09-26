@@ -287,24 +287,31 @@ namespace
 		}
 	}
 
-	// Sums the window's temp rows into accumRow, tap by tap: each tap is one sweep over contiguous floats
+	// Sums the window's temp rows into accumRow, one chunk of the row through every tap at a time, each tap one sweep over
+	// contiguous floats: a chunk's accumulators stay in L1 across the taps, where a whole 4K row's would not.
 	void filterVerticalRow(const std::array<TempRowSegment, 2>& segments, std::span<const float> rowWeights, size_t tempRowStride, size_t rowElementCount, float* accumRow) noexcept
 	{
-		std::fill_n(accumRow, rowElementCount, 0.0f);
-
-		const float* weight = rowWeights.data();
-		for (const TempRowSegment& segment : segments)
+		constexpr size_t chunkElements = 1024;
+		for (size_t chunkBegin = 0; chunkBegin < rowElementCount; chunkBegin += chunkElements)
 		{
-			const float* tempRow = segment.firstRow;
-			for (size_t row = 0; row < segment.rowCount; ++row, ++weight, tempRow += tempRowStride)
-			{
-				// A zero tap would cost a whole row sweep, and exact-ratio downscales produce them (the kernels are zero at integer offsets)
-				const float tapWeight = *weight;
-				if (tapWeight == 0.0f)
-					continue;
+			const size_t chunkElementCount = std::min(chunkElements, rowElementCount - chunkBegin);
+			float* const accumChunk = accumRow + chunkBegin;
+			std::fill_n(accumChunk, chunkElementCount, 0.0f);
 
-				for (size_t element = 0; element < rowElementCount; ++element)
-					accumRow[element] += tempRow[element] * tapWeight;
+			const float* weight = rowWeights.data();
+			for (const TempRowSegment& segment : segments)
+			{
+				const float* tempChunk = segment.firstRow + chunkBegin;
+				for (size_t row = 0; row < segment.rowCount; ++row, ++weight, tempChunk += tempRowStride)
+				{
+					// A zero tap would cost a whole sweep, and exact-ratio downscales produce them (the kernels are zero at integer offsets)
+					const float tapWeight = *weight;
+					if (tapWeight == 0.0f)
+						continue;
+
+					for (size_t element = 0; element < chunkElementCount; ++element)
+						accumChunk[element] += tempChunk[element] * tapWeight;
+				}
 			}
 		}
 	}
