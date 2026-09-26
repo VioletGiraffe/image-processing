@@ -39,32 +39,31 @@ the table. Every table names the commit it was measured at: re-measure after cha
 
 ## Standing against Qt
 
-Resizer / QImage, lower is better. PC at 9d86565 (mean of three rounds; 4K -> 1080p RGB24 with threads: one run), Pi at
-6fac81f (4K -> 1080p RGB24 with threads: 2b371a2). All three have the same resizer code, from before column strips. "-": no
-such benchmark.
+Resizer / QImage, lower is better. PC at 9d86565, before column strips (mean of three rounds; 4K -> 1080p RGB24 with
+threads: 2b371a2, one run). Pi at 6b6bf7e. "-": no such benchmark.
 
 | Scenario | PC | PC, threads | Pi | Pi, threads |
 |---|---|---|---|---|
-| 24 MP -> 1080p | 1.77 | 0.51 | 2.95 | 1.51 |
-| 4K -> 1080p RGB32 | 1.99 | - | 4.88 | - |
-| 4K -> 1080p RGBA32 | 0.94 | 0.28 | 2.58 | 1.82 |
-| 720p -> 4K RGB32 | 0.59 | - | 1.07 | - |
-| 720p -> 4K RGBA32 | 0.31 | 0.07 | 0.33 | 0.26 |
-| 1080p -> 1440p | 0.87 | 0.21 | 1.84 | 0.59 |
-| 1080p -> 240p | 2.36 | 0.95 | 3.73 | 1.29 |
-| 4K -> 64x64 | 2.56 | 1.05 | 3.42 | 1.31 |
-| 101 MP -> 720p | 2.22 | 0.64 | 4.25 | 1.59 |
-| 1080p, native size | 1.12 | - | 1.06 | - |
-| 4K -> 1080p Grayscale8 (scalar) | 1.06 | - | 1.16 | - |
-| 720p -> 4K Grayscale8 (scalar) | 0.90 | - | 0.56 | - |
-| 4K -> 1080p RGB24 (scalar) | 2.93 | 0.73 | 3.64 | 2.31 |
-| 720p -> 4K RGB24 (scalar) | 2.09 | 0.53 | 1.06 | 0.54 |
+| 24 MP -> 1080p | 1.77 | 0.51 | 2.90 | 0.84 |
+| 4K -> 1080p RGB32 | 1.99 | - | 4.97 | - |
+| 4K -> 1080p RGBA32 | 0.94 | 0.28 | 2.33 | 0.72 |
+| 720p -> 4K RGB32 | 0.59 | - | 1.08 | - |
+| 720p -> 4K RGBA32 | 0.31 | 0.07 | 0.32 | 0.10 |
+| 1080p -> 1440p | 0.87 | 0.21 | 1.84 | 0.63 |
+| 1080p -> 240p | 2.36 | 0.95 | 3.66 | 1.18 |
+| 4K -> 64x64 | 2.56 | 1.05 | 3.52 | 1.37 |
+| 101 MP -> 720p | 2.22 | 0.64 | 3.91 | 1.17 |
+| 1080p, native size | 1.12 | - | 1.00 | - |
+| 4K -> 1080p Grayscale8 (scalar) | 1.06 | - | 1.19 | - |
+| 720p -> 4K Grayscale8 (scalar) | 0.90 | - | 0.59 | - |
+| 4K -> 1080p RGB24 (scalar) | 2.93 | 0.73 | 3.76 | 1.05 |
+| 720p -> 4K RGB24 (scalar) | 2.09 | 0.53 | 1.09 | 0.35 |
 
 - PC: upscales and straight-alpha images beat Qt; Qt premultiplies alpha in a separate pass.
-- Pi: straight-alpha upscales beat Qt single-threaded, and the opaque 720p -> 4K about matches it. Every upscale beats it
-  with threads.
+- Pi: straight-alpha upscales beat Qt single-threaded, and the opaque 720p -> 4K about matches it. With threads every
+  upscale beats it, 24 MP and RGBA32 downscales too, and RGB24 matches it.
 - Opaque downscales stay about 2x behind Qt single-threaded on the PC and 3-5x on the Pi.
-- RGB24 is the weak spot: no SIMD kernel, and 2-3.6x behind Qt on downscales. Grayscale8 about matches Qt on downscales
+- RGB24 is the weak spot: no SIMD kernel, and 2.9-3.8x behind Qt on single-threaded downscales. Grayscale8 about matches Qt on downscales
   and beats it on upscales.
 
 ## What the design rests on
@@ -381,8 +380,10 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
 | 720p -> 4K RGB32, scalar | 44.24 | 48.67 (+10%) | 44.85 (+1%) |
 | 720p -> 4K RGBA32, threads | 5.35 | 7.57 (+41%) | 5.47 (+2%) |
 
-- The remaining 3-5% on downscales is strip overhead: the reused-destination rows show the same.
+- The remaining 3-5% on downscales is strip overhead: it remains with a reused destination.
 - Pre-touching a reused destination costs nothing measurable, with or without threads.
+- CI, EPYC 7763, single-threaded against 2b371a2, 6b6bf7e: MSVC and clang-cl upscales -3% to +3% (strips alone: +53-62%),
+  4K -> 1080p +1-7%. The Linux and ARM jobs held within 5% of strips alone.
 - The cap (29b97e9) took 4-5 points off the SIMD cost before the pre-touch.
 
 ## Experiments that lost

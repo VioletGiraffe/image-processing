@@ -122,8 +122,7 @@ namespace
 		uint8_t channels,
 		uint8_t pixelStrideBytes,
 		QImage::Format qImageFormat,
-		CThreadPool* threadPool = nullptr,
-		bool addReusedDestVariant = false)
+		CThreadPool* threadPool = nullptr)
 	{
 		BenchmarkImage source(sourceWidth, sourceHeight, channels, pixelStrideBytes);
 		fillPhotoLikeContent(source);
@@ -173,19 +172,6 @@ namespace
 		if (threadPool)
 			return;
 
-		if (addReusedDestVariant)
-		{
-			// Continuity anchor: measures like runs recorded before the serial set included the allocation
-			BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
-
-			BENCHMARK(std::string("CImageResizer | ") + name + " [reused dest]")
-			{
-				auto destView = dest.mutableView();
-				ImageProcessing::resize(destView, sourceView);
-				return dest.data[dest.dataSize / 2];
-			};
-		}
-
 		if (sourceWidth == destWidth && sourceHeight == destHeight)
 		{
 			BENCHMARK(std::string("QImage::copy | ") + name)
@@ -212,7 +198,7 @@ namespace
 TEST_CASE("Common display resize scenarios", "[!benchmark][resize]")
 {
 	benchmarkResize("24 MP photo to 1080p viewport - RGB32", 6000, 4000, 1620, 1080, 3, 4, QImage::Format_RGB32);
-	benchmarkResize("4K image to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32, nullptr, true);
+	benchmarkResize("4K image to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("720p image to 4K - RGBA32", 1280, 720, 3840, 2160, 4, 4, QImage::Format_RGBA8888);
 	benchmarkResize("720p image to 4K - RGB32", 1280, 720, 3840, 2160, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("1080p image to 1440p - RGB32", 1920, 1080, 2560, 1440, 3, 4, QImage::Format_RGB32);
