@@ -8,8 +8,6 @@ CONFIG(release, debug|release):CONFIG += optimize_full ltcg
 
 QT += gui
 
-DEFINES += CATCH_CONFIG_ENABLE_BENCHMARKING
-
 CONFIG(debug, debug|release) {
 	OUTPUT_DIR=debug
 	DEFINES += _DEBUG
