@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <stddef.h>
 #include <stdint.h>
 #include <type_traits>
@@ -56,20 +57,35 @@ namespace ImageProcessing
 		Lanczos3,
 	};
 
-	enum class SimdUsage : uint8_t
+	// The instruction sets of the kernels: x64 needs SSE4.1 at least, and ARM64 always has NEON.
+	// The x64 levels are ordered: a lower one caps a higher one.
+	enum class SimdLevel : uint8_t
 	{
-		Auto, // The SIMD kernels wherever the CPU supports them
-		Disabled,
+		Sse41,
+		Avx2, // With FMA
+		Neon,
 	};
 
-	// Whether SimdUsage::Auto reaches the SIMD kernels on this CPU
-	[[nodiscard]] bool simdAvailable() noexcept;
+	[[nodiscard]] constexpr const char* simdLevelName(SimdLevel level) noexcept
+	{
+		switch (level)
+		{
+		case SimdLevel::Sse41: return "SSE4.1";
+		case SimdLevel::Avx2: return "AVX2";
+		case SimdLevel::Neon: return "NEON";
+		}
+		return "unknown";
+	}
+
+	// This CPU's best level. Empty on an x64 CPU without SSE4.1: resize() refuses to run there.
+	[[nodiscard]] std::optional<SimdLevel> detectedSimdLevel() noexcept;
 
 	// The callback must run body(0) .. body(count - 1) concurrently and must not return until all of them have completed.
 	// When empty, the work runs on the calling thread; either way resize() returns only once the destination is complete.
 	using ParallelForFn = std::function<void(size_t count, const std::function<void(size_t index)>& body)>;
 
 	// The output is premultiplied, so an alpha destination must be marked Premultiplied; a straight source is premultiplied as it is read.
+	// simdCap: the highest level to use, empty for detectedSimdLevel(); it must be one of this CPU's levels.
 	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, const ParallelForFn& parallelFor = {},
-		ResizeKernel kernel = ResizeKernel::Auto, SimdUsage simd = SimdUsage::Auto);
+		ResizeKernel kernel = ResizeKernel::Auto, std::optional<SimdLevel> simdCap = {});
 }

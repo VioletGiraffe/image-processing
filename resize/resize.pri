@@ -5,11 +5,14 @@ HEADERS += \
 	$$PWD/resize_internal.h \
 	$$PWD/simd_primitives_avx2.h \
 	$$PWD/simd_primitives_neon.h \
+	$$PWD/simd_primitives_sse41.h \
 	$$PWD/simd_support.h
 
+# The SSE4.1 kernels need no compiler switch: MSVC compiles SSE4.1 intrinsics anywhere, GCC and Clang take the target attribute
 SOURCES += \
 	$$PWD/cimageresizer.cpp \
 	$$PWD/cimageresizer_simd_neon.cpp \
+	$$PWD/cimageresizer_simd_sse41.cpp \
 	$$PWD/cpu_cache.cpp
 
 # Each cimageresizer_simd_<level>.cpp compiles cimageresizer_simd.inl for its instruction set.

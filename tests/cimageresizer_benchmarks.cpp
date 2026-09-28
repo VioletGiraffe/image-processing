@@ -5,6 +5,7 @@ DISABLE_COMPILER_WARNINGS
 RESTORE_COMPILER_WARNINGS
 
 #include "resize/cimageresizer.h"
+#include "simd_levels.h"
 
 #include "threading/cthreadpool.h"
 
@@ -21,6 +22,7 @@ RESTORE_COMPILER_WARNINGS
 #include <iostream>
 #include <memory>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,7 +31,7 @@ namespace
 {
 	using ImageProcessing::AlphaKind;
 	using ImageProcessing::ImageView;
-	using ImageProcessing::SimdUsage;
+	using ImageProcessing::SimdLevel;
 
 	struct BenchmarkImage
 	{
@@ -136,14 +138,15 @@ namespace
 			qImageFormat);
 		REQUIRE(!qImageSource.isNull());
 
-		// A scalar run only where the default one takes a SIMD kernel: 4-byte layouts, scaled, on a CPU that has the kernels.
-		// report_benchmark_ratios.py matches a scalar run to its SIMD run by the scenario name.
-		std::vector<SimdUsage> simdUsages{ SimdUsage::Auto };
-		if (ImageProcessing::simdAvailable() && pixelStrideBytes == 4 && channels >= 3 && (sourceWidth != destWidth || sourceHeight != destHeight))
-			simdUsages.push_back(SimdUsage::Disabled);
+		// An SSE4.1 run only where the default one takes the AVX2 kernels: 4-byte layouts, scaled, on an AVX2 CPU.
+		// report_benchmark_ratios.py matches an SSE4.1 run to its default run by the scenario name.
+		std::vector<std::optional<SimdLevel>> simdCaps{ std::nullopt };
+		if (supportedSimdLevels().size() > 1 && pixelStrideBytes == 4 && channels >= 3 && (sourceWidth != destWidth || sourceHeight != destHeight))
+			simdCaps.push_back(SimdLevel::Sse41);
 
-		const auto resizerName = [name](SimdUsage simd) {
-			return std::string(simd == SimdUsage::Disabled ? "CImageResizer [scalar] | " : "CImageResizer | ") + name;
+		const auto resizerName = [name](std::optional<SimdLevel> simdCap) {
+			const std::string levelTag = simdCap ? std::string{ " [" } + ImageProcessing::simdLevelName(*simdCap) + "]" : std::string{};
+			return "CImageResizer" + levelTag + " | " + name;
 		};
 
 		ImageProcessing::ParallelForFn parallelFor;
@@ -157,13 +160,13 @@ namespace
 
 		// The QImage controls allocate their destination inside the timed call with no way to exclude it,
 		// so the resize pays destination allocation and first touch as well to keep the ratios fair.
-		for (const SimdUsage simd : simdUsages)
+		for (const std::optional<SimdLevel> simdCap : simdCaps)
 		{
-			BENCHMARK(resizerName(simd) + (threadPool ? " [multithreaded]" : ""))
+			BENCHMARK(resizerName(simdCap) + (threadPool ? " [multithreaded]" : ""))
 			{
 				BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
 				auto destView = dest.mutableView();
-				ImageProcessing::resize(destView, sourceView, {}, parallelFor, ImageProcessing::ResizeKernel::Auto, simd);
+				ImageProcessing::resize(destView, sourceView, {}, parallelFor, ImageProcessing::ResizeKernel::Auto, simdCap);
 				return dest.data[dest.dataSize / 2];
 			};
 		}

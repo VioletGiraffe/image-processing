@@ -6,6 +6,7 @@
 
 #include <arm_neon.h>
 
+#include <cmath>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -61,6 +62,7 @@ namespace ImageProcessing::Detail::Neon
 	}
 
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 mulAdd(Floats4 a, Floats4 b, Floats4 accum) noexcept { return vfmaq_f32(accum, a, b); }
+	IMAGE_PROCESSING_SIMD_INLINE float mulAdd(float a, float b, float accum) noexcept { return std::fma(a, b, accum); }
 
 	// The sum of the first 4 floats and the last 4
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 sumHalves(Floats8 values) noexcept { return vaddq_f32(values.low, values.high); }
@@ -128,7 +130,7 @@ namespace ImageProcessing::Detail::Neon
 		return vcombine_u8(vqmovn_u16(packEightFloatsToWords(first)), vqmovn_u16(packEightFloatsToWords(second)));
 	}
 
-	// Color is capped at alpha, as writePixelBytes does
+	// Color is capped at alpha: the scalar path's writePixelBytes caps it too
 	IMAGE_PROCESSING_SIMD_INLINE float32x4_t capColorAtAlpha(float32x4_t pixel) noexcept
 	{
 		return vminq_f32(pixel, vdupq_laneq_f32(pixel, 3));

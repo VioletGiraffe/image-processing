@@ -13,7 +13,6 @@
 #include <algorithm>
 #include <array>
 #include <assert.h>
-#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -317,7 +316,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 						if (*weight != 0.0f)
 						{
 							for (size_t channel = 0; channel < Channels; ++channel)
-								accum[channel] = std::fma(source[channel], *weight, accum[channel]);
+								accum[channel] = mulAdd(source[channel], *weight, accum[channel]);
 						}
 
 						source += tempRowStride;

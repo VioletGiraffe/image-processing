@@ -7,6 +7,7 @@
 #include <array>
 #include <cassert>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stddef.h>
 #include <stdint.h>
@@ -118,7 +119,7 @@ namespace ImageProcessing::Detail
 
 	// resize() with each thread's temp-row ring bounded to ringBudgetBytes, in place of the budget sized from the L2
 	void resizeWithRingBudget(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor,
-		ResizeKernel kernel, SimdUsage simd, size_t ringBudgetBytes);
+		ResizeKernel kernel, std::optional<SimdLevel> simdCap, size_t ringBudgetBytes);
 
 	[[nodiscard]] inline bool hasStraightAlpha(const ImageView<true>& image) noexcept
 	{
@@ -150,40 +151,31 @@ namespace ImageProcessing::Detail
 
 	// The SIMD kernels resize dest rows [destRowBegin, destRowEnd) in one fused pass over a ring of temp rows.
 	// Each is the outline in cimageresizer_simd.inl, compiled by cimageresizer_simd_<level>.cpp against that level's primitives.
+	// The target attributes forbid inlining into the baseline dispatcher, keeping the runtime level check in control of what executes.
 #if IMAGE_PROCESSING_X64
 	// MSVC compiles cimageresizer_simd_avx2.cpp with /arch:AVX2 so that its 128-bit intrinsics are VEX-encoded too:
 	// a legacy SSE encoding stalls for tens of cycles per instruction whenever the process left the upper YMM state dirty,
 	// which any AVX-using host does. GCC and Clang get that from the target attribute.
-	// The attribute also forbids inlining into the non-AVX2 dispatcher, keeping the runtime check in control of
-	// whether these ever execute.
 	namespace Avx2
 	{
 		template <size_t Channels>
-		IMAGE_PROCESSING_AVX2_TARGET void resizeRows4BytePixels(
-			const ImageView<true>& source,
-			Rect srcRect,
-			ImageView<false>& dest,
-			const AxisWeights& xWeights,
-			const AxisWeights& yWeights,
-			size_t stripWidth,
-			uint8_t pixelTailValue,
-			uint64_t destRowBegin,
-			uint64_t destRowEnd);
+		IMAGE_PROCESSING_AVX2_TARGET void resizeRows4BytePixels(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
+			const AxisWeights& yWeights, size_t stripWidth, uint8_t pixelTailValue, uint64_t destRowBegin, uint64_t destRowEnd);
 	}
-#elif IMAGE_PROCESSING_ARM64
+
+	// Legacy-SSE encoded: every thread running it clears the upper YMM state first wherever AVX exists
+	namespace Sse41
+	{
+		template <size_t Channels>
+		IMAGE_PROCESSING_SSE41_TARGET void resizeRows4BytePixels(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
+			const AxisWeights& yWeights, size_t stripWidth, uint8_t pixelTailValue, uint64_t destRowBegin, uint64_t destRowEnd);
+	}
+#else
 	namespace Neon
 	{
 		template <size_t Channels>
-		void resizeRows4BytePixels(
-			const ImageView<true>& source,
-			Rect srcRect,
-			ImageView<false>& dest,
-			const AxisWeights& xWeights,
-			const AxisWeights& yWeights,
-			size_t stripWidth,
-			uint8_t pixelTailValue,
-			uint64_t destRowBegin,
-			uint64_t destRowEnd);
+		void resizeRows4BytePixels(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
+			const AxisWeights& yWeights, size_t stripWidth, uint8_t pixelTailValue, uint64_t destRowBegin, uint64_t destRowEnd);
 	}
 #endif
 }

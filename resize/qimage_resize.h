@@ -13,6 +13,7 @@ DISABLE_COMPILER_WARNINGS
 RESTORE_COMPILER_WARNINGS
 
 #include <assert.h>
+#include <optional>
 #include <stdint.h>
 #include <utility>
 
@@ -102,7 +103,7 @@ namespace ImageProcessing
 	// dest arrives at the target size; an empty srcRect means the whole source.
 	// A straight-alpha dest is switched to premultipliedFormat(): the output is premultiplied.
 	[[nodiscard]] inline bool resize(QImage& dest, const QImage& source, const QRect& srcRect = {}, const ParallelForFn& parallelFor = {},
-		ResizeKernel kernel = ResizeKernel::Auto, SimdUsage simd = SimdUsage::Auto)
+		ResizeKernel kernel = ResizeKernel::Auto, std::optional<SimdLevel> simdCap = {})
 	{
 		assert(srcRect.isEmpty() || source.rect().contains(srcRect));
 
@@ -122,7 +123,7 @@ namespace ImageProcessing
 			static_cast<uint64_t>(srcRect.height())
 		};
 
-		resize(destView, sourceView, rect, parallelFor, kernel, simd);
+		resize(destView, sourceView, rect, parallelFor, kernel, simdCap);
 		return true;
 	}
 }

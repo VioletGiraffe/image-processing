@@ -1,6 +1,6 @@
 # image-processing
 
-Image resizer with hand-optimized SIMD path (and scalar fallback for old CPUs)
+Image resizer with hand-optimized SIMD kernels for x64 and ARM64
 
 ## Resizer
 
@@ -10,9 +10,10 @@ Image resizer with hand-optimized SIMD path (and scalar fallback for old CPUs)
   premultiplied as it is read.
 - SIMD kernel for 4-byte pixels: one outline, `resize/cimageresizer_simd.inl`, compiled per instruction set against that set's
   `simd_primitives_*.h` by a `cimageresizer_simd_*.cpp`.
-  - x64: AVX2 + FMA, chosen at runtime.
+  - x64: AVX2 + FMA where the CPU has them, SSE4.1 otherwise, chosen at runtime. Below SSE4.1, `resize()` refuses to run.
   - ARM64: NEON.
-  - Everything else takes the scalar path.
+  - Other architectures are not supported.
+- Other pixel layouts take a scalar path.
 - Multithreaded through a caller-supplied `ParallelForFn`.
 - The core is Qt-free. `resize/qimage_resize.h` is a header-only bridge for `QImage`.
 

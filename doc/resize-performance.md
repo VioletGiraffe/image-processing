@@ -8,7 +8,8 @@ the table. Every table names the commit it was measured at: re-measure after cha
 
 - The resizer / QImage ratio is the only figure that compares across runs, machines and CI jobs.
 - Absolute ms compare only on one machine, and only while the rows the change cannot affect agree.
-- Noise gauges: Grayscale8 and RGB24 have no SIMD kernel, and the scalar rows ignore SIMD changes.
+- Noise gauges: Grayscale8 and RGB24 take the scalar path, which SIMD changes leave alone. Older reports' `[scalar]` rows
+  forced RGB32 and RGBA32 onto it; the `[SSE4.1]` rows that replaced them run SIMD kernels.
 - Run-to-run noise:
   - PC: 5-8% on the few-ms rows, 1-2% elsewhere.
   - Pi: 5-10%.
@@ -446,8 +447,9 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
    - Conversion takes 4.6; the ring saved 3-4 on the vertical pass.
    - Unexplained. A loss confined to MSVC points at its code for `filterHorizontalRow`, not at memory traffic: comparing
      it with clang-cl's is the next step.
-4. **CPUs without AVX2 take the scalar path:** there is no SSE4.1 kernel yet. Baselines on a Sandy Bridge laptop and a
-   Celeron N4100 come first.
+4. **The SSE4.1 kernels are untuned:** 1.3-1.7x the AVX2 time on the PC under MSVC. The horizontal pass's paired-row
+   8-tap block needs 16 XMM accumulators, x64's whole register file: MSVC keeps eight of them on the stack. Single rows or fewer
+   chains at this level are the candidates, to be judged on the Celeron N4100.
 5. **4K -> 64x64 with threads on the Pi:** scalar 59 ms against 47 for the whole-image temp (8ca3148).
 6. **Strips cost up to 11% where the L2 is large:** Neoverse-N2's scalar downscales, 3-8% on the PC's (the column strips
    section). A budget from the runtime L2 share would skip strips there.

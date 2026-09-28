@@ -5,6 +5,7 @@ DISABLE_COMPILER_WARNINGS
 RESTORE_COMPILER_WARNINGS
 
 #include "resize/qimage_resize.h"
+#include "simd_levels.h"
 
 DISABLE_COMPILER_WARNINGS
 #include <QColor>
@@ -120,20 +121,19 @@ namespace
 		{ { 12, 4 }, { 12, 4 }, "unscaled" },
 	};
 
-	// Resizes a source made at each geometry's size into a dest of the source's format, with and without SIMD, and checks every destination pixel.
+	// Resizes a source made at each geometry's size into a dest of the source's format, at each SIMD level of this CPU, and checks every destination pixel.
 	// QImage::pixel returns the stored value for every alpha format: a premultiplied pixel stays premultiplied.
 	void checkAlphaResizePixels(const AlphaFormat& format, const std::function<QImage(QSize)>& makeSource, const std::function<void(QRgb)>& checkPixel)
 	{
 		for (const AlphaResizeGeometry& geometry : alphaResizeGeometries)
 		{
-			for (const auto simd : { ImageProcessing::SimdUsage::Auto, ImageProcessing::SimdUsage::Disabled })
+			for (const ImageProcessing::SimdLevel simdLevel : supportedSimdLevels())
 			{
-				const bool simdDisabled = simd == ImageProcessing::SimdUsage::Disabled;
-				CAPTURE(geometry.name, simdDisabled);
+				CAPTURE(geometry.name, ImageProcessing::simdLevelName(simdLevel));
 
 				const QImage source = makeSource(geometry.source);
 				QImage dest(geometry.dest, source.format());
-				REQUIRE(ImageProcessing::resize(dest, source, {}, {}, ImageProcessing::ResizeKernel::Auto, simd));
+				REQUIRE(ImageProcessing::resize(dest, source, {}, {}, ImageProcessing::ResizeKernel::Auto, simdLevel));
 				CHECK(dest.format() == format.premultiplied);
 
 				for (int y = 0; y < dest.height(); ++y)

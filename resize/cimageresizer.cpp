@@ -10,8 +10,13 @@
 #include <cstdint>
 #include <memory>
 #include <numbers>
+#include <optional>
 #include <string.h>
 #include <vector>
+
+#if IMAGE_PROCESSING_X64 && defined(_MSC_VER)
+	#include <intrin.h>
+#endif
 
 // The float equality tests are exact-zero checks by design
 DISABLE_CLANG_GCC_WARNING("-Wfloat-equal")
@@ -21,6 +26,61 @@ using namespace ImageProcessing::Detail;
 
 namespace
 {
+#if IMAGE_PROCESSING_X64
+	struct X64Features
+	{
+		bool sse41 = false;
+		bool avx = false; // With the OS saving the YMM state
+		bool avx2Fma = false;
+	};
+
+	// Detected here, in a file compiled for the baseline instruction set: a kernel file's copy could hold instructions the CPU lacks
+	[[nodiscard]] const X64Features& x64Features() noexcept
+	{
+		static const X64Features features = []() noexcept {
+			X64Features detected;
+#if defined(_MSC_VER)
+			int registers[4];
+			__cpuid(registers, 0);
+			const int highestLeaf = registers[0];
+
+			__cpuidex(registers, 1, 0);
+			const int leaf1Ecx = registers[2];
+			constexpr int fmaBit = 1 << 12;
+			constexpr int sse41Bit = 1 << 19;
+			constexpr int osXsaveBit = 1 << 27;
+			constexpr int avxBit = 1 << 28;
+			detected.sse41 = (leaf1Ecx & sse41Bit) != 0;
+			// XCR0 bits 1 and 2: the OS saves the XMM and YMM state
+			detected.avx = (leaf1Ecx & (osXsaveBit | avxBit)) == (osXsaveBit | avxBit) && (_xgetbv(0) & 0x6) == 0x6;
+			if (detected.avx && (leaf1Ecx & fmaBit) != 0 && highestLeaf >= 7)
+			{
+				__cpuidex(registers, 7, 0);
+				constexpr int avx2Bit = 1 << 5;
+				detected.avx2Fma = (registers[1] & avx2Bit) != 0;
+			}
+#else
+			detected.sse41 = __builtin_cpu_supports("sse4.1");
+			detected.avx = __builtin_cpu_supports("avx");
+			detected.avx2Fma = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+#endif
+			return detected;
+		}();
+
+		return features;
+	}
+#endif
+
+	// Where vzeroupper exists: see resizeWithRingBudget for why it runs
+	[[nodiscard]] bool hasUsableAvx() noexcept
+	{
+#if IMAGE_PROCESSING_X64
+		return x64Features().avx;
+#else
+		return false;
+#endif
+	}
+
 	// Runs worker(rowBegin, rowEnd) over [0, rowCount) split into contiguous bands: through the callback when the
 	// total work justifies the dispatch overhead, serially otherwise (or with no callback). Blocks until done.
 	template <class Worker>
@@ -41,6 +101,10 @@ namespace
 
 		parallelFor(bandCount, [&](size_t band)
 			{
+				// Each thread has its own upper YMM state: resizeWithRingBudget cleared only the calling thread's
+				if (hasUsableAvx())
+					SimdSupport::clearAvxUpperState();
+
 				worker(rowCount * band / bandCount, rowCount * (band + 1) / bandCount);
 			});
 	}
@@ -410,7 +474,7 @@ namespace
 	}
 
 	template <size_t Channels>
-	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, [[maybe_unused]] SimdUsage simd, size_t ringBudgetBytes)
+	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, [[maybe_unused]] SimdLevel simdLevel, size_t ringBudgetBytes)
 	{
 		static_assert(Channels >= 1 && Channels <= 4);
 
@@ -441,10 +505,9 @@ namespace
 		const size_t stripWidth = stripWidthFor(dest.width, yWeights, Channels, ringBudgetBytes);
 		const bool touchDestPages = stripWidth < dest.width;
 
-#if IMAGE_PROCESSING_SIMD
 		if constexpr (Channels == 3 || Channels == 4)
 		{
-			if (pixelStride == 4 && simd == SimdUsage::Auto && SimdSupport::canUseSimd())
+			if (pixelStride == 4)
 			{
 				const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * pixelStride;
 				forEachRowBand(parallelFor, dest.height, elementsPerDestRow, [&](uint64_t rowBegin, uint64_t rowEnd)
@@ -453,7 +516,10 @@ namespace
 						touchDestPagesInOrder(dest, rowBegin, rowEnd, pixelStride);
 
 #if IMAGE_PROCESSING_X64
-					Avx2::resizeRows4BytePixels<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
+					if (simdLevel == SimdLevel::Avx2)
+						Avx2::resizeRows4BytePixels<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
+					else
+						Sse41::resizeRows4BytePixels<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
 #else
 					Neon::resizeRows4BytePixels<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
 #endif
@@ -461,17 +527,10 @@ namespace
 				return;
 			}
 		}
-#endif
 
-		// Tight packing and RGB32 get a compile-time stride: a runtime one makes the per-pixel tail copy a memcpy call and the conversion loop generic
-		auto* resizeRows = &resizeRowsScalar<Channels, 0>;
-		if (pixelStride == Channels)
-			resizeRows = &resizeRowsScalar<Channels, Channels>;
-		else if constexpr (Channels == 3)
-		{
-			if (pixelStride == 4)
-				resizeRows = &resizeRowsScalar<3, 4>;
-		}
+		// The pixel layouts no SIMD kernel takes.
+		// Tight packing gets a compile-time stride: a runtime one makes the per-pixel tail copy a memcpy call and the conversion loop generic.
+		auto* const resizeRows = pixelStride == Channels ? &resizeRowsScalar<Channels, Channels> : &resizeRowsScalar<Channels, 0>;
 
 		forEachRowBand(parallelFor, dest.height, elementsPerDestRow, [&](uint64_t rowBegin, uint64_t rowEnd)
 		{
@@ -517,17 +576,26 @@ size_t Detail::detectedRingBudgetBytes()
 	return budget;
 }
 
-bool ImageProcessing::simdAvailable() noexcept
+std::optional<SimdLevel> ImageProcessing::detectedSimdLevel() noexcept
 {
-	return SimdSupport::canUseSimd();
+#if IMAGE_PROCESSING_X64
+	const X64Features& features = x64Features();
+	if (features.avx2Fma)
+		return SimdLevel::Avx2;
+	if (features.sse41)
+		return SimdLevel::Sse41;
+	return std::nullopt;
+#else
+	return SimdLevel::Neon;
+#endif
 }
 
-void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, SimdUsage simd)
+void ImageProcessing::resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, std::optional<SimdLevel> simdCap)
 {
-	resizeWithRingBudget(dest, source, srcRect, parallelFor, kernel, simd, detectedRingBudgetBytes());
+	resizeWithRingBudget(dest, source, srcRect, parallelFor, kernel, simdCap, detectedRingBudgetBytes());
 }
 
-void Detail::resizeWithRingBudget(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, SimdUsage simd, size_t ringBudgetBytes)
+void Detail::resizeWithRingBudget(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, std::optional<SimdLevel> simdCap, size_t ringBudgetBytes)
 {
 	assert(ringBudgetBytes > 0);
 	assert(source.width > 0 && source.height > 0);
@@ -550,6 +618,17 @@ void Detail::resizeWithRingBudget(ImageView<false>& dest, const ImageView<true>&
 		return;
 	}
 
+	const std::optional<SimdLevel> detectedLevel = detectedSimdLevel();
+	if (!detectedLevel)
+	{
+		assert(false && "The CPU lacks SSE4.1, the resizer's minimum on x64");
+		return;
+	}
+
+	// x64's levels are ordered, and ARM64 has one
+	assert(!simdCap || ((*simdCap == SimdLevel::Neon) == IMAGE_PROCESSING_ARM64 && *simdCap <= *detectedLevel));
+	const SimdLevel simdLevel = simdCap ? std::min(*simdCap, *detectedLevel) : *detectedLevel;
+
 	if (srcRect.w == 0 || srcRect.h == 0)
 		srcRect = Rect{ 0, 0, source.width, source.height };
 	else
@@ -563,15 +642,16 @@ void Detail::resizeWithRingBudget(ImageView<false>& dest, const ImageView<true>&
 
 	// This file is compiled for the baseline instruction set, so its scalar float code - weight building above
 	// all - is legacy-SSE encoded and stalls on every instruction while the upper YMM state is dirty, as a caller
-	// that used 256-bit AVX without vzeroupper leaves it (~10% of a resize). The check: vzeroupper needs AVX.
-	if (SimdSupport::canUseSimd())
+	// that used 256-bit AVX without vzeroupper leaves it (~10% of a resize). The SSE4.1 kernels are legacy-SSE encoded too.
+	// The check: vzeroupper needs AVX.
+	if (hasUsableAvx())
 		SimdSupport::clearAvxUpperState();
 
 	switch (source.channels)
 	{
-	case 1: resizeImpl<1>(dest, source, srcRect, parallelFor, kernel, simd, ringBudgetBytes); return;
-	case 2: resizeImpl<2>(dest, source, srcRect, parallelFor, kernel, simd, ringBudgetBytes); return;
-	case 3: resizeImpl<3>(dest, source, srcRect, parallelFor, kernel, simd, ringBudgetBytes); return;
-	case 4: resizeImpl<4>(dest, source, srcRect, parallelFor, kernel, simd, ringBudgetBytes); return;
+	case 1: resizeImpl<1>(dest, source, srcRect, parallelFor, kernel, simdLevel, ringBudgetBytes); return;
+	case 2: resizeImpl<2>(dest, source, srcRect, parallelFor, kernel, simdLevel, ringBudgetBytes); return;
+	case 3: resizeImpl<3>(dest, source, srcRect, parallelFor, kernel, simdLevel, ringBudgetBytes); return;
+	case 4: resizeImpl<4>(dest, source, srcRect, parallelFor, kernel, simdLevel, ringBudgetBytes); return;
 	}
 }

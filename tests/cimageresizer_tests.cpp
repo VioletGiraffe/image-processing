@@ -7,8 +7,13 @@ RESTORE_COMPILER_WARNINGS
 #include "resize/cimageresizer.h"
 #include "resize/cpu_cache.h"
 #include "resize/resize_internal.h"
+#include "simd_levels.h"
 
 #include "threading/cthreadpool.h"
+
+DISABLE_COMPILER_WARNINGS
+#include <QString>
+RESTORE_COMPILER_WARNINGS
 
 #include <algorithm>
 #include <cmath>
@@ -18,6 +23,7 @@ RESTORE_COMPILER_WARNINGS
 #include <initializer_list>
 #include <limits>
 #include <numbers>
+#include <optional>
 #include <random>
 #include <string>
 #include <utility>
@@ -29,7 +35,8 @@ namespace
 	using ImageProcessing::hasAlphaChannel;
 	using ImageProcessing::ImageView;
 	using ImageProcessing::Rect;
-	using ImageProcessing::SimdUsage;
+	using ImageProcessing::SimdLevel;
+	using ImageProcessing::simdLevelName;
 
 	struct TestImage
 	{
@@ -72,7 +79,7 @@ namespace
 		std::vector<uint8_t> data;
 	};
 
-	void resize(TestImage& dest, const TestImage& source, Rect sourceRect = {}, CThreadPool* threadPool = nullptr, SimdUsage simd = SimdUsage::Auto)
+	void resize(TestImage& dest, const TestImage& source, Rect sourceRect = {}, CThreadPool* threadPool = nullptr, std::optional<SimdLevel> simdCap = {})
 	{
 		auto destView = dest.mutableView();
 		const auto sourceView = source.constView();
@@ -83,7 +90,7 @@ namespace
 
 		// The Pi 4's ring budget on every machine: the detected one would change the column strips under test
 		constexpr size_t ringBudgetBytes = 128 * 1024;
-		ImageProcessing::Detail::resizeWithRingBudget(destView, sourceView, sourceRect, parallelFor, ImageProcessing::ResizeKernel::Auto, simd, ringBudgetBytes);
+		ImageProcessing::Detail::resizeWithRingBudget(destView, sourceView, sourceRect, parallelFor, ImageProcessing::ResizeKernel::Auto, simdCap, ringBudgetBytes);
 	}
 
 	void setPixel(TestImage& image, uint64_t x, uint64_t y, std::initializer_list<uint8_t> values)
@@ -469,15 +476,18 @@ namespace
 		{ 640, 480, 16, 12 },
 	};
 
-	struct PixelLayout { uint8_t channels; uint8_t pixelStride; SimdUsage simd = SimdUsage::Auto; };
+	struct PixelLayout { uint8_t channels; uint8_t pixelStride; std::optional<SimdLevel> simdCap; };
 
-	// 4/4 and 3/4 take the SIMD path where available, and the scalar one with SIMD disabled; 3/3, 1/1 and 2/2 always the scalar one
-	constexpr PixelLayout pixelLayouts[] = {
-		{ 4, 4 }, { 3, 4 }, { 4, 4, SimdUsage::Disabled }, { 3, 4, SimdUsage::Disabled }, { 3, 3 }, { 1, 1 }, { 2, 2 }
-	};
+	// 4/4 and 3/4 take a SIMD kernel, once per level of this CPU; 3/3, 1/1 and 2/2 take the scalar path
+	[[nodiscard]] std::vector<PixelLayout> pixelLayouts()
+	{
+		std::vector<PixelLayout> layouts;
+		for (const SimdLevel level : supportedSimdLevels())
+			layouts.insert(layouts.end(), { { 4, 4, level }, { 3, 4, level } });
 
-	// For tests on 4-byte pixels: the scalar path runs on CPUs without AVX2 and on platforms without SIMD
-	constexpr SimdUsage simdUsages[] = { SimdUsage::Auto, SimdUsage::Disabled };
+		layouts.insert(layouts.end(), { { 3, 3, {} }, { 1, 1, {} }, { 2, 2, {} } });
+		return layouts;
+	}
 }
 
 TEST_CASE("Bicubic upscaling matches independently generated golden pixels", "[resize][bicubic][golden]")
@@ -569,13 +579,12 @@ TEST_CASE("Constant images remain constant when resized", "[resize]")
 				setPixel(rgbaSource, x, y, { 11, 22, 33, 44 });
 		}
 
-		for (const SimdUsage simd : simdUsages)
+		for (const SimdLevel simdLevel : supportedSimdLevels())
 		{
-			const bool simdDisabled = simd == SimdUsage::Disabled;
-			CAPTURE(simdDisabled);
+			CAPTURE(simdLevelName(simdLevel));
 
 			TestImage dest(11, 5, 4, 4);
-			resize(dest, rgbaSource, {}, nullptr, simd);
+			resize(dest, rgbaSource, {}, nullptr, simdLevel);
 			for (uint64_t y = 0; y < dest.height; ++y)
 			{
 				for (uint64_t x = 0; x < dest.width; ++x)
@@ -603,13 +612,12 @@ TEST_CASE("Filtered resize initializes bytes outside the logical channels", "[re
 		TestImage packedDest(13, 3, 3, 3, 0, 0);
 		resize(packedDest, packedSource);
 
-		for (const SimdUsage simd : simdUsages)
+		for (const SimdLevel simdLevel : supportedSimdLevels())
 		{
-			const bool simdDisabled = simd == SimdUsage::Disabled;
-			CAPTURE(simdDisabled);
+			CAPTURE(simdLevelName(simdLevel));
 
 			TestImage dest(13, 3, 3, 4, 0, 0);
-			resize(dest, source, {}, nullptr, simd);
+			resize(dest, source, {}, nullptr, simdLevel);
 
 			for (uint64_t y = 0; y < dest.height; ++y)
 			{
@@ -643,10 +651,9 @@ TEST_CASE("Filtered resize initializes bytes outside the logical channels", "[re
 
 TEST_CASE("Scaled crops match equivalent tightly packed images", "[resize][source-rect]")
 {
-	auto requireCropEquivalence = [](uint8_t channels, uint8_t pixelStride, SimdUsage simd)
+	auto requireCropEquivalence = [](uint8_t channels, uint8_t pixelStride, std::optional<SimdLevel> simdCap)
 	{
-		const bool simdDisabled = simd == SimdUsage::Disabled;
-		CAPTURE(channels, pixelStride, simdDisabled);
+		CAPTURE(channels, pixelStride, simdCapName(simdCap));
 		TestImage source(6, 5, channels, pixelStride, 5, 0xe1);
 		for (uint64_t y = 0; y < source.height; ++y)
 		{
@@ -662,20 +669,20 @@ TEST_CASE("Scaled crops match equivalent tightly packed images", "[resize][sourc
 		TestImage croppedResult(5, 2, channels, pixelStride, 3, 0x1c);
 		TestImage packedResult(5, 2, channels, pixelStride, 1, 0xe3);
 
-		resize(croppedResult, source, sourceRect, nullptr, simd);
-		resize(packedResult, packedCrop, {}, nullptr, simd);
+		resize(croppedResult, source, sourceRect, nullptr, simdCap);
+		resize(packedResult, packedCrop, {}, nullptr, simdCap);
 		requirePixelsEqual(croppedResult, packedResult);
 	};
 
 	SECTION("RGB32")
 	{
-		for (const SimdUsage simd : simdUsages)
-			requireCropEquivalence(3, 4, simd);
+		for (const SimdLevel simdLevel : supportedSimdLevels())
+			requireCropEquivalence(3, 4, simdLevel);
 	}
 
 	SECTION("Two channels in four-byte pixels")
 	{
-		requireCropEquivalence(2, 4, SimdUsage::Auto);
+		requireCropEquivalence(2, 4, {});
 	}
 }
 
@@ -867,10 +874,9 @@ TEST_CASE("Every pixel layout and geometry matches a direct double-precision ref
 {
 	std::mt19937 randomEngine(20260802);
 
-	for (const auto [channels, pixelStride, simd] : pixelLayouts)
+	for (const auto& [channels, pixelStride, simdCap] : pixelLayouts())
 	{
-		const bool simdDisabled = simd == SimdUsage::Disabled;
-		CAPTURE(+channels, +pixelStride, simdDisabled);
+		CAPTURE(+channels, +pixelStride, simdCapName(simdCap));
 		for (const ResizeJob& job : resizeJobs)
 		{
 			if (debugBuild && job.skippedInDebug)
@@ -882,7 +888,7 @@ TEST_CASE("Every pixel layout and geometry matches a direct double-precision ref
 			fillLogicalBytes(source, randomEngine);
 
 			TestImage dest(job.destWidth, job.destHeight, channels, pixelStride);
-			resize(dest, source, {}, nullptr, simd);
+			resize(dest, source, {}, nullptr, simdCap);
 			requireResizeMatchesReference(dest, source);
 		}
 	}
@@ -902,15 +908,14 @@ TEST_CASE("Pixel layouts agree on identical channel data", "[resize][pixel-layou
 		TestImage grayscaleDest(destWidth, destHeight, 1, 1);
 		resize(grayscaleDest, grayscaleSource);
 
-		for (const auto [channels, pixelStride, simd] : pixelLayouts)
+		for (const auto& [channels, pixelStride, simdCap] : pixelLayouts())
 		{
-			const bool simdDisabled = simd == SimdUsage::Disabled;
-			CAPTURE(+channels, +pixelStride, simdDisabled);
+			CAPTURE(+channels, +pixelStride, simdCapName(simdCap));
 			TestImage source(sourceWidth, sourceHeight, channels, pixelStride);
 			fillDeterministicPattern(source);
 
 			TestImage dest(destWidth, destHeight, channels, pixelStride);
-			resize(dest, source, {}, nullptr, simd);
+			resize(dest, source, {}, nullptr, simdCap);
 
 			for (uint64_t y = 0; y < destHeight; ++y)
 			{
@@ -993,7 +998,21 @@ TEST_CASE("The L2 share per logical processor is unknown or plausible", "[resize
 TEST_CASE("Benchmark environment", "[!benchmark]")
 {
 	WARN("Compiler: " << compilerText());
+	const std::optional<SimdLevel> simdLevel = ImageProcessing::detectedSimdLevel();
+	WARN("SIMD level: " << (simdLevel ? simdLevelName(*simdLevel) : "none, the CPU lacks SSE4.1"));
 	WARN(cacheSizingText());
+}
+
+// CI sets the variable where it controls the CPU, as under SDE's emulated ones; without it there is nothing to check
+TEST_CASE("The detected SIMD level is the one CI expects", "[resize][simd]")
+{
+	const QString expectedLevel = qEnvironmentVariable("IMAGE_PROCESSING_EXPECTED_SIMD_LEVEL");
+	if (expectedLevel.isEmpty())
+		return;
+
+	const std::optional<SimdLevel> simdLevel = ImageProcessing::detectedSimdLevel();
+	REQUIRE(simdLevel.has_value());
+	CHECK(QString::fromLatin1(simdLevelName(*simdLevel)) == expectedLevel);
 }
 
 TEST_CASE("Seeded randomized small images preserve resize properties", "[resize][property]")
@@ -1026,15 +1045,14 @@ TEST_CASE("Seeded randomized small images preserve resize properties", "[resize]
 			const size_t croppedResultPadding = randomInRange(randomEngine, 0, 4);
 			const size_t packedResultPadding = randomInRange(randomEngine, 0, 4);
 
-			for (const SimdUsage simd : simdUsages)
+			for (const SimdLevel simdLevel : supportedSimdLevels())
 			{
-				const bool simdDisabled = simd == SimdUsage::Disabled;
-				CAPTURE(simdDisabled);
+				CAPTURE(simdLevelName(simdLevel));
 
 				TestImage croppedResult(destWidth, destHeight, channels, pixelStride, croppedResultPadding, 0x1c);
 				TestImage packedResult(destWidth, destHeight, channels, pixelStride, packedResultPadding, 0xe3);
-				resize(croppedResult, source, sourceRect, nullptr, simd);
-				resize(packedResult, packedCrop, {}, nullptr, simd);
+				resize(croppedResult, source, sourceRect, nullptr, simdLevel);
+				resize(packedResult, packedCrop, {}, nullptr, simdLevel);
 				requirePixelsEqual(croppedResult, packedResult);
 			}
 		}
@@ -1093,13 +1111,12 @@ TEST_CASE("Seeded randomized small images preserve resize properties", "[resize]
 
 			const uint64_t destWidth = randomInRange(randomEngine, 1, 8);
 			const uint64_t destHeight = randomInRange(randomEngine, 1, 8);
-			for (const SimdUsage simd : simdUsages)
+			for (const SimdLevel simdLevel : supportedSimdLevels())
 			{
-				const bool simdDisabled = simd == SimdUsage::Disabled;
-				CAPTURE(simdDisabled);
+				CAPTURE(simdLevelName(simdLevel));
 
 				TestImage dest(destWidth, destHeight, channels, pixelStride);
-				resize(dest, source, {}, nullptr, simd);
+				resize(dest, source, {}, nullptr, simdLevel);
 				for (uint64_t y = 0; y < dest.height; ++y)
 				{
 					for (uint64_t x = 0; x < dest.width; ++x)
@@ -1154,10 +1171,9 @@ TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading
 	CThreadPool pool(4, "Resize test pool");
 	std::mt19937 randomEngine(20260801);
 
-	for (const auto [channels, pixelStride, simd] : pixelLayouts)
+	for (const auto& [channels, pixelStride, simdCap] : pixelLayouts())
 	{
-		const bool simdDisabled = simd == SimdUsage::Disabled;
-		CAPTURE(+channels, +pixelStride, simdDisabled);
+		CAPTURE(+channels, +pixelStride, simdCapName(simdCap));
 		for (const ResizeJob& job : resizeJobs)
 		{
 			if (debugBuild && job.skippedInDebug)
@@ -1169,7 +1185,7 @@ TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading
 			fillLogicalBytes(source, randomEngine);
 
 			TestImage serialDest(job.destWidth, job.destHeight, channels, pixelStride);
-			resize(serialDest, source, {}, nullptr, simd);
+			resize(serialDest, source, {}, nullptr, simdCap);
 
 			// Repeated because a race would only manifest probabilistically; the per-pixel sweep runs only to diagnose a mismatch
 			constexpr int iterations = debugBuild ? 3 : 20;
@@ -1177,7 +1193,7 @@ TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading
 			{
 				CAPTURE(iteration);
 				TestImage parallelDest(job.destWidth, job.destHeight, channels, pixelStride);
-				resize(parallelDest, source, {}, &pool, simd);
+				resize(parallelDest, source, {}, &pool, simdCap);
 
 				const bool identical = parallelDest.data == serialDest.data;
 				CHECK(identical);
