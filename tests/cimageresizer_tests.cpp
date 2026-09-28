@@ -896,7 +896,7 @@ TEST_CASE("Pixel layouts agree on identical channel data", "[resize][pixel-layou
 	TestImage grayscaleSource(sourceWidth, sourceHeight, 1, 1);
 	fillDeterministicPattern(grayscaleSource);
 
-	for (const auto [destWidth, destHeight] : { std::pair<uint64_t, uint64_t>{ 77, 51 }, { 480, 361 } })
+	for (const auto& [destWidth, destHeight] : { std::pair<uint64_t, uint64_t>{ 77, 51 }, { 480, 361 } })
 	{
 		CAPTURE(destWidth, destHeight);
 		TestImage grayscaleDest(destWidth, destHeight, 1, 1);
