@@ -148,23 +148,42 @@ namespace ImageProcessing::Detail
 			destPixel[channel] = clampToByte(values[channel]);
 	}
 
-#if IMAGE_PROCESSING_SIMD
-	// Defined in cimageresizer_simd.cpp, which MSVC compiles with /arch:AVX2 so that its 128-bit intrinsics are
-	// VEX-encoded too: a legacy SSE encoding stalls for tens of cycles per instruction whenever the process left
-	// the upper YMM state dirty, which any AVX-using host does. GCC and Clang get that from the target attribute.
+	// The SIMD kernels resize dest rows [destRowBegin, destRowEnd) in one fused pass over a ring of temp rows.
+	// Each is the outline in cimageresizer_simd.inl, compiled by cimageresizer_simd_<level>.cpp against that level's primitives.
+#if IMAGE_PROCESSING_X64
+	// MSVC compiles cimageresizer_simd_avx2.cpp with /arch:AVX2 so that its 128-bit intrinsics are VEX-encoded too:
+	// a legacy SSE encoding stalls for tens of cycles per instruction whenever the process left the upper YMM state dirty,
+	// which any AVX-using host does. GCC and Clang get that from the target attribute.
 	// The attribute also forbids inlining into the non-AVX2 dispatcher, keeping the runtime check in control of
 	// whether these ever execute.
-	// Resizes dest rows [destRowBegin, destRowEnd) in one fused pass over a ring of temp rows.
-	template <size_t Channels>
-	IMAGE_PROCESSING_SIMD_TARGET void resizeRows4BytePixelsSimd(
-		const ImageView<true>& source,
-		Rect srcRect,
-		ImageView<false>& dest,
-		const AxisWeights& xWeights,
-		const AxisWeights& yWeights,
-		size_t stripWidth,
-		uint8_t pixelTailValue,
-		uint64_t destRowBegin,
-		uint64_t destRowEnd);
+	namespace Avx2
+	{
+		template <size_t Channels>
+		IMAGE_PROCESSING_AVX2_TARGET void resizeRows4BytePixels(
+			const ImageView<true>& source,
+			Rect srcRect,
+			ImageView<false>& dest,
+			const AxisWeights& xWeights,
+			const AxisWeights& yWeights,
+			size_t stripWidth,
+			uint8_t pixelTailValue,
+			uint64_t destRowBegin,
+			uint64_t destRowEnd);
+	}
+#elif IMAGE_PROCESSING_ARM64
+	namespace Neon
+	{
+		template <size_t Channels>
+		void resizeRows4BytePixels(
+			const ImageView<true>& source,
+			Rect srcRect,
+			ImageView<false>& dest,
+			const AxisWeights& xWeights,
+			const AxisWeights& yWeights,
+			size_t stripWidth,
+			uint8_t pixelTailValue,
+			uint64_t destRowBegin,
+			uint64_t destRowEnd);
+	}
 #endif
 }

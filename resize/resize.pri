@@ -3,20 +3,20 @@ HEADERS += \
 	$$PWD/cpu_cache.h \
 	$$PWD/qimage_resize.h \
 	$$PWD/resize_internal.h \
+	$$PWD/simd_primitives_avx2.h \
+	$$PWD/simd_primitives_neon.h \
 	$$PWD/simd_support.h
 
 SOURCES += \
 	$$PWD/cimageresizer.cpp \
+	$$PWD/cimageresizer_simd_neon.cpp \
 	$$PWD/cpu_cache.cpp
 
-# SIMDe's root is on no consumer's include path, so it is added here. GCC and Clang need it as a system path:
-# an unguarded __int128 typedef in SIMDe is a build failure under -pedantic-errors. MSVC compiles it clean, and
-# the /external:W0 that its equivalent needs costs a D9025 on every cl invocation.
-SIMDE_INCLUDE_ROOT = $$clean_path($$PWD/../3rdparty)
-*msvc*: INCLUDEPATH += $$SIMDE_INCLUDE_ROOT
-else: QMAKE_CXXFLAGS += -isystem $$shell_quote($$SIMDE_INCLUDE_ROOT)
+# Each cimageresizer_simd_<level>.cpp compiles cimageresizer_simd.inl for its instruction set.
+# Each compiles to nothing on other architectures, so none is listed conditionally: a macOS universal build compiles every TU for both.
+OTHER_FILES += $$PWD/cimageresizer_simd.inl
 
-# The SIMD kernels need every intrinsic VEX-encoded, the 128-bit ones included: a legacy SSE encoding stalls for
+# The AVX2 kernels need every intrinsic VEX-encoded, the 128-bit ones included: a legacy SSE encoding stalls for
 # tens of cycles per instruction whenever the process left the upper YMM state dirty, which any AVX-using host
 # does. GCC and Clang, clang-cl included, get that per function from the target attribute; MSVC only has the per-TU
 # switch, so its kernels compile as a separate object. Flags are expanded here rather than taken from $(CXXFLAGS)
@@ -42,8 +42,8 @@ else: QMAKE_CXXFLAGS += -isystem $$shell_quote($$SIMDE_INCLUDE_ROOT)
 	avx2Compiler.commands = $$QMAKE_CXX -c $$AVX2_CXXFLAGS -Fd$$shell_quote($${OBJECTS_DIR}/) ${QMAKE_FILE_IN} -Fo${QMAKE_FILE_OUT}
 	QMAKE_EXTRA_COMPILERS += avx2Compiler
 
-	AVX2_SOURCES += $$PWD/cimageresizer_simd.cpp
-	OTHER_FILES += $$PWD/cimageresizer_simd.cpp
+	AVX2_SOURCES += $$PWD/cimageresizer_simd_avx2.cpp
+	OTHER_FILES += $$PWD/cimageresizer_simd_avx2.cpp
 } else {
-	SOURCES += $$PWD/cimageresizer_simd.cpp
+	SOURCES += $$PWD/cimageresizer_simd_avx2.cpp
 }

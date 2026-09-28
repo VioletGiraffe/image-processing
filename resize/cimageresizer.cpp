@@ -452,7 +452,11 @@ namespace
 					if (touchDestPages)
 						touchDestPagesInOrder(dest, rowBegin, rowEnd, pixelStride);
 
-					resizeRows4BytePixelsSimd<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
+#if IMAGE_PROCESSING_X64
+					Avx2::resizeRows4BytePixels<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
+#else
+					Neon::resizeRows4BytePixels<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
+#endif
 				});
 				return;
 			}

@@ -68,29 +68,15 @@ threads: 2b371a2, one run). Pi at 6b6bf7e. "-": no such benchmark.
 
 ## What the design rests on
 
-### Native AVX2 under GCC and Clang (7919eaf)
+### Per-instruction-set primitives, not SIMDe
 
-Before it, SIMDe emulated every AVX2 intrinsic in plain C on x64 GCC and Clang: the per-function target attribute does not
-tell SIMDe that AVX2 exists. `simd_support.h` now wraps the SIMDe include in an AVX2 target region.
-
-CI at e67a9dc, SIMD / scalar ms within one job:
-
-| Scenario | ubuntu-latest, GCC | windows-latest, MSVC |
-|---|---|---|
-| 4K -> 1080p | 152.9 / 131.6 | 25.7 / 122.5 |
-| 24 MP -> 1080p | 320.1 / 351.8 | 60.0 / 318.1 |
-| 101 MP -> 720p | 1208.6 / 1388.5 | 195.8 / 1217.9 |
-| 64x64 -> 4K | 102.0 / 45.4 | 13.5 / 57.1 |
-
-### ARM builds need Clang
-
-On AArch64, GCC keeps SIMDe's 256-bit type in memory: every `simde_mm256_*` operation copies through the stack. Clang keeps
-both 128-bit halves in NEON registers. Resizer / QImage on the ARM runners, 24 MP -> 1080p single-threaded:
-
-- f435b80: GCC 6.46, Clang 5.14.
-- d436d41: GCC 4.95, Clang 2.30. Pre-conversion removed the work that hid GCC's overhead.
-
-A struct of two `simde__m128` would let GCC keep the halves in registers; not done.
+The kernel outline is written against primitives that state what the kernel needs, such as spreading a weight pair or
+packing 8 floats to words. Each instruction set implements them natively. SIMDe, translating AVX2 intrinsics op by op,
+falls short both ways:
+- AVX2 code lowered to SSE4.1 falls back to scalar loops in the hot paths: `permutevar8x32_ps`, `cvttps_epi32` and the
+  256-bit `shuffle_ps`, plus `cvtepu8_epi32` under MSVC, which lacks vector extensions.
+- On AArch64, GCC kept SIMDe's 256-bit type in memory, copying it through the stack at every operation. Resizer / QImage
+  on the ARM runners, 24 MP -> 1080p single-threaded, at d436d41: GCC 4.95, Clang 2.30.
 
 ### Source rows converted to float once (d436d41)
 
@@ -203,7 +189,7 @@ the SIMD path on the PC: at 1ecd630 the 4K -> 1080p RGBA32 ratio was 0.858 and 0
 ### 128-bit packs for the output bytes (e16c6c4)
 
 The vertical pass rounds floats to bytes:
-- 256-bit packs work per 128-bit lane. Joining the lanes takes a lane-crossing `permutevar8x32`, which SIMDe emulates
+- 256-bit packs work per 128-bit lane. Joining the lanes takes a lane-crossing `permutevar8x32`, which SIMDe emulated
   element by element on NEON.
 - 128-bit packs keep element order, so the permute is not needed.
 
@@ -397,7 +383,7 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
-   - What: the horizontal pass spreads weights with `permutevar8x32_ps`, which SIMDe emulates element by element on NEON.
+   - What: the horizontal pass spread weights with `permutevar8x32_ps`, which SIMDe emulated element by element on NEON.
      Two broadcasts replaced it outside x64.
    - Result: ARM GCC SIMD speedup 0.86-1.25x before, 0.84-1.34x after.
    - The cost was GCC's 256-bit type going through memory, not the permute.
@@ -455,3 +441,5 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
 5. **4K -> 64x64 with threads on the Pi:** scalar 59 ms against 47 for the whole-image temp (8ca3148).
 6. **Strips cost up to 11% where the L2 is large:** Neoverse-N2's scalar downscales, 3-8% on the PC's (the column strips
    section). A budget from the runtime L2 share would skip strips there.
+7. **GCC against Clang on AArch64 with the NEON primitives:** GCC was about 2x behind with SIMDe (the primitives
+   section). The NEON `Floats8` is a struct of two `float32x4_t`, with no 256-bit type left to spill.

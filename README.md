@@ -8,9 +8,10 @@ Image resizer with hand-optimized SIMD path (and scalar fallback for old CPUs)
 - Takes 1-4 channels of 8 bits, with any pixel stride and row stride, and an optional source rectangle.
 - 2- and 4-channel images carry alpha as the last channel. The output is premultiplied; a straight-alpha source is
   premultiplied as it is read.
-- SIMD kernel for 4-byte pixels:
+- SIMD kernel for 4-byte pixels: one outline, `resize/cimageresizer_simd.inl`, compiled per instruction set against that set's
+  `simd_primitives_*.h` by a `cimageresizer_simd_*.cpp`.
   - x64: AVX2 + FMA, chosen at runtime.
-  - ARM64: the same source through SIMDe on NEON.
+  - ARM64: NEON.
   - Everything else takes the scalar path.
 - Multithreaded through a caller-supplied `ParallelForFn`.
 - The core is Qt-free. `resize/qimage_resize.h` is a header-only bridge for `QImage`.
@@ -18,7 +19,6 @@ Image resizer with hand-optimized SIMD path (and scalar fallback for old CPUs)
 ## Layout
 
 - `resize/`: the library, built as a static lib by `image-processing.pro`.
-- `3rdparty/simde/`: the SIMDe headers the kernel uses.
 - `tests/`: Catch2 tests and benchmarks against `QImage::scaled`.
 - `resize-comparison/`: a Qt app comparing resize implementations by speed, and by PSNR and SSIM on a round trip.
 - `scripts/run_tests`: builds and runs the tests (`.bat`/`.ps1` on Windows, `.sh` elsewhere).
