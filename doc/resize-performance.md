@@ -25,7 +25,8 @@ the table. Every table names the commit it was measured at: re-measure after cha
 - A Pi 4 without cooling throttles under sustained load: `vcgencmd get_throttled` must print `0x0` after a run.
 - A/B rounds alternate the builds.
 - A CI label's runner CPU varies between runs, and the ratios with it: Qt's SSE code and the AVX2 kernel do not scale
-  alike. A job's numbers compare across runs only when the CPU line above its table names the same model.
+  alike. A job's numbers compare across runs only when the CPU line in its report header names the same model.
+- The report header names the commit, CPU, compiler and cache sizing.
 
 ## Machines
 
@@ -77,6 +78,12 @@ falls short both ways:
   256-bit `shuffle_ps`, plus `cvtepu8_epi32` under MSVC, which lacks vector extensions.
 - On AArch64, GCC kept SIMDe's 256-bit type in memory, copying it through the stack at every operation. Resizer / QImage
   on the ARM runners, 24 MP -> 1080p single-threaded, at d436d41: GCC 4.95, Clang 2.30.
+
+CI, 9c5c6ac and 4b5fdf8 -> 963b54b, SIMD rows:
+- ARM GCC: -40% to -55% everywhere. It is now within 2-22% of Clang, down from about 2x.
+- ARM Clang: upscales -12% to -23%, downscales within 3%.
+- x64: the AVX2 instructions are unchanged under clang-cl and MSVC. MSVC's code layout moved, and its RGBA32 downscales
+  on the EPYC 7763 runner are 6-9% slower, against neutral on the PC.
 
 ### Source rows converted to float once (d436d41)
 
@@ -441,5 +448,3 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
 5. **4K -> 64x64 with threads on the Pi:** scalar 59 ms against 47 for the whole-image temp (8ca3148).
 6. **Strips cost up to 11% where the L2 is large:** Neoverse-N2's scalar downscales, 3-8% on the PC's (the column strips
    section). A budget from the runtime L2 share would skip strips there.
-7. **GCC against Clang on AArch64 with the NEON primitives:** GCC was about 2x behind with SIMDe (the primitives
-   section). The NEON `Floats8` is a struct of two `float32x4_t`, with no 256-bit type left to spill.

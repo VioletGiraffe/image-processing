@@ -951,13 +951,49 @@ TEST_CASE("Images with 16-bit channels are rejected", "[resize][validation]" HID
 	CHECK(destData == originalDestData);
 }
 
-// Printed: the detected share sets the column strips in resize(), and with them the benchmark numbers
+namespace
+{
+	// The detected share sets the column strips in resize(), and with them the benchmark numbers
+	[[nodiscard]] std::string cacheSizingText()
+	{
+		const size_t l2Share = ImageProcessing::Detail::smallestL2BytesPerLogicalProcessor();
+		const std::string l2ShareText = l2Share != 0 ? std::to_string(l2Share / 1024) + " KB" : "undetected, the Pi 4's assumed";
+		return "L2 per logical processor: " + l2ShareText + "; ring budget: " + std::to_string(ImageProcessing::Detail::detectedRingBudgetBytes() / 1024) + " KB";
+	}
+
+	[[nodiscard]] std::string compilerText()
+	{
+#if defined(__clang__)
+	#if defined(_MSC_VER)
+		const std::string name = "clang-cl";
+	#elif defined(__apple_build_version__)
+		const std::string name = "Apple Clang";
+	#else
+		const std::string name = "Clang";
+	#endif
+		return name + ' ' + std::to_string(__clang_major__) + '.' + std::to_string(__clang_minor__) + '.' + std::to_string(__clang_patchlevel__);
+#elif defined(__GNUC__)
+		return "GCC " + std::to_string(__GNUC__) + '.' + std::to_string(__GNUC_MINOR__) + '.' + std::to_string(__GNUC_PATCHLEVEL__);
+#elif defined(_MSC_VER)
+		return "MSVC " + std::to_string(_MSC_FULL_VER / 10'000'000) + '.' + std::to_string(_MSC_FULL_VER / 100'000 % 100) + '.' + std::to_string(_MSC_FULL_VER % 100'000);
+#else
+		return "unknown";
+#endif
+	}
+}
+
 TEST_CASE("The L2 share per logical processor is unknown or plausible", "[resize][cpu-cache]")
 {
+	WARN(cacheSizingText());
 	const size_t l2Share = ImageProcessing::Detail::smallestL2BytesPerLogicalProcessor();
-	const std::string l2ShareText = l2Share != 0 ? std::to_string(l2Share / 1024) + " KB" : "undetected, the Pi 4's assumed";
-	WARN("L2 per logical processor: " << l2ShareText << "; ring budget: " << ImageProcessing::Detail::detectedRingBudgetBytes() / 1024 << " KB");
 	CHECK((l2Share == 0 || l2Share >= 32 * 1024));
+}
+
+// report_benchmark_ratios.py lists this test's warnings under the report title
+TEST_CASE("Benchmark environment", "[!benchmark]")
+{
+	WARN("Compiler: " << compilerText());
+	WARN(cacheSizingText());
 }
 
 TEST_CASE("Seeded randomized small images preserve resize properties", "[resize][property]")
