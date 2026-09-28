@@ -72,8 +72,12 @@ if (-not $NoBuild)
 	Push-Location $testsDirectory
 	try
 	{
-		# A kept .qmake.stash pins the toolchain probed when it was written, so every run probes the current one instead
-		Remove-Item '.qmake.stash' -Force -ErrorAction SilentlyContinue
+		# qmake reads the first .qmake.stash on the way from here to the drive root, whichever build wrote it.
+		# A stash pins the toolchain probed when it was written: every run deletes them all, so that qmake probes the current one.
+		for ($directory = Get-Item $testsDirectory; $directory; $directory = $directory.Parent)
+		{
+			Remove-Item (Join-Path $directory.FullName '.qmake.stash') -Force -ErrorAction SilentlyContinue
+		}
 		& $qmake -tp vc image-processing-tests.pro
 		if ($LASTEXITCODE -ne 0) { exit 1 }
 		# msbuild, not nmake: it also rebuilds what the compiler command line changed for, such as the Qt include paths

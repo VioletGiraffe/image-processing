@@ -15,6 +15,7 @@ the table. Every table names the commit it was measured at: re-measure after cha
   - windows-latest runner: most rows within 3%, some 10%; scalar times swing up to 30%.
   - ubuntu-24.04-arm runner, Clang: about 1%.
   - macos-latest runner: up to 2x, too noisy to read per scenario.
+  - A real M1, same-session A/B: about 1%.
 - A CI comparison needs several samples per side: re-running the old commit's run alongside the new one gives same-time
   pairs. A re-run is a new attempt of the same run, with its own logs.
 - `QT_NO_GUI_THREADPOOL=1` keeps the Qt control serial; `run_tests` sets it.
@@ -82,6 +83,8 @@ falls short both ways:
 CI, 9c5c6ac and 4b5fdf8 -> 963b54b, SIMD rows:
 - ARM GCC: -40% to -55% everywhere. It is now within 2-22% of Clang, down from about 2x.
 - ARM Clang: upscales -12% to -23%, downscales within 3%.
+- Pi, Clang, 6b6bf7e -> 3049bb0: upscales -6% to -13%, downscales -4% to -9%; the scalar rows within 4%.
+- M1, Apple Clang, three alternating rounds of 4b5fdf8 and 963b54b: -2% to -12%, the scalar rows within 1%.
 - x64: the AVX2 instructions are unchanged under clang-cl and MSVC. MSVC's code layout moved, and its RGBA32 downscales
   on the EPYC 7763 runner are 6-9% slower, against neutral on the PC.
 
@@ -448,3 +451,5 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
 5. **4K -> 64x64 with threads on the Pi:** scalar 59 ms against 47 for the whole-image temp (8ca3148).
 6. **Strips cost up to 11% where the L2 is large:** Neoverse-N2's scalar downscales, 3-8% on the PC's (the column strips
    section). A budget from the runtime L2 share would skip strips there.
+7. **GCC on the Pi, scalar 4K -> 64x64 with threads:** 141 ms against 117 single-threaded at 3049bb0. Clang: 59 against 171.
+   The ARM runners' GCC job keeps the usual ~0.34 ratio.

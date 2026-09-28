@@ -27,6 +27,14 @@ done
 
 if [ "$BUILD" = 1 ]; then
 	cd "$ROOT/tests"
+	# qmake reads the first .qmake.stash on the way from here to the filesystem root, whichever build wrote it.
+	# A stash pins the toolchain and SDK probed when it was written: every run deletes them all, so that qmake probes the current ones.
+	directory="$ROOT/tests"
+	while :; do
+		rm -f "$directory/.qmake.stash"
+		[ "$directory" = / ] && break
+		directory="$(dirname "$directory")"
+	done
 	"${QT_ROOT_DIR:+$QT_ROOT_DIR/bin/}qmake" image-processing-tests.pro -config "$CONFIG" CONFIG+="$CONFIG"
 	make -j"$(getconf _NPROCESSORS_ONLN)"
 fi
