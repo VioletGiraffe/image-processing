@@ -71,7 +71,7 @@ namespace
 	}
 #endif
 
-	// Where vzeroupper exists: see resizeWithRingBudget for why it runs
+	// vzeroupper is usable: see resizeWithRingBudget for why it runs
 	[[nodiscard]] bool hasUsableAvx() noexcept
 	{
 #if IMAGE_PROCESSING_X64

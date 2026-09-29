@@ -89,24 +89,28 @@ def build_report(results, environment):
 
         # Only scenarios that reach the AVX2 kernels have an SSE4.1 run
         sse41_ns = results.get(SSE41_RESIZER_PREFIX + scenario)
-        sse41_cells = f"{sse41_ns / 1_000_000.0:.3f} | {sse41_ns / resizer_ns:.2f}x" if sse41_ns is not None else " | "
-        rows.append((scenario, resizer_ns / 1_000_000.0, control_prefix.removesuffix(" | "), control_ns / 1_000_000.0, resizer_ns / control_ns, sse41_cells))
+        rows.append((scenario, resizer_ns, control_prefix.removesuffix(" | "), control_ns, sse41_ns))
 
     if not rows:
         raise RuntimeError("No CImageResizer benchmark results found")
 
+    # Absent on CPUs with a single SIMD level, such as every ARM64 one
+    has_sse41_runs = any(sse41_ns is not None for *_, sse41_ns in rows)
     lines = [
         "## Image resizer benchmark ratios",
         "",
         *(f"- {item}" for item in environment),
         "",
-        "Lower is better, except AVX2 speedup (SSE4.1 / AVX2 time); ratios use measurements from this job only.",
+        f"Lower is better{', except AVX2 speedup (SSE4.1 / AVX2 time)' if has_sse41_runs else ''}; ratios use measurements from this job only.",
         "",
-        "| Scenario | CImageResizer (ms) | Control | Control (ms) | Resizer / control | SSE4.1 (ms) | AVX2 speedup |",
-        "|---|---:|---|---:|---:|---:|---:|",
+        "| Scenario | CImageResizer (ms) | Control | Control (ms) | Resizer / control |" + (" SSE4.1 (ms) | AVX2 speedup |" if has_sse41_runs else ""),
+        "|---|---:|---|---:|---:|" + ("---:|---:|" if has_sse41_runs else ""),
     ]
-    for scenario, resizer_ms, control, control_ms, ratio, sse41_cells in rows:
-        lines.append(f"| {scenario} | {resizer_ms:.3f} | {control} | {control_ms:.3f} | {ratio:.3f}x | {sse41_cells} |")
+    for scenario, resizer_ns, control, control_ns, sse41_ns in rows:
+        line = f"| {scenario} | {resizer_ns / 1_000_000.0:.3f} | {control} | {control_ns / 1_000_000.0:.3f} | {resizer_ns / control_ns:.3f}x |"
+        if has_sse41_runs:
+            line += f" {sse41_ns / 1_000_000.0:.3f} | {sse41_ns / resizer_ns:.2f}x |" if sse41_ns is not None else "  |  |"
+        lines.append(line)
 
     return "\n".join(lines) + "\n"
 
