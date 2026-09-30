@@ -31,11 +31,18 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			return channels == 3 ? 4 : channels;
 		}
 
-		// PixelStride 0: the stride is taken at runtime, from pixelStride
+		// PixelStride 0: the stride is taken at runtime
+		template <size_t PixelStride>
+		[[nodiscard]] constexpr size_t effectivePixelStride(size_t runtimePixelStride) noexcept
+		{
+			return PixelStride != 0 ? PixelStride : runtimePixelStride;
+		}
+
 		template <size_t Channels, size_t PixelStride, bool PremultiplyAlpha>
-		IMAGE_PROCESSING_SIMD_INLINE void convertPixelsToFloats(const uint8_t* pixels, size_t pixelStride, float* floats, size_t pixelCount) noexcept
+		IMAGE_PROCESSING_SIMD_INLINE void convertPixelsToFloats(const uint8_t* pixels, size_t runtimePixelStride, float* floats, size_t pixelCount) noexcept
 		{
 			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
+			const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
 			size_t pixel = 0;
 
 			// A 16-byte load: 16 pixel floats, or 4 RGB pixels and 4 bytes past them
@@ -128,6 +135,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				if (end > converted)
 				{
 					const size_t convertedTarget = std::min({ std::max(end, converted + conversionChunk), base + capacity, pixelEnd });
+					const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
 					for (size_t row = 0; row < Rows; ++row)
 					{
 						const uint8_t* rowPixels = pixels[row] + converted * pixelStride;
@@ -148,7 +156,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			float* const floats[Rows];
 			const size_t capacity; // In pixels
 			const size_t pixelEnd; // Conversion never reaches this pixel
-			const size_t pixelStride;
+			const size_t runtimePixelStride;
 			const bool premultiplyAlpha;
 			size_t base = 0; // The source pixel at floats[row][0]
 			size_t converted = 0; // Pixels [base, converted) are in the buffers
@@ -375,10 +383,11 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			std::span<const float> rowWeights,
 			size_t tempRowStride,
 			const uint8_t* pixelTail,
-			size_t pixelStride,
+			size_t runtimePixelStride,
 			uint8_t* destRow,
 			size_t destWidth) noexcept
 		{
+			const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
 			constexpr size_t pixelsPerBlock = verticalBlockPixels(Channels);
 			constexpr size_t blockFloats = pixelsPerBlock * Channels;
 			constexpr size_t elementsPerVector = 8;
@@ -487,7 +496,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		using SourceRow = SlidingSourceFloats<Channels, PixelStride, 1>;
 		constexpr size_t floatsPerPixel = SourceRowPair::floatsPerPixel;
 
-		const size_t pixelStride = PixelStride != 0 ? PixelStride : source.pixelStrideBytes;
+		const size_t pixelStride = effectivePixelStride<PixelStride>(source.pixelStrideBytes);
 		const size_t destWidth = static_cast<size_t>(dest.width);
 		const size_t tempRowStride = stripWidth * Channels;
 
