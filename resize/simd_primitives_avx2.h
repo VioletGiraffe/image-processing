@@ -12,7 +12,6 @@
 #include <cmath>
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
 // The loadu/storeu intrinsics take unaligned memory through __m128i pointers
 DISABLE_CLANG_GCC_WARNING("-Wcast-align")
@@ -55,13 +54,29 @@ namespace ImageProcessing::Detail::Avx2
 		return _mm_add_ps(_mm256_castps256_ps128(values), _mm256_extractf128_ps(values, 1));
 	}
 
+	// Sums a Floats4's 4 / FloatsPerPixel pixels into its first FloatsPerPixel lanes
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 sumPixels(Floats4 pixels) noexcept
+	{
+		static_assert(FloatsPerPixel == 1 || FloatsPerPixel == 2);
+		const __m128 pairSums = _mm_add_ps(pixels, _mm_movehl_ps(pixels, pixels));
+		if constexpr (FloatsPerPixel == 2)
+			return pairSums;
+		else
+			return _mm_add_ss(pairSums, _mm_shuffle_ps(pairSums, pairSums, _MM_SHUFFLE(1, 1, 1, 1)));
+	}
+
 	IMAGE_PROCESSING_SIMD_INLINE WeightBlock loadWeightBlock(const float* weights) noexcept { return _mm256_loadu_ps(weights); }
 
-	// Turns a WeightBlock into the pair broadcast [w(2 * Pair) x4 | w(2 * Pair + 1) x4] a pixel pair needs
-	class WeightPairSpreader
+	// Turns a WeightBlock into the weights of taps [Part * 8 / FloatsPerPixel, (Part + 1) * 8 / FloatsPerPixel), each repeated for its pixel's floats
+	template <size_t FloatsPerPixel>
+	class WeightSpreader;
+
+	template <>
+	class WeightSpreader<4>
 	{
 	public:
-		IMAGE_PROCESSING_SIMD_INLINE WeightPairSpreader() noexcept :
+		IMAGE_PROCESSING_SIMD_INLINE WeightSpreader() noexcept :
 			_pairIndices{
 				_mm256_setr_epi32(0, 0, 0, 0, 1, 1, 1, 1),
 				_mm256_setr_epi32(2, 2, 2, 2, 3, 3, 3, 3),
@@ -69,45 +84,88 @@ namespace ImageProcessing::Detail::Avx2
 				_mm256_setr_epi32(6, 6, 6, 6, 7, 7, 7, 7) }
 		{}
 
-		template <size_t Pair>
+		template <size_t Part>
 		IMAGE_PROCESSING_SIMD_INLINE Floats8 spread(WeightBlock weights) const noexcept
 		{
-			static_assert(Pair < 4);
-			return _mm256_permutevar8x32_ps(weights, _pairIndices[Pair]);
+			static_assert(Part < 4);
+			return _mm256_permutevar8x32_ps(weights, _pairIndices[Part]);
 		}
 
 	private:
 		const __m256i _pairIndices[4];
 	};
 
-	IMAGE_PROCESSING_SIMD_INLINE Floats4 loadPixelAsFloats(const uint8_t* pixel) noexcept
+	template <>
+	class WeightSpreader<2>
 	{
-		int32_t packedPixel;
-		::memcpy(&packedPixel, pixel, sizeof(packedPixel));
-		return _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_cvtsi32_si128(packedPixel)));
+	public:
+		IMAGE_PROCESSING_SIMD_INLINE WeightSpreader() noexcept :
+			_quadIndices{
+				_mm256_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3),
+				_mm256_setr_epi32(4, 4, 5, 5, 6, 6, 7, 7) }
+		{}
+
+		template <size_t Part>
+		IMAGE_PROCESSING_SIMD_INLINE Floats8 spread(WeightBlock weights) const noexcept
+		{
+			static_assert(Part < 2);
+			return _mm256_permutevar8x32_ps(weights, _quadIndices[Part]);
+		}
+
+	private:
+		const __m256i _quadIndices[2];
+	};
+
+	template <>
+	class WeightSpreader<1>
+	{
+	public:
+		template <size_t Part>
+		IMAGE_PROCESSING_SIMD_INLINE Floats8 spread(WeightBlock weights) const noexcept
+		{
+			static_assert(Part == 0);
+			return weights;
+		}
+	};
+
+	// 16 bytes as 16 floats: the first 8 go to first
+	IMAGE_PROCESSING_SIMD_INLINE void loadSixteenBytesAsFloats(const uint8_t* bytes, Floats8& first, Floats8& second) noexcept
+	{
+		const __m128i loaded = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes));
+		first = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(loaded));
+		second = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_unpackhi_epi64(loaded, loaded)));
 	}
 
-	// Pixels 0 and 1 of the 4 go to pixels01, 2 and 3 to pixels23
-	IMAGE_PROCESSING_SIMD_INLINE void loadFourPixelsAsFloats(const uint8_t* pixels, Floats8& pixels01, Floats8& pixels23) noexcept
+	// 4 RGB pixels as 4 floats each, the 4th 0: pixels 0 and 1 go to pixels01. Reads 16 bytes, 4 past the pixels.
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourRgbPixelsAsFloats(const uint8_t* pixels, Floats8& pixels01, Floats8& pixels23) noexcept
 	{
-		const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels));
+		const __m128i rgbToRgb0 = _mm_setr_epi8(
+			0, 1, 2, -1,
+			3, 4, 5, -1,
+			6, 7, 8, -1,
+			9, 10, 11, -1);
+		const __m128i bytes = _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels)), rgbToRgb0);
 		pixels01 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(bytes));
 		pixels23 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_unpackhi_epi64(bytes, bytes)));
 	}
 
-	// Color times alpha / 255; the alpha lanes keep the source value
-	IMAGE_PROCESSING_SIMD_INLINE Floats8 premultiplyTwoPixels(Floats8 twoPixels) noexcept
+	// Each pixel's alpha, the last of its FloatsPerPixel floats, in all of its lanes
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 pixelAlphas(Floats8 pixels) noexcept
 	{
-		const __m256 alpha = _mm256_shuffle_ps(twoPixels, twoPixels, _MM_SHUFFLE(3, 3, 3, 3));
-		const __m256 premultiplied = _mm256_mul_ps(twoPixels, _mm256_mul_ps(alpha, _mm256_set1_ps(1.0f / 255.0f)));
-		return _mm256_blend_ps(premultiplied, twoPixels, 0x88);
+		static_assert(FloatsPerPixel == 2 || FloatsPerPixel == 4);
+		if constexpr (FloatsPerPixel == 4)
+			return _mm256_shuffle_ps(pixels, pixels, _MM_SHUFFLE(3, 3, 3, 3));
+		else
+			return _mm256_movehdup_ps(pixels);
 	}
 
-	IMAGE_PROCESSING_SIMD_INLINE Floats4 premultiplyPixel(Floats4 pixel) noexcept
+	// Color times alpha / 255; the alpha lanes keep the source value
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 premultiplyPixels(Floats8 pixels) noexcept
 	{
-		const __m128 alpha = _mm_shuffle_ps(pixel, pixel, _MM_SHUFFLE(3, 3, 3, 3));
-		const __m128 premultiplied = _mm_mul_ps(pixel, _mm_mul_ps(alpha, _mm_set1_ps(1.0f / 255.0f)));
-		return _mm_blend_ps(premultiplied, pixel, 0x8);
+		const __m256 premultiplied = _mm256_mul_ps(pixels, _mm256_mul_ps(pixelAlphas<FloatsPerPixel>(pixels), _mm256_set1_ps(1.0f / 255.0f)));
+		return _mm256_blend_ps(premultiplied, pixels, FloatsPerPixel == 4 ? 0x88 : 0xAA);
 	}
 
 	// Rounds 8 floats to 8 words in order.
@@ -125,16 +183,24 @@ namespace ImageProcessing::Detail::Avx2
 		return _mm_packus_epi16(packEightFloatsToWords(first), packEightFloatsToWords(second));
 	}
 
-	// Color is capped at alpha: the scalar path's writePixelBytes caps it too
-	IMAGE_PROCESSING_SIMD_INLINE Floats8 capColorAtAlpha(Floats8 twoPixels) noexcept
+	// Color is capped at alpha: writePixelBytes caps it too
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 capColorAtAlpha(Floats8 pixels) noexcept
 	{
-		return _mm256_min_ps(twoPixels, _mm256_shuffle_ps(twoPixels, twoPixels, _MM_SHUFFLE(3, 3, 3, 3)));
+		return _mm256_min_ps(pixels, pixelAlphas<FloatsPerPixel>(pixels));
 	}
 
-	IMAGE_PROCESSING_SIMD_INLINE void writeEightRgbaPixels(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
+	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
 	{
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(capColorAtAlpha(values0), capColorAtAlpha(values1)));
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest + 16), packSixteenFloatsToBytes(capColorAtAlpha(values2), capColorAtAlpha(values3)));
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(values0, values1));
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest + 16), packSixteenFloatsToBytes(values2, values3));
+	}
+
+	IMAGE_PROCESSING_SIMD_INLINE void writeTwentyFourBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2) noexcept
+	{
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(values0, values1));
+		const __m128i lastWords = packEightFloatsToWords(values2);
+		_mm_storel_epi64(reinterpret_cast<__m128i*>(dest + 16), _mm_packus_epi16(lastWords, lastWords));
 	}
 
 	IMAGE_PROCESSING_SIMD_INLINE Rgb32PixelTails rgb32PixelTails(uint8_t tailValue) noexcept

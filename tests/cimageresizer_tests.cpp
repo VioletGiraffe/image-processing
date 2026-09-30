@@ -478,14 +478,13 @@ namespace
 
 	struct PixelLayout { uint8_t channels; uint8_t pixelStride; std::optional<SimdLevel> simdCap; };
 
-	// 4/4 and 3/4 take a SIMD kernel, once per level of this CPU; 3/3, 1/1 and 2/2 take the scalar path
+	// Each layout the kernels instantiate a stride for, once per level of this CPU
 	[[nodiscard]] std::vector<PixelLayout> pixelLayouts()
 	{
 		std::vector<PixelLayout> layouts;
 		for (const SimdLevel level : supportedSimdLevels())
-			layouts.insert(layouts.end(), { { 4, 4, level }, { 3, 4, level } });
+			layouts.insert(layouts.end(), { { 4, 4, level }, { 3, 4, level }, { 3, 3, level }, { 1, 1, level }, { 2, 2, level } });
 
-		layouts.insert(layouts.end(), { { 3, 3, {} }, { 1, 1, {} }, { 2, 2, {} } });
 		return layouts;
 	}
 }
@@ -895,7 +894,7 @@ TEST_CASE("Every pixel layout and geometry matches a direct double-precision ref
 }
 
 // The other layout comparisons use two-pixel sources; these sizes cover many blocked SIMD iterations and a
-// different scalar remainder, across the SIMD and scalar paths.
+// different pixel-by-pixel remainder per layout.
 TEST_CASE("Pixel layouts agree on identical channel data", "[resize][pixel-layout]")
 {
 	constexpr uint64_t sourceWidth = 320, sourceHeight = 240;

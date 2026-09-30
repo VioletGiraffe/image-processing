@@ -149,33 +149,40 @@ namespace ImageProcessing::Detail
 			destPixel[channel] = clampToByte(values[channel]);
 	}
 
+	// The vertical pass writes blocks of this many pixels: 32 floats, 24 for 3 channels
+	[[nodiscard]] constexpr size_t verticalBlockPixels(size_t channels) noexcept
+	{
+		return channels == 3 ? 8 : 32 / channels;
+	}
+
 	// The SIMD kernels resize dest rows [destRowBegin, destRowEnd) in one fused pass over a ring of temp rows.
 	// Each is the outline in cimageresizer_simd.inl, compiled by cimageresizer_simd_<level>.cpp against that level's primitives.
 	// The target attributes forbid inlining into the baseline dispatcher, keeping the runtime level check in control of what executes.
+	// PixelStride 0 takes the image's stride at runtime; the tight strides and RGB32's 4 are instantiated.
 #if IMAGE_PROCESSING_X64
 	// MSVC compiles cimageresizer_simd_avx2.cpp with /arch:AVX2 so that its 128-bit intrinsics are VEX-encoded too:
 	// a legacy SSE encoding stalls for tens of cycles per instruction whenever the process left the upper YMM state dirty,
 	// which any AVX-using host does. GCC and Clang get that from the target attribute.
 	namespace Avx2
 	{
-		template <size_t Channels>
-		IMAGE_PROCESSING_AVX2_TARGET void resizeRows4BytePixels(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
-			const AxisWeights& yWeights, size_t stripWidth, uint8_t pixelTailValue, uint64_t destRowBegin, uint64_t destRowEnd);
+		template <size_t Channels, size_t PixelStride>
+		IMAGE_PROCESSING_AVX2_TARGET void resizeRows(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
+			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 	}
 
 	// Legacy-SSE encoded: every thread running it clears the upper YMM state first wherever AVX exists
 	namespace Sse41
 	{
-		template <size_t Channels>
-		IMAGE_PROCESSING_SSE41_TARGET void resizeRows4BytePixels(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
-			const AxisWeights& yWeights, size_t stripWidth, uint8_t pixelTailValue, uint64_t destRowBegin, uint64_t destRowEnd);
+		template <size_t Channels, size_t PixelStride>
+		IMAGE_PROCESSING_SSE41_TARGET void resizeRows(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
+			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 	}
 #else
 	namespace Neon
 	{
-		template <size_t Channels>
-		void resizeRows4BytePixels(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
-			const AxisWeights& yWeights, size_t stripWidth, uint8_t pixelTailValue, uint64_t destRowBegin, uint64_t destRowEnd);
+		template <size_t Channels, size_t PixelStride>
+		void resizeRows(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
+			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 	}
 #endif
 }

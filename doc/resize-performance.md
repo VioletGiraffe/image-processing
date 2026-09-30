@@ -8,12 +8,12 @@ the table. Every table names the commit it was measured at: re-measure after cha
 
 - The resizer / QImage ratio is the only figure that compares across runs, machines and CI jobs.
 - Absolute ms compare only on one machine, and only while the rows the change cannot affect agree.
-- Noise gauges: Grayscale8 and RGB24 take the scalar path, which SIMD changes leave alone. Older reports' `[scalar]` rows
-  forced RGB32 and RGBA32 onto it; the `[SSE4.1]` rows that replaced them run SIMD kernels.
+- Noise gauges: the QImage controls. Every resizer row runs a SIMD kernel. Older reports' Grayscale8, RGB24 and `[scalar]`
+  rows ran a scalar path, since removed.
 - Run-to-run noise:
   - PC: 5-8% on the few-ms rows, 1-2% elsewhere.
   - Pi: 5-10%.
-  - windows-latest runner: most rows within 3%, some 10%; scalar times swing up to 30%.
+  - windows-latest runner: most rows within 3%, some 10%.
   - ubuntu-24.04-arm runner, Clang: about 1%.
   - macos-latest runner: up to 2x, too noisy to read per scenario.
   - A real M1, same-session A/B: about 1%.
@@ -42,8 +42,8 @@ the table. Every table names the commit it was measured at: re-measure after cha
 
 ## Standing against Qt
 
-Resizer / QImage, lower is better. PC at 9d86565, before column strips (mean of three rounds; 4K -> 1080p RGB24 with
-threads: 2b371a2, one run). Pi at 6b6bf7e. "-": no such benchmark.
+Resizer / QImage, lower is better. PC at 9d86565, before column strips (mean of three rounds); Grayscale8 and RGB24 at the
+commit after 42a4330 (three rounds). Pi at 6b6bf7e, Grayscale8 and RGB24 still on the scalar path. "-": no such benchmark.
 
 | Scenario | PC | PC, threads | Pi | Pi, threads |
 |---|---|---|---|---|
@@ -57,17 +57,15 @@ threads: 2b371a2, one run). Pi at 6b6bf7e. "-": no such benchmark.
 | 4K -> 64x64 | 2.56 | 1.05 | 3.52 | 1.37 |
 | 101 MP -> 720p | 2.22 | 0.64 | 3.91 | 1.17 |
 | 1080p, native size | 1.12 | - | 1.00 | - |
-| 4K -> 1080p Grayscale8 (scalar) | 1.06 | - | 1.19 | - |
-| 720p -> 4K Grayscale8 (scalar) | 0.90 | - | 0.59 | - |
-| 4K -> 1080p RGB24 (scalar) | 2.93 | 0.73 | 3.76 | 1.05 |
-| 720p -> 4K RGB24 (scalar) | 2.09 | 0.53 | 1.09 | 0.35 |
+| 4K -> 1080p Grayscale8 | 0.50 | - | 1.19 | - |
+| 720p -> 4K Grayscale8 | 0.48 | - | 0.59 | - |
+| 4K -> 1080p RGB24 | 0.81 | 0.27 | 3.76 | 1.05 |
+| 720p -> 4K RGB24 | 0.56 | 0.20 | 1.09 | 0.35 |
 
-- PC: upscales and straight-alpha images beat Qt; Qt premultiplies alpha in a separate pass.
+- PC: upscales, straight-alpha images, Grayscale8 and RGB24 beat Qt; Qt premultiplies alpha in a separate pass.
 - Pi: straight-alpha upscales beat Qt single-threaded, and the opaque 720p -> 4K about matches it. With threads every
   upscale beats it, 24 MP and RGBA32 downscales too, and RGB24 matches it.
-- Opaque downscales stay about 2x behind Qt single-threaded on the PC and 3-5x on the Pi.
-- RGB24 is the weak spot: no SIMD kernel, and 2.9-3.8x behind Qt on single-threaded downscales. Grayscale8 about matches Qt on downscales
-  and beats it on upscales.
+- Opaque 4-byte downscales stay about 2x behind Qt single-threaded on the PC and 3-5x on the Pi.
 
 ## What the design rests on
 
@@ -237,71 +235,30 @@ Pi, single-threaded. Columns: 1ecd630 / f116725 (out-of-line call) / 1199012 (in
 | 4K -> 64x64 | 3.62 / 3.63 / 3.41 |
 | 101 MP -> 720p | 4.32 / 4.47 / 4.29 |
 
-### The scalar path's temp-row ring and whole-row conversion
+### One outline for every pixel layout (the commit after 42a4330)
 
-The scalar path used to run two passes through a whole-image float temp, and converted and premultiplied a source pixel at
-every tap. It now shares `TempRowRing` with the SIMD kernel, and converts each source row once:
-- Whole rows, not the sliding buffer: on ARM the scalar path only serves layouts without a kernel, 1-3 floats per pixel in
-  one row. The whole rows that overflowed the Pi's L2 held 8: two rows of 4.
-- Tight packing and RGB32 get a compile-time pixel stride. With a runtime one, MSVC calls `memcpy` for every pixel's tail
-  bytes, and the conversion loop stays generic.
+The SIMD outline serves 1-4 channels at any pixel stride.
+- The sliding source buffer holds 1, 2 or 4 floats per pixel. RGB gets a 4th float, 0, and runs the 4-channel code.
+- The horizontal pass works in blocks of 32 source floats through four FMA chains: 8 taps of 4-float pixels, 16 of 2-float,
+  32 of 1-float. 1- and 2-float pixels end with a horizontal sum per output pixel.
+- The vertical pass writes blocks of 32 floats, 24 for RGB.
+- Tight packing and RGB32 get a compile-time stride, with whole-vector conversion and writes. Other strides convert and
+  store pixel by pixel.
 
-PC, MSVC, scalar / QImage, 8ca3148 -> the next commit. Three alternating rounds, averaged; the SIMD rows held within 1%,
-64x64 within 6%. The threaded rows spread up to 21% between rounds.
+PC, ms, 42a4330 -> the next commit, three alternating rounds:
 
-| Scenario | Single-threaded | Threads |
+| Scenario | MSVC | clang-cl |
 |---|---|---|
-| 24 MP -> 1080p | 8.39 -> 6.33 | 2.38 -> 1.77 |
-| 4K -> 1080p RGB32 | 8.24 -> 7.25 | - |
-| 4K -> 1080p RGBA32 | 6.09 -> 4.48 | 1.74 -> 1.24 |
-| 4K -> 1080p Grayscale8 | 1.51 -> 1.06 | - |
-| 4K -> 1080p RGB24 | 3.45 -> 2.93 | - |
-| 720p -> 4K RGB32 | 1.81 -> 1.99 | - |
-| 720p -> 4K RGBA32 | 1.62 -> 1.40 | 0.43 -> 0.37 |
-| 720p -> 4K Grayscale8 | 1.17 -> 0.90 | - |
-| 720p -> 4K RGB24 | 1.86 -> 2.09 | 0.59 -> 0.53 |
-| 1080p -> 1440p | 2.80 -> 3.30 | 0.88 -> 0.84 |
-| 1080p -> 240p | 11.65 -> 8.26 | 3.48 -> 2.46 |
-| 4K -> 64x64 | 15.83 -> 11.65 | 4.69 -> 4.08 |
-| 101 MP -> 720p | 12.61 -> 9.46 | 3.52 -> 2.57 |
+| 4K -> 1080p Grayscale8 | 22.5 -> 10.6 | 16.8 -> 8.7 |
+| 720p -> 4K Grayscale8 | 14.1 -> 7.3 | 9.4 -> 7.0 |
+| 4K -> 1080p RGB24 | 59.1 -> 16.5 | 39.9 -> 17.7 |
+| 720p -> 4K RGB24 | 41.3 -> 10.9 | 25.0 -> 10.9 |
+| 4K -> 1080p RGB24, threads | 16.5 -> 5.2 | 11.7 -> 5.8 |
+| 720p -> 4K RGB24, threads | 12.4 -> 3.9 | 7.5 -> 3.9 |
 
-- RGBA32 gains the most: the premultiply ran at every tap. The same upscale gains 13% as RGBA32 and loses 7% as RGB32.
-- Three-channel upscales lose 7-13% single-threaded and gain with threads: open lead 3. The Grayscale8 upscale gains 23%.
-
-CI, scalar / QImage single-threaded, 8ca3148 -> 9d86565, in the jobs whose SIMD rows held:
-- ARM gains the most: Clang 35-65%, GCC 28-60%. ARM GCC's RGB24 and Grayscale8 upscales gain only 5-7%.
-- Only MSVC gains nothing on upscales: 720p -> 4K RGB32 -2%, RGB24 +2%, 1080p -> 1440p +5%. On the same rows clang-cl gains
-  23-31%, and x64 Clang 15-28%, overstated by about 15%: its SIMD rows drifted faster.
-- x64 GCC ran on a slower machine after. Against 6fac81f's EPYC 9V74, whose SIMD times match the before run's, its
-  scalar / SIMD ratio fell 16-44%.
-- clang-cl's scalar path runs about 23% ahead of MSVC's on 24 MP -> 1080p at 6fac81f: Zen 3 against Zen 4, with their Qt
-  and SIMD times within 2%.
-
-Pi, scalar ms, 8ca3148 -> 6fac81f. The Qt controls held within 2%, except 4K -> 1080p RGBA32: +6%, its SIMD row +9%.
-RGB24 4K -> 1080p with threads: 8ca3148 with 2b371a2's benchmark file -> 2b371a2; the other threaded rows matched within 1%.
-
-| Scenario | Single-threaded | Threads | Thread speedup |
-|---|---|---|---|
-| 4K -> 1080p RGB24 | 372 -> 247 | 136 -> 157 | 2.73x -> 1.58x |
-| 4K -> 1080p Grayscale8 | 143 -> 121 | - | - |
-| 720p -> 4K RGB24 | 189 -> 118 | 62.7 -> 59.9 | 3.01x -> 1.98x |
-| 720p -> 4K Grayscale8 | 76.4 -> 52.2 | - | - |
-| 720p -> 4K RGB32 | 265 -> 118 | - | - |
-| 720p -> 4K RGBA32 | 322 -> 155 | 127 -> 143 | 2.54x -> 1.09x |
-| 1080p -> 1440p | 128 -> 87 | 38.4 -> 36.7 | 3.34x -> 2.36x |
-| 24 MP -> 1080p | 819 -> 611 | 305 -> 310 | 2.69x -> 1.97x |
-| 4K -> 1080p RGBA32 | 507 -> 321 | 215 -> 231 | 2.36x -> 1.39x |
-| 1080p -> 240p | 59.7 -> 51.8 | 16.7 -> 16.7 | 3.57x -> 3.11x |
-| 4K -> 64x64 | 172 -> 166 | 47.1 -> 58.1 | 3.65x -> 2.86x |
-| 101 MP -> 720p | 2569 -> 2277 | 841 -> 1032 | 3.06x -> 2.21x |
-
-- RGB24 and Grayscale8, the layouts ARM runs scalar, gain 15-37% single-threaded. With threads the RGB24 upscale gains 4%,
-  and the RGB24 downscale loses 15%: the column strips section.
-- No upscale loses: open lead 3 is MSVC's.
-- With threads the scalar path now scales like the SIMD path, which uses the same ring. Four RGB32 and RGBA32 rows lose
-  7-24%: the column strips section.
-- 4K -> 64x64 and 101 MP gain only 3% and 11% single-threaded. Likely cause: their float rows, 46 and 139 KB, exceed the
-  A72's 32 KB L1, and their long x runs read each pixel many times.
+- RGB24 now costs what RGB32 does: 16.5 against 16.6 ms on 4K -> 1080p under MSVC.
+- The 4-byte rows held within 4% under MSVC; clang-cl's upscales gained 4-11%.
+- SSE4.1 / AVX2 time under MSVC: Grayscale8 1.1x, RGB24 1.25-1.7x.
 
 ### Column strips (b9fea7e)
 
@@ -438,20 +395,11 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
    fixed the same regression on MSVC: 1.84, 2.66, 1.76.
 2. **Native size on the x64 runners:** resizer / `QImage::copy` 7.59 (GCC) and 7.26 (Clang) at d436d41, about 1.0 on ARM.
    Not investigated.
-3. **Pre-conversion costs MSVC's upscales 7-17%**, on both paths: SIMD 1080p -> 1440p 7.25 -> 8.5-8.7 ms on the PC
-   (experiment 6), scalar three-channel upscales 7-13% single-threaded on the PC and up to 5% on the MSVC runner. The other
-   compilers gain on the same scalar rows (the scalar ring section). Scalar 1080p -> 1440p phase timings on the PC,
-   Mcycles per resize:
-   - The horizontal filter reading floats takes 68-69, against 55-56 reading bytes, despite fewer instructions per tap.
-   - Skipping the vertical pass leaves it at 68-69, so the fused loop's other phases do not evict its data.
-   - Conversion takes 4.6; the ring saved 3-4 on the vertical pass.
-   - Unexplained. A loss confined to MSVC points at its code for `filterHorizontalRow`, not at memory traffic: comparing
-     it with clang-cl's is the next step.
+3. **Pre-conversion costs MSVC's upscales:** 1080p -> 1440p 7.25 -> 8.5-8.7 ms on the PC (experiment 6). The scalar path
+   lost 7-13% on its three-channel upscales under MSVC alone, and its phase timings put the loss in the horizontal filter's
+   code, not in memory traffic. Comparing MSVC's code for `filterHorizontalRowGroup` with clang-cl's is the next step.
 4. **The SSE4.1 kernels are untuned:** 1.3-1.7x the AVX2 time on the PC under MSVC. The horizontal pass's paired-row
-   8-tap block needs 16 XMM accumulators, x64's whole register file: MSVC keeps eight of them on the stack. Single rows or fewer
+   block needs 16 XMM accumulators, x64's whole register file: MSVC keeps eight of them on the stack. Single rows or fewer
    chains at this level are the candidates, to be judged on the Celeron N4100.
-5. **4K -> 64x64 with threads on the Pi:** scalar 59 ms against 47 for the whole-image temp (8ca3148).
-6. **Strips cost up to 11% where the L2 is large:** Neoverse-N2's scalar downscales, 3-8% on the PC's (the column strips
+5. **Strips cost where the L2 is large:** 1-5% on Neoverse-N2's SIMD rows, 3-8% on the PC's downscales (the column strips
    section). A budget from the runtime L2 share would skip strips there.
-7. **GCC on the Pi, scalar 4K -> 64x64 with threads:** 141 ms against 117 single-threaded at 3049bb0. Clang: 59 against 171.
-   The ARM runners' GCC job keeps the usual ~0.34 ratio.

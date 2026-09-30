@@ -38,6 +38,8 @@ OTHER_FILES += $$PWD/cimageresizer_simd.inl
 	avx2Compiler.name = AVX2 kernels
 	avx2Compiler.input = AVX2_SOURCES
 	avx2Compiler.dependency_type = TYPE_C
+	# The VS project generator scans no includes for an extra compiler: only these reach the rule's inputs
+	avx2Compiler.depends = $$PWD/cimageresizer_simd.inl $$PWD/simd_primitives_avx2.h $$PWD/simd_support.h $$PWD/resize_internal.h $$PWD/cimageresizer.h
 	avx2Compiler.variable_out = OBJECTS
 	avx2Compiler.output = $${OBJECTS_DIR}/${QMAKE_FILE_BASE}$${first(QMAKE_EXT_OBJ)}
 	# The generator supplies /Fd to its own compile rules but not to this one, and /Zi without it writes the PDB to

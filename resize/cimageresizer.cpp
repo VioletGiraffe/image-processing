@@ -4,7 +4,6 @@
 #include "compiler/compiler_warnings_control.h"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -265,13 +264,6 @@ namespace
 		return buildAxisWeights<BicubicKernel>(srcSize, dstSize);
 	}
 
-	inline void copyPixelTail(uint8_t* destPixel, const uint8_t* sourcePixel, size_t channels, size_t pixelStride) noexcept
-	{
-		// Bytes outside the logical channels can still carry pixel-format invariants, such as RGB32's required 0xff byte.
-		assert(pixelStride > channels);
-		::memcpy(destPixel + channels, sourcePixel + channels, pixelStride - channels);
-	}
-
 	// Rounds to nearest, as the float premultiply of the filtering paths does
 	inline void premultiplyPixelBytes(uint8_t* pixel, size_t channels) noexcept
 	{
@@ -298,155 +290,12 @@ namespace
 		}
 	}
 
-	// PixelStride 0: the stride is taken at runtime, from pixelStride
-	template <size_t PixelStride>
-	[[nodiscard]] inline size_t effectivePixelStride(size_t pixelStride) noexcept
-	{
-		assert(PixelStride == 0 || PixelStride == pixelStride);
-		return PixelStride != 0 ? PixelStride : pixelStride;
-	}
-
-	// Channels floats per pixel, color premultiplied as the filtering needs it
-	template <size_t Channels, size_t PixelStride, bool PremultiplyAlpha>
-	void convertRowToFloats(const uint8_t* pixels, size_t pixelStride, float* floats, size_t pixelCount) noexcept
-	{
-		pixelStride = effectivePixelStride<PixelStride>(pixelStride);
-		for (size_t pixel = 0; pixel < pixelCount; ++pixel, pixels += pixelStride, floats += Channels)
-		{
-			if constexpr (PremultiplyAlpha)
-			{
-				const float premultiplier = static_cast<float>(pixels[Channels - 1]) * (1.0f / 255.0f);
-				for (size_t channel = 0; channel + 1 < Channels; ++channel)
-					floats[channel] = static_cast<float>(pixels[channel]) * premultiplier;
-
-				floats[Channels - 1] = static_cast<float>(pixels[Channels - 1]);
-			}
-			else
-			{
-				for (size_t channel = 0; channel < Channels; ++channel)
-					floats[channel] = static_cast<float>(pixels[channel]);
-			}
-		}
-	}
-
-	// Filters dest columns [destBegin, destEnd) into tempRow; sourceFloats starts at source pixel firstSourcePixel
-	template <size_t Channels>
-	void filterHorizontalRow(const float* sourceFloats, size_t firstSourcePixel, float* tempRow, size_t destBegin, size_t destEnd, const AxisWeights& xWeights) noexcept
-	{
-		for (size_t dx = destBegin; dx < destEnd; ++dx)
-		{
-			const auto [firstPixel, weights] = xWeights.runFor(dx);
-			const float* srcPixel = sourceFloats + (firstPixel - firstSourcePixel) * Channels;
-			std::array<float, Channels> accum{};
-
-			for (const float weight : weights)
-			{
-				for (size_t channel = 0; channel < Channels; ++channel)
-					accum[channel] += srcPixel[channel] * weight;
-
-				srcPixel += Channels;
-			}
-
-			std::copy_n(accum.data(), Channels, tempRow + (dx - destBegin) * Channels);
-		}
-	}
-
-	// Sums the window's temp rows into accumRow, one chunk of the row through every tap at a time, each tap one sweep over
-	// contiguous floats: a chunk's accumulators stay in L1 across the taps, where a whole 4K row's would not.
-	void filterVerticalRow(const std::array<TempRowSegment, 2>& segments, std::span<const float> rowWeights, size_t tempRowStride, size_t rowElementCount, float* accumRow) noexcept
-	{
-		constexpr size_t chunkElements = 1024;
-		for (size_t chunkBegin = 0; chunkBegin < rowElementCount; chunkBegin += chunkElements)
-		{
-			const size_t chunkElementCount = std::min(chunkElements, rowElementCount - chunkBegin);
-			float* const accumChunk = accumRow + chunkBegin;
-			std::fill_n(accumChunk, chunkElementCount, 0.0f);
-
-			const float* weight = rowWeights.data();
-			for (const TempRowSegment& segment : segments)
-			{
-				const float* tempChunk = segment.firstRow + chunkBegin;
-				for (size_t row = 0; row < segment.rowCount; ++row, ++weight, tempChunk += tempRowStride)
-				{
-					// A zero tap would cost a whole sweep, and exact-ratio downscales produce them (the kernels are zero at integer offsets)
-					const float tapWeight = *weight;
-					if (tapWeight == 0.0f)
-						continue;
-
-					for (size_t element = 0; element < chunkElementCount; ++element)
-						accumChunk[element] += tempChunk[element] * tapWeight;
-				}
-			}
-		}
-	}
-
-	// Resizes dest rows [destRowBegin, destRowEnd) through a TempRowRing, one column strip at a time.
-	// Each source row's strip span is converted to floats once, whole: the x runs of neighboring columns overlap.
-	template <size_t Channels, size_t PixelStride>
-	void resizeRowsScalar(
-		const ImageView<true>& source,
-		Rect srcRect,
-		ImageView<false>& dest,
-		const AxisWeights& xWeights,
-		const AxisWeights& yWeights,
-		size_t stripWidth,
-		uint64_t destRowBegin,
-		uint64_t destRowEnd)
-	{
-		const size_t pixelStride = effectivePixelStride<PixelStride>(source.pixelStrideBytes);
-		const size_t destWidth = static_cast<size_t>(dest.width);
-		const size_t tempRowStride = stripWidth * Channels;
-
-		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 1 };
-		const auto sourceFloats = std::make_unique_for_overwrite<float[]>(static_cast<size_t>(srcRect.w) * Channels);
-		const auto accumRow = std::make_unique_for_overwrite<float[]>(tempRowStride);
-
-		// A layout without alpha never instantiates the premultiplying variant
-		auto* const convertRow = hasStraightAlpha(source)
-			? &convertRowToFloats<Channels, PixelStride, hasAlphaChannel(Channels)>
-			: &convertRowToFloats<Channels, PixelStride, false>;
-		const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * pixelStride;
-
-		for (size_t stripBegin = 0; stripBegin < destWidth; stripBegin += stripWidth)
-		{
-			const size_t stripEnd = std::min(stripBegin + stripWidth, destWidth);
-			const size_t stripElementCount = (stripEnd - stripBegin) * Channels;
-			const AxisWeights::SourceSpan span = xWeights.sourceSpan(stripBegin, stripEnd);
-
-			uint64_t produced = ring.firstNeededRow();
-			for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
-			{
-				const auto [firstWindowRow, rowWeights] = yWeights.runFor(dy);
-				const uint64_t windowEnd = firstWindowRow + rowWeights.size();
-				assert(windowEnd <= srcRect.h);
-
-				for (; produced < windowEnd; ++produced)
-				{
-					const auto* spanPixels = source.scanLine<uint8_t>(srcRect.top + produced) + (srcRect.left + span.begin) * pixelStride;
-					convertRow(spanPixels, pixelStride, sourceFloats.get(), span.end - span.begin);
-					filterHorizontalRow<Channels>(sourceFloats.get(), span.begin, ring.row(produced), stripBegin, stripEnd, xWeights);
-				}
-
-				assert(produced - firstWindowRow <= ring.rowCapacity());
-				filterVerticalRow(ring.window(firstWindowRow, rowWeights.size()), rowWeights, tempRowStride, stripElementCount, accumRow.get());
-
-				auto* dstPixel = dest.scanLine<uint8_t>(dy) + stripBegin * pixelStride;
-				for (size_t dx = stripBegin; dx < stripEnd; ++dx, dstPixel += pixelStride)
-				{
-					writePixelBytes(dstPixel, accumRow.get() + (dx - stripBegin) * Channels, Channels);
-					if (pixelStride > Channels)
-						copyPixelTail(dstPixel, pixelTailSource, Channels, pixelStride);
-				}
-			}
-		}
-	}
-
 	// Dest columns per strip: each thread holds a ring of temp rows for one strip at a time, and the strip width bounds
 	// that ring to ringBudgetBytes, so that it stays in a small L2 shared by all cores, such as the Pi 4's.
 	[[nodiscard]] size_t stripWidthFor(uint64_t destWidth, const AxisWeights& yWeights, size_t channels, size_t ringBudgetBytes) noexcept
 	{
-		// The SIMD vertical pass writes 8-pixel blocks, with a scalar tail per strip
-		constexpr size_t widthGranule = 8;
+		// The vertical pass writes whole blocks, with a pixel-by-pixel tail per strip
+		const size_t widthGranule = verticalBlockPixels(channels);
 
 		const size_t width = static_cast<size_t>(destWidth);
 		const size_t maxStripWidth = std::max(widthGranule, ringBudgetBytes / (yWeights.longestRun() * channels * sizeof(float)));
@@ -473,8 +322,21 @@ namespace
 		}
 	}
 
+	using RowResizer = void(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights, const AxisWeights& yWeights,
+		size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
+
+	template <size_t Channels, size_t PixelStride>
+	[[nodiscard]] RowResizer* rowResizerFor([[maybe_unused]] SimdLevel simdLevel) noexcept
+	{
+#if IMAGE_PROCESSING_X64
+		return simdLevel == SimdLevel::Avx2 ? &Avx2::resizeRows<Channels, PixelStride> : &Sse41::resizeRows<Channels, PixelStride>;
+#else
+		return &Neon::resizeRows<Channels, PixelStride>;
+#endif
+	}
+
 	template <size_t Channels>
-	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, [[maybe_unused]] SimdLevel simdLevel, size_t ringBudgetBytes)
+	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, SimdLevel simdLevel, size_t ringBudgetBytes)
 	{
 		static_assert(Channels >= 1 && Channels <= 4);
 
@@ -505,32 +367,12 @@ namespace
 		const size_t stripWidth = stripWidthFor(dest.width, yWeights, Channels, ringBudgetBytes);
 		const bool touchDestPages = stripWidth < dest.width;
 
-		if constexpr (Channels == 3 || Channels == 4)
-		{
-			if (pixelStride == 4)
-			{
-				const auto* pixelTailSource = source.scanLine<uint8_t>(srcRect.top) + srcRect.left * pixelStride;
-				forEachRowBand(parallelFor, dest.height, elementsPerDestRow, [&](uint64_t rowBegin, uint64_t rowEnd)
-				{
-					if (touchDestPages)
-						touchDestPagesInOrder(dest, rowBegin, rowEnd, pixelStride);
-
-#if IMAGE_PROCESSING_X64
-					if (simdLevel == SimdLevel::Avx2)
-						Avx2::resizeRows4BytePixels<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
-					else
-						Sse41::resizeRows4BytePixels<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
-#else
-					Neon::resizeRows4BytePixels<Channels>(source, srcRect, dest, xWeights, yWeights, stripWidth, pixelTailSource[3], rowBegin, rowEnd);
-#endif
-				});
-				return;
-			}
-		}
-
-		// The pixel layouts no SIMD kernel takes.
-		// Tight packing gets a compile-time stride: a runtime one makes the per-pixel tail copy a memcpy call and the conversion loop generic.
-		auto* const resizeRows = pixelStride == Channels ? &resizeRowsScalar<Channels, Channels> : &resizeRowsScalar<Channels, 0>;
+		// Tight packing and RGB32 get a compile-time stride: the kernels' vector conversion and writes need one
+		RowResizer* resizeRows = rowResizerFor<Channels, 0>(simdLevel);
+		if (pixelStride == Channels)
+			resizeRows = rowResizerFor<Channels, Channels>(simdLevel);
+		else if (Channels == 3 && pixelStride == 4)
+			resizeRows = rowResizerFor<3, 4>(simdLevel);
 
 		forEachRowBand(parallelFor, dest.height, elementsPerDestRow, [&](uint64_t rowBegin, uint64_t rowEnd)
 		{

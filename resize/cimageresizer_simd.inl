@@ -25,40 +25,76 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 {
 	namespace
 	{
-		template <bool PremultiplyAlpha>
-		IMAGE_PROCESSING_SIMD_INLINE void convertPixelsToFloats(const uint8_t* pixels, float* floats, size_t pixelCount) noexcept
+		// 3 channels get a 4th float, 0: the 4-channel code then serves them
+		[[nodiscard]] constexpr size_t sourceFloatsPerPixel(size_t channels) noexcept
 		{
-			size_t pixel = 0;
-			for (; pixel + 4 <= pixelCount; pixel += 4)
-			{
-				Floats8 pixels01, pixels23;
-				loadFourPixelsAsFloats(pixels + pixel * 4, pixels01, pixels23);
-				if constexpr (PremultiplyAlpha)
-				{
-					pixels01 = premultiplyTwoPixels(pixels01);
-					pixels23 = premultiplyTwoPixels(pixels23);
-				}
+			return channels == 3 ? 4 : channels;
+		}
 
-				storeFloats8(floats + pixel * 4, pixels01);
-				storeFloats8(floats + pixel * 4 + 8, pixels23);
+		// PixelStride 0: the stride is taken at runtime, from pixelStride
+		template <size_t Channels, size_t PixelStride, bool PremultiplyAlpha>
+		IMAGE_PROCESSING_SIMD_INLINE void convertPixelsToFloats(const uint8_t* pixels, size_t pixelStride, float* floats, size_t pixelCount) noexcept
+		{
+			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
+			size_t pixel = 0;
+
+			// A 16-byte load: 16 pixel floats, or 4 RGB pixels and 4 bytes past them
+			if constexpr (PixelStride == floatsPerPixel || (Channels == 3 && PixelStride == 3))
+			{
+				constexpr size_t blockPixels = 16 / floatsPerPixel;
+				constexpr size_t loadedPixels = (16 + PixelStride - 1) / PixelStride;
+				for (; pixel + loadedPixels <= pixelCount; pixel += blockPixels)
+				{
+					Floats8 first, second;
+					if constexpr (PixelStride == 3)
+						loadFourRgbPixelsAsFloats(pixels + pixel * 3, first, second);
+					else
+						loadSixteenBytesAsFloats(pixels + pixel * PixelStride, first, second);
+
+					if constexpr (PremultiplyAlpha)
+					{
+						first = premultiplyPixels<floatsPerPixel>(first);
+						second = premultiplyPixels<floatsPerPixel>(second);
+					}
+
+					storeFloats8(floats + pixel * floatsPerPixel, first);
+					storeFloats8(floats + pixel * floatsPerPixel + 8, second);
+				}
 			}
 
+			// Premultiplies with the vector code's arithmetic: one row mixes both
 			for (; pixel < pixelCount; ++pixel)
 			{
-				Floats4 pixelFloats = loadPixelAsFloats(pixels + pixel * 4);
+				const uint8_t* const sourcePixel = pixels + pixel * pixelStride;
+				float* const pixelFloats = floats + pixel * floatsPerPixel;
 				if constexpr (PremultiplyAlpha)
-					pixelFloats = premultiplyPixel(pixelFloats);
+				{
+					const float alpha = static_cast<float>(sourcePixel[Channels - 1]);
+					const float premultiplier = alpha * (1.0f / 255.0f);
+					for (size_t channel = 0; channel + 1 < Channels; ++channel)
+						pixelFloats[channel] = static_cast<float>(sourcePixel[channel]) * premultiplier;
 
-				storeFloats4(floats + pixel * 4, pixelFloats);
+					pixelFloats[Channels - 1] = alpha;
+				}
+				else
+				{
+					for (size_t channel = 0; channel < Channels; ++channel)
+						pixelFloats[channel] = static_cast<float>(sourcePixel[channel]);
+				}
+
+				if constexpr (floatsPerPixel > Channels)
+					pixelFloats[Channels] = 0.0f;
 			}
 		}
 
-		// A row group's source pixels as floats, 4 per pixel, over a span that slides along the rows as the x runs advance.
+		// A row group's source pixels as floats, sourceFloatsPerPixel per pixel, over a span that slides along the rows as the x runs advance.
 		// Each pixel is converted once: overlapping runs would otherwise convert it once per run.
 		// The span stays a few KB so that it lives in L1: whole converted rows overflow the L2 that parallel bands share.
-		template <size_t Rows>
+		template <size_t Channels, size_t PixelStride, size_t Rows>
 		struct SlidingSourceFloats
 		{
+			static constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
+
 			// Room kept behind a run's first pixel when the span slides: end-trimming lets a later run start a few pixels earlier
 			static constexpr size_t backMargin = 8;
 			// Pixels converted ahead of the current run, so that conversion runs in batches
@@ -81,7 +117,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					if (newBase >= base && newBase < converted)
 					{
 						for (size_t row = 0; row < Rows; ++row)
-							::memmove(floats[row], floats[row] + (newBase - base) * 4, (converted - newBase) * 4 * sizeof(float));
+							::memmove(floats[row], floats[row] + (newBase - base) * floatsPerPixel, (converted - newBase) * floatsPerPixel * sizeof(float));
 					}
 					else
 						converted = newBase; // Nothing converted is reusable: the run starts before the span or past its converted end
@@ -94,24 +130,25 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					const size_t convertedTarget = std::min({ std::max(end, converted + conversionChunk), base + capacity, pixelEnd });
 					for (size_t row = 0; row < Rows; ++row)
 					{
-						const uint8_t* rowPixels = pixels[row] + converted * 4;
-						float* rowFloats = floats[row] + (converted - base) * 4;
-						if (premultiplyAlpha)
-							convertPixelsToFloats<true>(rowPixels, rowFloats, convertedTarget - converted);
+						const uint8_t* rowPixels = pixels[row] + converted * pixelStride;
+						float* rowFloats = floats[row] + (converted - base) * floatsPerPixel;
+						if (hasAlphaChannel(Channels) && premultiplyAlpha)
+							convertPixelsToFloats<Channels, PixelStride, hasAlphaChannel(Channels)>(rowPixels, pixelStride, rowFloats, convertedTarget - converted);
 						else
-							convertPixelsToFloats<false>(rowPixels, rowFloats, convertedTarget - converted);
+							convertPixelsToFloats<Channels, PixelStride, false>(rowPixels, pixelStride, rowFloats, convertedTarget - converted);
 					}
 
 					converted = convertedTarget;
 				}
 
-				return (first - base) * 4;
+				return (first - base) * floatsPerPixel;
 			}
 
 			const uint8_t* const pixels[Rows];
 			float* const floats[Rows];
 			const size_t capacity; // In pixels
 			const size_t pixelEnd; // Conversion never reaches this pixel
+			const size_t pixelStride;
 			const bool premultiplyAlpha;
 			size_t base = 0; // The source pixel at floats[row][0]
 			size_t converted = 0; // Pixels [base, converted) are in the buffers
@@ -130,15 +167,41 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
+		// Adds the last taps of a 1- or 2-float pixel channel by channel, then stores it
+		template <size_t FloatsPerPixel>
+		IMAGE_PROCESSING_SIMD_INLINE void storeTempPixelWithTaps(float* outPixel, Floats4 partialSums, const float* sourcePixels, const float* weights, size_t tapCount) noexcept
+		{
+			alignas(16) float sums[4];
+			storeFloats4(sums, sumPixels<FloatsPerPixel>(partialSums));
+			for (size_t tap = 0; tap < tapCount; ++tap)
+			{
+				for (size_t channel = 0; channel < FloatsPerPixel; ++channel)
+					sums[channel] = mulAdd(sourcePixels[tap * FloatsPerPixel + channel], weights[tap], sums[channel]);
+			}
+
+			::memcpy(outPixel, sums, FloatsPerPixel * sizeof(float));
+		}
+
+		// The weights for chain Chain of a block of 32 source floats that starts at blockWeights
+		template <size_t Chain, size_t FloatsPerPixel>
+		IMAGE_PROCESSING_SIMD_INLINE Floats8 chainWeights(const WeightSpreader<FloatsPerPixel>& spreader, const float* blockWeights, WeightBlock firstWeights) noexcept
+		{
+			constexpr size_t weightBlock = Chain / FloatsPerPixel;
+			if constexpr (weightBlock == 0)
+				return spreader.template spread<Chain % FloatsPerPixel>(firstWeights);
+			else
+				return spreader.template spread<Chain % FloatsPerPixel>(loadWeightBlock(blockWeights + weightBlock * 8));
+		}
+
 		// Filters Rows source rows in one destination-column sweep. The weight loads, permutes and broadcasts
 		// depend only on the column, so paired rows share them, while each row keeps its own accumulators and
 		// its exact single-row arithmetic. Two rows is the register budget: the four spread constants plus four
 		// accumulators per row nearly fill the file, a third row would spill inside the hottest loop.
 		// Rows are passed as individual pointers: a pair of temp rows may straddle the ring's wrap.
 		// Filters dest columns [destBegin, destEnd) into the temp rows' start.
-		template <size_t Channels, size_t Rows>
+		template <size_t Channels, size_t PixelStride, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalRowGroup(
-			SlidingSourceFloats<Rows>& source,
+			SlidingSourceFloats<Channels, PixelStride, Rows>& source,
 			float* const (&tempRows)[Rows],
 			size_t destBegin,
 			size_t destEnd,
@@ -146,7 +209,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		{
 			static_assert(Rows == 1 || Rows == 2);
 
-			const WeightPairSpreader weightPairs{};
+			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
+			// Taps per block of 32 source floats
+			constexpr size_t blockTaps = 32 / floatsPerPixel;
+			const WeightSpreader<floatsPerPixel> weightSpreader{};
 
 			for (size_t dx = destBegin; dx < destEnd; ++dx)
 			{
@@ -156,15 +222,15 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				const float* srcPixelA = source.floats[0] + runFloatOffset;
 				[[maybe_unused]] const float* srcPixelB = source.floats[Rows - 1] + runFloatOffset;
 
-				// Lanes hold [even pixel | odd pixel] partial sums until the single reduction below the blocks
+				// Lanes hold partial sums of 8 / floatsPerPixel pixels until the reductions below the blocks
 				Floats8 accumPairsA = zeroFloats8();
 				[[maybe_unused]] Floats8 accumPairsB = zeroFloats8();
 				size_t tap = 0;
 
-				// A run is consecutive pixels, so 8 taps go through four independent FMA chains at two pixels
-				// per register; per-tap accumulation into one register would serialize on the FMA latency.
+				// A run is consecutive pixels, so a block goes through four independent FMA chains of 8 floats;
+				// per-tap accumulation into one register would serialize on the FMA latency.
 				// Upscaling never enters this branch: a trimmed bicubic run is at most 4 taps.
-				if (tapCount >= 8)
+				if (tapCount >= blockTaps)
 				{
 					Floats8 accumA0 = zeroFloats8();
 					Floats8 accumA1 = zeroFloats8();
@@ -175,28 +241,29 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					[[maybe_unused]] Floats8 accumB2 = zeroFloats8();
 					[[maybe_unused]] Floats8 accumB3 = zeroFloats8();
 
-					for (; tap + 8 <= tapCount; tap += 8)
+					for (; tap + blockTaps <= tapCount; tap += blockTaps)
 					{
-						const float* blockPixelsA = srcPixelA + tap * 4;
-						[[maybe_unused]] const float* blockPixelsB = srcPixelB + tap * 4;
-						const WeightBlock blockWeights = loadWeightBlock(weights.data() + tap);
+						const float* blockPixelsA = srcPixelA + tap * floatsPerPixel;
+						[[maybe_unused]] const float* blockPixelsB = srcPixelB + tap * floatsPerPixel;
+						const float* blockWeights = weights.data() + tap;
+						const WeightBlock firstWeights = loadWeightBlock(blockWeights);
 
-						const Floats8 w0 = weightPairs.spread<0>(blockWeights);
+						const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, firstWeights);
 						accumA0 = mulAdd(loadFloats8(blockPixelsA), w0, accumA0);
 						if constexpr (Rows == 2)
 							accumB0 = mulAdd(loadFloats8(blockPixelsB), w0, accumB0);
 
-						const Floats8 w1 = weightPairs.spread<1>(blockWeights);
+						const Floats8 w1 = chainWeights<1>(weightSpreader, blockWeights, firstWeights);
 						accumA1 = mulAdd(loadFloats8(blockPixelsA + 8), w1, accumA1);
 						if constexpr (Rows == 2)
 							accumB1 = mulAdd(loadFloats8(blockPixelsB + 8), w1, accumB1);
 
-						const Floats8 w2 = weightPairs.spread<2>(blockWeights);
+						const Floats8 w2 = chainWeights<2>(weightSpreader, blockWeights, firstWeights);
 						accumA2 = mulAdd(loadFloats8(blockPixelsA + 16), w2, accumA2);
 						if constexpr (Rows == 2)
 							accumB2 = mulAdd(loadFloats8(blockPixelsB + 16), w2, accumB2);
 
-						const Floats8 w3 = weightPairs.spread<3>(blockWeights);
+						const Floats8 w3 = chainWeights<3>(weightSpreader, blockWeights, firstWeights);
 						accumA3 = mulAdd(loadFloats8(blockPixelsA + 24), w3, accumA3);
 						if constexpr (Rows == 2)
 							accumB3 = mulAdd(loadFloats8(blockPixelsB + 24), w3, accumB3);
@@ -207,27 +274,42 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 						accumPairsB = add(add(accumB0, accumB1), add(accumB2, accumB3));
 				}
 
-				// One narrower block covers a whole bicubic run and most of an 8-block remainder
-				if (tap + 4 <= tapCount)
+				// A half block covers a whole bicubic run of 4-float pixels and most of a block remainder
+				if (tap + blockTaps / 2 <= tapCount)
 				{
-					// A whole WeightBlock though only 4 weights are in play: pairs 0 and 1 never read the upper 4, and
-					// the builder pads the weights array to keep the overread in bounds. On AVX2 the natural 4-float load
-					// + castps128_ps256 compiles under MSVC to a 16-byte stack store that the 32-byte vpermps
-					// memory operand then reloads, and a load wider than the store it overlaps cannot be
+					// A whole WeightBlock though only 4 weights may be in play: the builder pads the weights array to keep the overread
+					// in bounds. On AVX2 the natural 4-float load + castps128_ps256 compiles under MSVC to a 16-byte stack store that the
+					// 32-byte vpermps memory operand then reloads, and a load wider than the store it overlaps cannot be
 					// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
-					const WeightBlock blockWeights = loadWeightBlock(weights.data() + tap);
-					const Floats8 w01 = weightPairs.spread<0>(blockWeights);
-					const Floats8 w23 = weightPairs.spread<1>(blockWeights);
+					const float* blockWeights = weights.data() + tap;
+					const WeightBlock firstWeights = loadWeightBlock(blockWeights);
+					const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, firstWeights);
+					const Floats8 w1 = chainWeights<1>(weightSpreader, blockWeights, firstWeights);
 
-					const float* blockPixelsA = srcPixelA + tap * 4;
-					accumPairsA = mulAdd(loadFloats8(blockPixelsA), w01, mulAdd(loadFloats8(blockPixelsA + 8), w23, accumPairsA));
+					const float* blockPixelsA = srcPixelA + tap * floatsPerPixel;
+					accumPairsA = mulAdd(loadFloats8(blockPixelsA), w0, mulAdd(loadFloats8(blockPixelsA + 8), w1, accumPairsA));
 					if constexpr (Rows == 2)
 					{
-						const float* blockPixelsB = srcPixelB + tap * 4;
-						accumPairsB = mulAdd(loadFloats8(blockPixelsB), w01, mulAdd(loadFloats8(blockPixelsB + 8), w23, accumPairsB));
+						const float* blockPixelsB = srcPixelB + tap * floatsPerPixel;
+						accumPairsB = mulAdd(loadFloats8(blockPixelsB), w0, mulAdd(loadFloats8(blockPixelsB + 8), w1, accumPairsB));
 					}
 
-					tap += 4;
+					tap += blockTaps / 2;
+				}
+
+				// A quarter block covers a whole bicubic run of 2-float pixels
+				if constexpr (floatsPerPixel <= 2)
+				{
+					if (tap + blockTaps / 4 <= tapCount)
+					{
+						const float* blockWeights = weights.data() + tap;
+						const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, loadWeightBlock(blockWeights));
+						accumPairsA = mulAdd(loadFloats8(srcPixelA + tap * floatsPerPixel), w0, accumPairsA);
+						if constexpr (Rows == 2)
+							accumPairsB = mulAdd(loadFloats8(srcPixelB + tap * floatsPerPixel), w0, accumPairsB);
+
+						tap += blockTaps / 4;
+					}
 				}
 
 				Floats4 accumA = sumHalves(accumPairsA);
@@ -235,36 +317,75 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				if constexpr (Rows == 2)
 					accumB = sumHalves(accumPairsB);
 
-				for (; tap < tapCount; ++tap)
+				// An eighth block covers a whole bicubic run of 1-float pixels
+				if constexpr (floatsPerPixel == 1)
 				{
-					const Floats4 weight = broadcastFloats4(weights[tap]);
-					accumA = mulAdd(loadFloats4(srcPixelA + tap * 4), weight, accumA);
-					if constexpr (Rows == 2)
-						accumB = mulAdd(loadFloats4(srcPixelB + tap * 4), weight, accumB);
+					if (tap + 4 <= tapCount)
+					{
+						const Floats4 w = loadFloats4(weights.data() + tap);
+						accumA = mulAdd(loadFloats4(srcPixelA + tap), w, accumA);
+						if constexpr (Rows == 2)
+							accumB = mulAdd(loadFloats4(srcPixelB + tap), w, accumB);
+
+						tap += 4;
+					}
 				}
 
-				storeTempPixel<Channels>(tempRows[0] + (dx - destBegin) * Channels, accumA);
-				if constexpr (Rows == 2)
-					storeTempPixel<Channels>(tempRows[1] + (dx - destBegin) * Channels, accumB);
+				if constexpr (floatsPerPixel == 4)
+				{
+					for (; tap < tapCount; ++tap)
+					{
+						const Floats4 weight = broadcastFloats4(weights[tap]);
+						accumA = mulAdd(loadFloats4(srcPixelA + tap * 4), weight, accumA);
+						if constexpr (Rows == 2)
+							accumB = mulAdd(loadFloats4(srcPixelB + tap * 4), weight, accumB);
+					}
+
+					storeTempPixel<Channels>(tempRows[0] + (dx - destBegin) * Channels, accumA);
+					if constexpr (Rows == 2)
+						storeTempPixel<Channels>(tempRows[1] + (dx - destBegin) * Channels, accumB);
+				}
+				else
+				{
+					const size_t remainingTaps = tapCount - tap;
+					storeTempPixelWithTaps<floatsPerPixel>(tempRows[0] + (dx - destBegin) * Channels, accumA, srcPixelA + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
+					if constexpr (Rows == 2)
+						storeTempPixelWithTaps<floatsPerPixel>(tempRows[1] + (dx - destBegin) * Channels, accumB, srcPixelB + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
+				}
 			}
 		}
 
-		// Writes one destination row from its y tap window. rowWeights covers both segments in order.
+		// A block's pixels, color capped at alpha, as bytes packed Channels per pixel
 		template <size_t Channels>
+		IMAGE_PROCESSING_SIMD_INLINE void writeBlockBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, [[maybe_unused]] Floats8 values3) noexcept
+		{
+			if constexpr (Channels == 3)
+				writeTwentyFourBytes(dest, values0, values1, values2);
+			else if constexpr (hasAlphaChannel(Channels))
+				writeThirtyTwoBytes(dest, capColorAtAlpha<Channels>(values0), capColorAtAlpha<Channels>(values1), capColorAtAlpha<Channels>(values2), capColorAtAlpha<Channels>(values3));
+			else
+				writeThirtyTwoBytes(dest, values0, values1, values2, values3);
+		}
+
+		// Writes one destination row from its y tap window. rowWeights covers both segments in order.
+		// pixelTail: the bytes past the channels, up to pixelStride, that every dest pixel gets.
+		template <size_t Channels, size_t PixelStride>
 		IMAGE_PROCESSING_SIMD_INLINE void filterVerticalDestRow(
 			const std::array<TempRowSegment, 2>& segments,
 			std::span<const float> rowWeights,
 			size_t tempRowStride,
-			uint8_t pixelTailValue,
+			const uint8_t* pixelTail,
+			size_t pixelStride,
 			uint8_t* destRow,
 			size_t destWidth) noexcept
 		{
-			constexpr size_t pixelsPerBlock = 8;
+			constexpr size_t pixelsPerBlock = verticalBlockPixels(Channels);
+			constexpr size_t blockFloats = pixelsPerBlock * Channels;
 			constexpr size_t elementsPerVector = 8;
 			const size_t blockedPixelCount = destWidth & ~(pixelsPerBlock - 1);
 			[[maybe_unused]] Rgb32PixelTails pixelTails;
-			if constexpr (Channels == 3)
-				pixelTails = rgb32PixelTails(pixelTailValue);
+			if constexpr (Channels == 3 && PixelStride == 4)
+				pixelTails = rgb32PixelTails(pixelTail[0]);
 
 			size_t pixel = 0;
 			for (; pixel < blockedPixelCount; pixel += pixelsPerBlock)
@@ -289,7 +410,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 							accum0 = mulAdd(loadFloats8(source), weightVector, accum0);
 							accum1 = mulAdd(loadFloats8(source + elementsPerVector), weightVector, accum1);
 							accum2 = mulAdd(loadFloats8(source + elementsPerVector * 2), weightVector, accum2);
-							if constexpr (Channels == 4)
+							if constexpr (blockFloats == 32)
 								accum3 = mulAdd(loadFloats8(source + elementsPerVector * 3), weightVector, accum3);
 						}
 
@@ -297,10 +418,22 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					}
 				}
 
-				if constexpr (Channels == 3)
-					writeEightRgb32Pixels(destRow + pixel * 4, accum0, accum1, accum2, pixelTails);
+				uint8_t* const blockDest = destRow + pixel * pixelStride;
+				if constexpr (Channels == 3 && PixelStride == 4)
+					writeEightRgb32Pixels(blockDest, accum0, accum1, accum2, pixelTails);
+				else if constexpr (PixelStride == Channels)
+					writeBlockBytes<Channels>(blockDest, accum0, accum1, accum2, accum3);
 				else
-					writeEightRgbaPixels(destRow + pixel * 4, accum0, accum1, accum2, accum3);
+				{
+					alignas(16) uint8_t blockBytes[blockFloats];
+					writeBlockBytes<Channels>(blockBytes, accum0, accum1, accum2, accum3);
+					for (size_t blockPixel = 0; blockPixel < pixelsPerBlock; ++blockPixel)
+					{
+						uint8_t* const destPixel = blockDest + blockPixel * pixelStride;
+						::memcpy(destPixel, blockBytes + blockPixel * Channels, Channels);
+						::memcpy(destPixel + Channels, pixelTail, pixelStride - Channels);
+					}
+				}
 			}
 
 			for (; pixel < destWidth; ++pixel)
@@ -323,11 +456,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					}
 				}
 
-				uint8_t* destPixel = destRow + pixel * 4;
+				uint8_t* const destPixel = destRow + pixel * pixelStride;
 				writePixelBytes(destPixel, accum.data(), Channels);
-
-				if constexpr (Channels == 3)
-					destPixel[3] = pixelTailValue;
+				if constexpr (PixelStride != Channels)
+					::memcpy(destPixel + Channels, pixelTail, pixelStride - Channels);
 			}
 		}
 	}
@@ -336,35 +468,43 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 	// The ring is also what lets the pair write two store streams safely: into cold full-size temp, the interleaved streams
 	// defeat the prefetch that hides each line's ownership read (measured ~1.2 cycles per temp byte, and software prefetch
 	// does not recover it) - the ring is rewritten every few rows and stays cache-owned.
-	template <size_t Channels>
-	IMAGE_PROCESSING_SIMD_TARGET void resizeRows4BytePixels(
+	template <size_t Channels, size_t PixelStride>
+	IMAGE_PROCESSING_SIMD_TARGET void resizeRows(
 		const ImageView<true>& source,
 		Rect srcRect,
 		ImageView<false>& dest,
 		const AxisWeights& xWeights,
 		const AxisWeights& yWeights,
 		size_t stripWidth,
-		uint8_t pixelTailValue,
 		uint64_t destRowBegin,
 		uint64_t destRowEnd)
 	{
-		static_assert(Channels == 3 || Channels == 4);
+		static_assert(Channels >= 1 && Channels <= 4);
 		assert(destRowBegin < destRowEnd);
+		assert(PixelStride == 0 || PixelStride == source.pixelStrideBytes);
 
+		using SourceRowPair = SlidingSourceFloats<Channels, PixelStride, 2>;
+		using SourceRow = SlidingSourceFloats<Channels, PixelStride, 1>;
+		constexpr size_t floatsPerPixel = SourceRowPair::floatsPerPixel;
+
+		const size_t pixelStride = PixelStride != 0 ? PixelStride : source.pixelStrideBytes;
 		const size_t destWidth = static_cast<size_t>(dest.width);
 		const size_t tempRowStride = stripWidth * Channels;
 
 		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2 };
 
-		const size_t sourceFloatsCapacity = SlidingSourceFloats<2>::capacityFor(xWeights.longestRun());
-		const auto sourceFloats = std::make_unique_for_overwrite<float[]>(2 * sourceFloatsCapacity * 4);
+		const size_t sourceFloatsCapacity = SourceRowPair::capacityFor(xWeights.longestRun());
+		const auto sourceFloats = std::make_unique_for_overwrite<float[]>(2 * sourceFloatsCapacity * floatsPerPixel);
 		float* const sourceFloatsA = sourceFloats.get();
-		float* const sourceFloatsB = sourceFloatsA + sourceFloatsCapacity * 4;
-		const auto sourcePixels = [&source, srcRect](uint64_t srcRow) noexcept
+		float* const sourceFloatsB = sourceFloatsA + sourceFloatsCapacity * floatsPerPixel;
+		const uint64_t firstPixelOffset = srcRect.left * pixelStride;
+		const auto sourcePixels = [&source, srcRect, firstPixelOffset](uint64_t srcRow) noexcept
 		{
-			return source.scanLine<uint8_t>(srcRect.top + srcRow) + srcRect.left * 4;
+			return source.scanLine<uint8_t>(srcRect.top + srcRow) + firstPixelOffset;
 		};
 		const bool premultiplyAlpha = hasStraightAlpha(source);
+		// Every dest pixel copies its bytes past the channels from the first source pixel
+		const uint8_t* const pixelTail = sourcePixels(0) + Channels;
 
 		for (size_t stripBegin = 0; stripBegin < destWidth; stripBegin += stripWidth)
 		{
@@ -383,29 +523,41 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				{
 					if (produced + 2 <= srcRect.h)
 					{
-						SlidingSourceFloats<2> sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, spanEnd, premultiplyAlpha };
+						SourceRowPair sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, spanEnd, pixelStride, premultiplyAlpha };
 						float* const tempRows[2] = { ring.row(produced), ring.row(produced + 1) };
-						filterHorizontalRowGroup<Channels>(sourceRows, tempRows, stripBegin, stripEnd, xWeights);
+						filterHorizontalRowGroup(sourceRows, tempRows, stripBegin, stripEnd, xWeights);
 						produced += 2;
 					}
 					else
 					{
-						SlidingSourceFloats<1> sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, spanEnd, premultiplyAlpha };
+						SourceRow sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, spanEnd, pixelStride, premultiplyAlpha };
 						float* const tempRows[1] = { ring.row(produced) };
-						filterHorizontalRowGroup<Channels>(sourceRow, tempRows, stripBegin, stripEnd, xWeights);
+						filterHorizontalRowGroup(sourceRow, tempRows, stripBegin, stripEnd, xWeights);
 						++produced;
 					}
 				}
 
 				assert(produced - firstWindowRow <= ring.rowCapacity());
-				uint8_t* const stripDest = dest.scanLine<uint8_t>(dy) + stripBegin * 4;
-				filterVerticalDestRow<Channels>(ring.window(firstWindowRow, rowWeights.size()), rowWeights, tempRowStride, pixelTailValue, stripDest, stripEnd - stripBegin);
+				uint8_t* const stripDest = dest.scanLine<uint8_t>(dy) + stripBegin * pixelStride;
+				filterVerticalDestRow<Channels, PixelStride>(ring.window(firstWindowRow, rowWeights.size()), rowWeights, tempRowStride, pixelTail, pixelStride, stripDest, stripEnd - stripBegin);
 			}
 		}
 
 		leaveKernel();
 	}
 
-	template void resizeRows4BytePixels<3>(const ImageView<true>&, Rect, ImageView<false>&, const AxisWeights&, const AxisWeights&, size_t, uint8_t, uint64_t, uint64_t);
-	template void resizeRows4BytePixels<4>(const ImageView<true>&, Rect, ImageView<false>&, const AxisWeights&, const AxisWeights&, size_t, uint8_t, uint64_t, uint64_t);
+#define IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(Channels, PixelStride) \
+	template void resizeRows<Channels, PixelStride>(const ImageView<true>&, Rect, ImageView<false>&, const AxisWeights&, const AxisWeights&, size_t, uint64_t, uint64_t);
+
+	IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(1, 1)
+	IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(2, 2)
+	IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(3, 3)
+	IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(3, 4)
+	IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(4, 4)
+	IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(1, 0)
+	IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(2, 0)
+	IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(3, 0)
+	IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(4, 0)
+
+#undef IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS
 }

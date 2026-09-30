@@ -12,7 +12,6 @@
 #include <bit>
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
 // The loadu/storeu intrinsics take unaligned memory through __m128i pointers
 DISABLE_CLANG_GCC_WARNING("-Wcast-align")
@@ -74,48 +73,91 @@ namespace ImageProcessing::Detail::Sse41
 	// The sum of the first 4 floats and the last 4
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 sumHalves(Floats8 values) noexcept { return _mm_add_ps(values.low, values.high); }
 
+	// Sums a Floats4's 4 / FloatsPerPixel pixels into its first FloatsPerPixel lanes
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 sumPixels(Floats4 pixels) noexcept
+	{
+		static_assert(FloatsPerPixel == 1 || FloatsPerPixel == 2);
+		const __m128 pairSums = _mm_add_ps(pixels, _mm_movehl_ps(pixels, pixels));
+		if constexpr (FloatsPerPixel == 2)
+			return pairSums;
+		else
+			return _mm_add_ss(pairSums, _mm_shuffle_ps(pairSums, pairSums, _MM_SHUFFLE(1, 1, 1, 1)));
+	}
+
 	IMAGE_PROCESSING_SIMD_INLINE WeightBlock loadWeightBlock(const float* weights) noexcept { return loadFloats8(weights); }
 
-	// Turns a WeightBlock into the pair broadcast [w(2 * Pair) x4 | w(2 * Pair + 1) x4] a pixel pair needs
-	class WeightPairSpreader
+	// Turns a WeightBlock into the weights of taps [Part * 8 / FloatsPerPixel, (Part + 1) * 8 / FloatsPerPixel), each repeated for its pixel's floats
+	template <size_t FloatsPerPixel>
+	class WeightSpreader
 	{
 	public:
-		template <size_t Pair>
+		template <size_t Part>
 		IMAGE_PROCESSING_SIMD_INLINE Floats8 spread(WeightBlock weights) const noexcept
 		{
-			static_assert(Pair < 4);
-			const __m128 fourWeights = Pair < 2 ? weights.low : weights.high;
-			constexpr int firstLane = (Pair % 2) * 2;
-			return { _mm_shuffle_ps(fourWeights, fourWeights, firstLane * 0x55), _mm_shuffle_ps(fourWeights, fourWeights, (firstLane + 1) * 0x55) };
+			static_assert(Part < FloatsPerPixel);
+			if constexpr (FloatsPerPixel == 4)
+			{
+				const __m128 fourWeights = Part < 2 ? weights.low : weights.high;
+				constexpr int firstLane = (Part % 2) * 2;
+				return { _mm_shuffle_ps(fourWeights, fourWeights, firstLane * 0x55), _mm_shuffle_ps(fourWeights, fourWeights, (firstLane + 1) * 0x55) };
+			}
+			else if constexpr (FloatsPerPixel == 2)
+			{
+				const __m128 fourWeights = Part == 0 ? weights.low : weights.high;
+				return { _mm_unpacklo_ps(fourWeights, fourWeights), _mm_unpackhi_ps(fourWeights, fourWeights) };
+			}
+			else
+				return weights;
 		}
 	};
 
-	IMAGE_PROCESSING_SIMD_INLINE Floats4 loadPixelAsFloats(const uint8_t* pixel) noexcept
+	// 16 bytes as 16 floats: the first 8 go to first
+	IMAGE_PROCESSING_SIMD_INLINE void sixteenBytesAsFloats(__m128i bytes, Floats8& first, Floats8& second) noexcept
 	{
-		int32_t packedPixel;
-		::memcpy(&packedPixel, pixel, sizeof(packedPixel));
-		return _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_cvtsi32_si128(packedPixel)));
+		first = { _mm_cvtepi32_ps(_mm_cvtepu8_epi32(bytes)), _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_srli_si128(bytes, 4))) };
+		second = { _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_srli_si128(bytes, 8))), _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_srli_si128(bytes, 12))) };
 	}
 
-	// Pixels 0 and 1 of the 4 go to pixels01, 2 and 3 to pixels23
-	IMAGE_PROCESSING_SIMD_INLINE void loadFourPixelsAsFloats(const uint8_t* pixels, Floats8& pixels01, Floats8& pixels23) noexcept
+	IMAGE_PROCESSING_SIMD_INLINE void loadSixteenBytesAsFloats(const uint8_t* bytes, Floats8& first, Floats8& second) noexcept
 	{
-		const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels));
-		pixels01 = { _mm_cvtepi32_ps(_mm_cvtepu8_epi32(bytes)), _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_srli_si128(bytes, 4))) };
-		pixels23 = { _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_srli_si128(bytes, 8))), _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_srli_si128(bytes, 12))) };
+		sixteenBytesAsFloats(_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes)), first, second);
 	}
 
-	// Color times alpha / 255; the alpha lane keeps the source value
-	IMAGE_PROCESSING_SIMD_INLINE Floats4 premultiplyPixel(Floats4 pixel) noexcept
+	// 4 RGB pixels as 4 floats each, the 4th 0: pixels 0 and 1 go to pixels01. Reads 16 bytes, 4 past the pixels.
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourRgbPixelsAsFloats(const uint8_t* pixels, Floats8& pixels01, Floats8& pixels23) noexcept
 	{
-		const __m128 alpha = _mm_shuffle_ps(pixel, pixel, _MM_SHUFFLE(3, 3, 3, 3));
-		const __m128 premultiplied = _mm_mul_ps(pixel, _mm_mul_ps(alpha, _mm_set1_ps(1.0f / 255.0f)));
-		return _mm_blend_ps(premultiplied, pixel, 0x8);
+		const __m128i rgbToRgb0 = _mm_setr_epi8(
+			0, 1, 2, -1,
+			3, 4, 5, -1,
+			6, 7, 8, -1,
+			9, 10, 11, -1);
+		sixteenBytesAsFloats(_mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels)), rgbToRgb0), pixels01, pixels23);
 	}
 
-	IMAGE_PROCESSING_SIMD_INLINE Floats8 premultiplyTwoPixels(Floats8 twoPixels) noexcept
+	// Each pixel's alpha, the last of its FloatsPerPixel floats, in all of its lanes
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE __m128 pixelAlphas(__m128 pixels) noexcept
 	{
-		return { premultiplyPixel(twoPixels.low), premultiplyPixel(twoPixels.high) };
+		static_assert(FloatsPerPixel == 2 || FloatsPerPixel == 4);
+		if constexpr (FloatsPerPixel == 4)
+			return _mm_shuffle_ps(pixels, pixels, _MM_SHUFFLE(3, 3, 3, 3));
+		else
+			return _mm_movehdup_ps(pixels);
+	}
+
+	// Color times alpha / 255; the alpha lanes keep the source value
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE __m128 premultiplyPixels(__m128 pixels) noexcept
+	{
+		const __m128 premultiplied = _mm_mul_ps(pixels, _mm_mul_ps(pixelAlphas<FloatsPerPixel>(pixels), _mm_set1_ps(1.0f / 255.0f)));
+		return _mm_blend_ps(premultiplied, pixels, FloatsPerPixel == 4 ? 0x8 : 0xA);
+	}
+
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 premultiplyPixels(Floats8 pixels) noexcept
+	{
+		return { premultiplyPixels<FloatsPerPixel>(pixels.low), premultiplyPixels<FloatsPerPixel>(pixels.high) };
 	}
 
 	IMAGE_PROCESSING_SIMD_INLINE __m128i roundFourFloatsToInts(__m128 values) noexcept
@@ -136,21 +178,24 @@ namespace ImageProcessing::Detail::Sse41
 		return _mm_packus_epi16(packEightFloatsToWords(first), packEightFloatsToWords(second));
 	}
 
-	// Color is capped at alpha: the scalar path's writePixelBytes caps it too
-	IMAGE_PROCESSING_SIMD_INLINE __m128 capColorAtAlpha(__m128 pixel) noexcept
+	// Color is capped at alpha: writePixelBytes caps it too
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 capColorAtAlpha(Floats8 pixels) noexcept
 	{
-		return _mm_min_ps(pixel, _mm_shuffle_ps(pixel, pixel, _MM_SHUFFLE(3, 3, 3, 3)));
+		return { _mm_min_ps(pixels.low, pixelAlphas<FloatsPerPixel>(pixels.low)), _mm_min_ps(pixels.high, pixelAlphas<FloatsPerPixel>(pixels.high)) };
 	}
 
-	IMAGE_PROCESSING_SIMD_INLINE Floats8 capColorAtAlpha(Floats8 twoPixels) noexcept
+	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
 	{
-		return { capColorAtAlpha(twoPixels.low), capColorAtAlpha(twoPixels.high) };
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(values0, values1));
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest + 16), packSixteenFloatsToBytes(values2, values3));
 	}
 
-	IMAGE_PROCESSING_SIMD_INLINE void writeEightRgbaPixels(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
+	IMAGE_PROCESSING_SIMD_INLINE void writeTwentyFourBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2) noexcept
 	{
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(capColorAtAlpha(values0), capColorAtAlpha(values1)));
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest + 16), packSixteenFloatsToBytes(capColorAtAlpha(values2), capColorAtAlpha(values3)));
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(values0, values1));
+		const __m128i lastWords = packEightFloatsToWords(values2);
+		_mm_storel_epi64(reinterpret_cast<__m128i*>(dest + 16), _mm_packus_epi16(lastWords, lastWords));
 	}
 
 	IMAGE_PROCESSING_SIMD_INLINE Rgb32PixelTails rgb32PixelTails(uint8_t tailValue) noexcept

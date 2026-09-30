@@ -9,7 +9,6 @@
 #include <cmath>
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
 #define IMAGE_PROCESSING_SIMD_TARGET
 #define IMAGE_PROCESSING_SIMD_INLINE IMAGE_PROCESSING_NEON_INLINE
@@ -67,50 +66,98 @@ namespace ImageProcessing::Detail::Neon
 	// The sum of the first 4 floats and the last 4
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 sumHalves(Floats8 values) noexcept { return vaddq_f32(values.low, values.high); }
 
+	// Sums a Floats4's 4 / FloatsPerPixel pixels into its first FloatsPerPixel lanes
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 sumPixels(Floats4 pixels) noexcept
+	{
+		static_assert(FloatsPerPixel == 1 || FloatsPerPixel == 2);
+		const float32x2_t pairSums = vadd_f32(vget_low_f32(pixels), vget_high_f32(pixels));
+		if constexpr (FloatsPerPixel == 2)
+			return vcombine_f32(pairSums, pairSums);
+		else
+			return vdupq_n_f32(vget_lane_f32(vpadd_f32(pairSums, pairSums), 0));
+	}
+
 	IMAGE_PROCESSING_SIMD_INLINE WeightBlock loadWeightBlock(const float* weights) noexcept { return loadFloats8(weights); }
 
-	// Turns a WeightBlock into the pair broadcast [w(2 * Pair) x4 | w(2 * Pair + 1) x4] a pixel pair needs
-	class WeightPairSpreader
+	// Turns a WeightBlock into the weights of taps [Part * 8 / FloatsPerPixel, (Part + 1) * 8 / FloatsPerPixel), each repeated for its pixel's floats
+	template <size_t FloatsPerPixel>
+	class WeightSpreader
 	{
 	public:
-		template <size_t Pair>
+		template <size_t Part>
 		IMAGE_PROCESSING_SIMD_INLINE Floats8 spread(WeightBlock weights) const noexcept
 		{
-			static_assert(Pair < 4);
-			const float32x4_t fourWeights = Pair < 2 ? weights.low : weights.high;
-			constexpr int firstLane = (Pair % 2) * 2;
-			return { vdupq_laneq_f32(fourWeights, firstLane), vdupq_laneq_f32(fourWeights, firstLane + 1) };
+			static_assert(Part < FloatsPerPixel);
+			if constexpr (FloatsPerPixel == 4)
+			{
+				const float32x4_t fourWeights = Part < 2 ? weights.low : weights.high;
+				constexpr int firstLane = (Part % 2) * 2;
+				return { vdupq_laneq_f32(fourWeights, firstLane), vdupq_laneq_f32(fourWeights, firstLane + 1) };
+			}
+			else if constexpr (FloatsPerPixel == 2)
+			{
+				const float32x4_t fourWeights = Part == 0 ? weights.low : weights.high;
+				return { vzip1q_f32(fourWeights, fourWeights), vzip2q_f32(fourWeights, fourWeights) };
+			}
+			else
+				return weights;
 		}
 	};
 
-	IMAGE_PROCESSING_SIMD_INLINE Floats4 loadPixelAsFloats(const uint8_t* pixel) noexcept
+	// 16 bytes as 16 floats: the first 8 go to first
+	IMAGE_PROCESSING_SIMD_INLINE void sixteenBytesAsFloats(uint8x16_t bytes, Floats8& first, Floats8& second) noexcept
 	{
-		uint32_t packedPixel;
-		::memcpy(&packedPixel, pixel, sizeof(packedPixel));
-		const uint16x8_t words = vmovl_u8(vreinterpret_u8_u32(vdup_n_u32(packedPixel)));
-		return vcvtq_f32_u32(vmovl_u16(vget_low_u16(words)));
+		const uint16x8_t firstWords = vmovl_u8(vget_low_u8(bytes));
+		const uint16x8_t secondWords = vmovl_high_u8(bytes);
+		first = { vcvtq_f32_u32(vmovl_u16(vget_low_u16(firstWords))), vcvtq_f32_u32(vmovl_high_u16(firstWords)) };
+		second = { vcvtq_f32_u32(vmovl_u16(vget_low_u16(secondWords))), vcvtq_f32_u32(vmovl_high_u16(secondWords)) };
 	}
 
-	// Pixels 0 and 1 of the 4 go to pixels01, 2 and 3 to pixels23
-	IMAGE_PROCESSING_SIMD_INLINE void loadFourPixelsAsFloats(const uint8_t* pixels, Floats8& pixels01, Floats8& pixels23) noexcept
+	IMAGE_PROCESSING_SIMD_INLINE void loadSixteenBytesAsFloats(const uint8_t* bytes, Floats8& first, Floats8& second) noexcept
 	{
-		const uint8x16_t bytes = vld1q_u8(pixels);
-		const uint16x8_t words01 = vmovl_u8(vget_low_u8(bytes));
-		const uint16x8_t words23 = vmovl_high_u8(bytes);
-		pixels01 = { vcvtq_f32_u32(vmovl_u16(vget_low_u16(words01))), vcvtq_f32_u32(vmovl_high_u16(words01)) };
-		pixels23 = { vcvtq_f32_u32(vmovl_u16(vget_low_u16(words23))), vcvtq_f32_u32(vmovl_high_u16(words23)) };
+		sixteenBytesAsFloats(vld1q_u8(bytes), first, second);
 	}
 
-	// Color times alpha / 255; the alpha lane keeps the source value
-	IMAGE_PROCESSING_SIMD_INLINE Floats4 premultiplyPixel(Floats4 pixel) noexcept
+	// 4 RGB pixels as 4 floats each, the 4th 0: pixels 0 and 1 go to pixels01. Reads 16 bytes, 4 past the pixels.
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourRgbPixelsAsFloats(const uint8_t* pixels, Floats8& pixels01, Floats8& pixels23) noexcept
 	{
-		const float32x4_t premultiplied = vmulq_f32(pixel, vmulq_f32(vdupq_laneq_f32(pixel, 3), vdupq_n_f32(1.0f / 255.0f)));
-		return vcopyq_laneq_f32(premultiplied, 3, pixel, 3);
+		// An out-of-range index reads as 0
+		static constexpr uint8_t rgbToRgb0Indices[16] = {
+			0, 1, 2, 0xFF,
+			3, 4, 5, 0xFF,
+			6, 7, 8, 0xFF,
+			9, 10, 11, 0xFF };
+		sixteenBytesAsFloats(vqtbl1q_u8(vld1q_u8(pixels), vld1q_u8(rgbToRgb0Indices)), pixels01, pixels23);
 	}
 
-	IMAGE_PROCESSING_SIMD_INLINE Floats8 premultiplyTwoPixels(Floats8 twoPixels) noexcept
+	// Each pixel's alpha, the last of its FloatsPerPixel floats, in all of its lanes
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE float32x4_t pixelAlphas(float32x4_t pixels) noexcept
 	{
-		return { premultiplyPixel(twoPixels.low), premultiplyPixel(twoPixels.high) };
+		static_assert(FloatsPerPixel == 2 || FloatsPerPixel == 4);
+		if constexpr (FloatsPerPixel == 4)
+			return vdupq_laneq_f32(pixels, 3);
+		else
+			return vtrn2q_f32(pixels, pixels);
+	}
+
+	// Color times alpha / 255; the alpha lanes keep the source value
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE float32x4_t premultiplyPixels(float32x4_t pixels) noexcept
+	{
+		const float32x4_t alphas = pixelAlphas<FloatsPerPixel>(pixels);
+		const float32x4_t premultiplied = vmulq_f32(pixels, vmulq_f32(alphas, vdupq_n_f32(1.0f / 255.0f)));
+		if constexpr (FloatsPerPixel == 4)
+			return vcopyq_laneq_f32(premultiplied, 3, pixels, 3);
+		else
+			return vtrn1q_f32(premultiplied, alphas); // Lanes 0 and 2 of alphas are the source's lanes 1 and 3
+	}
+
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 premultiplyPixels(Floats8 pixels) noexcept
+	{
+		return { premultiplyPixels<FloatsPerPixel>(pixels.low), premultiplyPixels<FloatsPerPixel>(pixels.high) };
 	}
 
 	// Rounds 4 floats to 4 words: truncation after adding 0.5, and saturation, as the AVX2 pack does
@@ -130,21 +177,23 @@ namespace ImageProcessing::Detail::Neon
 		return vcombine_u8(vqmovn_u16(packEightFloatsToWords(first)), vqmovn_u16(packEightFloatsToWords(second)));
 	}
 
-	// Color is capped at alpha: the scalar path's writePixelBytes caps it too
-	IMAGE_PROCESSING_SIMD_INLINE float32x4_t capColorAtAlpha(float32x4_t pixel) noexcept
+	// Color is capped at alpha: writePixelBytes caps it too
+	template <size_t FloatsPerPixel>
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 capColorAtAlpha(Floats8 pixels) noexcept
 	{
-		return vminq_f32(pixel, vdupq_laneq_f32(pixel, 3));
+		return { vminq_f32(pixels.low, pixelAlphas<FloatsPerPixel>(pixels.low)), vminq_f32(pixels.high, pixelAlphas<FloatsPerPixel>(pixels.high)) };
 	}
 
-	IMAGE_PROCESSING_SIMD_INLINE Floats8 capColorAtAlpha(Floats8 twoPixels) noexcept
+	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
 	{
-		return { capColorAtAlpha(twoPixels.low), capColorAtAlpha(twoPixels.high) };
+		vst1q_u8(dest, packSixteenFloatsToBytes(values0, values1));
+		vst1q_u8(dest + 16, packSixteenFloatsToBytes(values2, values3));
 	}
 
-	IMAGE_PROCESSING_SIMD_INLINE void writeEightRgbaPixels(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
+	IMAGE_PROCESSING_SIMD_INLINE void writeTwentyFourBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2) noexcept
 	{
-		vst1q_u8(dest, packSixteenFloatsToBytes(capColorAtAlpha(values0), capColorAtAlpha(values1)));
-		vst1q_u8(dest + 16, packSixteenFloatsToBytes(capColorAtAlpha(values2), capColorAtAlpha(values3)));
+		vst1q_u8(dest, packSixteenFloatsToBytes(values0, values1));
+		vst1_u8(dest + 16, vqmovn_u16(packEightFloatsToWords(values2)));
 	}
 
 	IMAGE_PROCESSING_SIMD_INLINE Rgb32PixelTails rgb32PixelTails(uint8_t tailValue) noexcept

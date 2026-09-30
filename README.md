@@ -8,12 +8,12 @@ Image resizer with hand-optimized SIMD kernels for x64 and ARM64
 - Takes 1-4 channels of 8 bits, with any pixel stride and row stride, and an optional source rectangle.
 - 2- and 4-channel images carry alpha as the last channel. The output is premultiplied; a straight-alpha source is
   premultiplied as it is read.
-- SIMD kernel for 4-byte pixels: one outline, `resize/cimageresizer_simd.inl`, compiled per instruction set against that set's
-  `simd_primitives_*.h` by a `cimageresizer_simd_*.cpp`.
+- SIMD kernels for every pixel layout: one outline, `resize/cimageresizer_simd.inl`, compiled per instruction set against that
+  set's `simd_primitives_*.h` by a `cimageresizer_simd_*.cpp`.
   - x64: AVX2 + FMA where the CPU has them, SSE4.1 otherwise, chosen at runtime. Below SSE4.1, `resize()` refuses to run.
   - ARM64: NEON.
   - Other architectures are not supported.
-- Other pixel layouts take a scalar path.
+  - Tight packing and RGB32 read and write whole vectors; other pixel strides convert and store pixel by pixel.
 - Multithreaded through a caller-supplied `ParallelForFn`.
 - The core is Qt-free. `resize/qimage_resize.h` is a header-only bridge for `QImage`.
 

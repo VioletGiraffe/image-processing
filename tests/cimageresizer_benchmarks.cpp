@@ -138,10 +138,10 @@ namespace
 			qImageFormat);
 		REQUIRE(!qImageSource.isNull());
 
-		// An SSE4.1 run only where the default one takes the AVX2 kernels: 4-byte layouts, scaled, on an AVX2 CPU.
+		// An SSE4.1 run only where the default one takes the AVX2 kernels: scaled, on an AVX2 CPU.
 		// report_benchmark_ratios.py matches an SSE4.1 run to its default run by the scenario name.
 		std::vector<std::optional<SimdLevel>> simdCaps{ std::nullopt };
-		if (supportedSimdLevels().size() > 1 && pixelStrideBytes == 4 && channels >= 3 && (sourceWidth != destWidth || sourceHeight != destHeight))
+		if (supportedSimdLevels().size() > 1 && (sourceWidth != destWidth || sourceHeight != destHeight))
 			simdCaps.push_back(SimdLevel::Sse41);
 
 		const auto resizerName = [name](std::optional<SimdLevel> simdCap) {
