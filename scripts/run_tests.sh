@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Builds the tests with qmake and runs them, or with --benchmark runs the benchmarks instead and prints the ratio report.
 # Exit code: non-zero on a build or test failure.
