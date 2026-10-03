@@ -26,10 +26,9 @@ OTHER_FILES += $$PWD/cimageresizer_simd.inl
 # because the VS project generator emits fully expanded command lines and has no makefile macros.
 # The linker keeps one copy of each inline function, possibly this object's AVX2 one: CI runs the tests on an emulated CPU without AVX2 to catch it executing.
 *msvc*:!contains(QMAKE_COMPILER, clang_cl) {
-	# Keeps jumps off 32-byte boundaries: without it the short upscale loops run 5-10% slower on Alder Lake at some code placements
-	QMAKE_CXXFLAGS += /QIntel-jcc-erratum
-
-	AVX2_CXXFLAGS = $$QMAKE_CXXFLAGS /arch:AVX2
+	# /QIntel-jcc-erratum keeps jumps off 32-byte boundaries: without it the short upscale loops run 5-10% slower on Alder Lake at some code placements.
+	# Not applied to the SSE4.1 kernels: it costs them 17-35% on Gracemont.
+	AVX2_CXXFLAGS = $$QMAKE_CXXFLAGS /arch:AVX2 /QIntel-jcc-erratum
 	CONFIG(debug, debug|release): AVX2_CXXFLAGS += $$QMAKE_CXXFLAGS_DEBUG
 	else: AVX2_CXXFLAGS += $$QMAKE_CXXFLAGS_RELEASE
 	AVX2_CXXFLAGS += $$QMAKE_CXXFLAGS_WARN_ON $$QMAKE_CXXFLAGS_EXCEPTIONS_ON $$QMAKE_CXXFLAGS_RTTI_ON

@@ -350,8 +350,9 @@ step, run lengths 4, 1, 4), shows 7-28% between placements. VTune on it, per ite
 - Mispredictions and legacy-decoder micro-ops: none. The loop stream detector delivers nothing.
 - Cycles in which the micro-op cache delivers a partial group: 1.4-1.9 against 3.6-4.0.
 
-`/QIntel-jcc-erratum` pads so that no jump crosses or ends on a 32-byte boundary. PC, MSVC, median ms of six rounds;
-the plain build at its two placements against eight padded builds with the switch:
+`/QIntel-jcc-erratum` pads so that no jump crosses or ends on a 32-byte boundary. Only the AVX2 source is compiled with
+it. The measurements below are of 14e731e, which applied it to both levels. PC, MSVC, median ms of six rounds; the plain
+build at its two placements against eight padded builds with the switch:
 
 | Scenario | Plain, slow | Plain, fast | With the switch |
 |---|---:|---:|---|
@@ -360,12 +361,15 @@ the plain build at its two placements against eight padded builds with the switc
 | SSE4.1 720p -> 4K Grayscale8 | 9.32 | 8.32 | 8.28 - 8.89 |
 
 - Downscales with the switch: within -3% to 0% of the plain build.
-- The switch reaches both kernel levels through the compile flags, the link-time-generated one included: conditional
-  jumps crossing or ending on a 32-byte boundary went from 135 and 152 in the nine kernels per level to 1 each.
+- Conditional jumps crossing or ending on a 32-byte boundary went from 135 and 152 in the nine kernels per level to 1 each.
+  The link-time-generated level takes the switch from the compile flags too.
 - The same reduced loop under clang-cl 22 runs within 1% at every placement.
 - EPYC 7763 (CI, same toolset as the PC), 03113a6 -> 14e731e, three runs each: AVX2 rows within 1%. SSE4.1 RGB32 upscales
   slower in every run: 720p -> 4K 22.8-23.4 -> 26.6-28.1 ms, 1080p -> 1440p 16.2-17.5 -> 19.0-19.3 ms. The same two rows
   on the PC: within 1.5% with and without the switch. The other SSE4.1 upscales on the EPYC: within 4%.
+- The PC's E-cores (Gracemont), MSVC, 03113a6 -> 14e731e, minimum of two rounds: AVX2 rows within noise. SSE4.1 RGB32
+  downscales slower: 101 MP -> 720p 314 -> 415 ms, 4K -> 64x64 22.4 -> 30.2, 4K -> 1080p 42.4 -> 49.5, 24 MP -> 1080p 95 -> 111.
+  Cause not investigated. With the switch on the AVX2 source alone: 311, 22.1, 40.7, 92.5.
 
 ### Column strips (b9fea7e)
 
@@ -510,6 +514,9 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
    chains at this level are the candidates, to be judged on the Celeron N4100.
 5. **Strips cost where the L2 is large:** 1-5% on Neoverse-N2's SIMD rows, 3-8% on the PC's downscales (the column strips
    section). A budget from the runtime L2 share would skip strips there.
-6. **Placement still moves MSVC's upscale rows about 5%** with `/QIntel-jcc-erratum`, 7.5% on SSE4.1 Grayscale8. Which loop
-   of the upscale path reacts is unidentified: padding at the kernel's start shifts them all together. MSVC has no loop
-   alignment control; clang-cl's code for the reduced loop does not react.
+6. **Placement still moves MSVC's AVX2 upscale rows about 5%** with `/QIntel-jcc-erratum`, and the SSE4.1 ones, built
+   without it, up to 12-14%. Which loop of the upscale path reacts is unidentified: padding at the kernel's start shifts
+   them all together. MSVC has no loop alignment control; clang-cl's code for the reduced loop does not react.
+7. **`/QIntel-jcc-erratum` on the SSE4.1 level is untested where that level runs:** it cost RGB32 upscales 13-17% on the
+   EPYC 7763 and RGB32 downscales 17-35% on the PC's E-cores, and nothing on its P-cores (the section on jumps and 32-byte
+   boundaries). To be measured on the Celeron N4100 and a Sandy Bridge.
