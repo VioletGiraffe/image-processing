@@ -126,74 +126,78 @@ namespace
 		QImage::Format qImageFormat,
 		CThreadPool* threadPool = nullptr)
 	{
-		BenchmarkImage source(sourceWidth, sourceHeight, channels, pixelStrideBytes);
-		fillPhotoLikeContent(source);
-
-		const auto sourceView = source.constView();
-		const QImage qImageSource(
-			source.data.get(),
-			static_cast<int>(sourceWidth),
-			static_cast<int>(sourceHeight),
-			static_cast<qsizetype>(source.bytesPerLine),
-			qImageFormat);
-		REQUIRE(!qImageSource.isNull());
-
-		// An SSE4.1 run only where the default one takes the AVX2 kernels: scaled, on an AVX2 CPU.
-		// report_benchmark_ratios.py matches an SSE4.1 run to its default run by the scenario name.
-		std::vector<std::optional<SimdLevel>> simdCaps{ std::nullopt };
-		if (supportedSimdLevels().size() > 1 && (sourceWidth != destWidth || sourceHeight != destHeight))
-			simdCaps.push_back(SimdLevel::Sse41);
-
-		const auto resizerName = [name](std::optional<SimdLevel> simdCap) {
-			const std::string levelTag = simdCap ? std::string{ " [" } + ImageProcessing::simdLevelName(*simdCap) + "]" : std::string{};
-			return "CImageResizer" + levelTag + " | " + name;
-		};
-
-		ImageProcessing::ParallelForFn parallelFor;
-		if (threadPool)
+		// A section per scenario: -c "<scenario name>" runs one
+		SECTION(name)
 		{
-			parallelFor = [threadPool](size_t count, const std::function<void(size_t)>& body)
-			{
-				threadPool->parallelFor(count, body);
-			};
-		}
+			BenchmarkImage source(sourceWidth, sourceHeight, channels, pixelStrideBytes);
+			fillPhotoLikeContent(source);
 
-		// The QImage controls allocate their destination inside the timed call with no way to exclude it,
-		// so the resize pays destination allocation and first touch as well to keep the ratios fair.
-		for (const std::optional<SimdLevel> simdCap : simdCaps)
-		{
-			BENCHMARK(resizerName(simdCap) + (threadPool ? " [multithreaded]" : ""))
-			{
-				BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
-				auto destView = dest.mutableView();
-				ImageProcessing::resize(destView, sourceView, {}, parallelFor, ImageProcessing::ResizeKernel::Auto, simdCap);
-				return dest.data[dest.dataSize / 2];
-			};
-		}
+			const auto sourceView = source.constView();
+			const QImage qImageSource(
+				source.data.get(),
+				static_cast<int>(sourceWidth),
+				static_cast<int>(sourceHeight),
+				static_cast<qsizetype>(source.bytesPerLine),
+				qImageFormat);
+			REQUIRE(!qImageSource.isNull());
 
-		// The serial run of the same scenario provides the QImage control; report_benchmark_ratios.py matches it by stripping the suffix
-		if (threadPool)
-			return;
+			// An SSE4.1 run only where the default one takes the AVX2 kernels: scaled, on an AVX2 CPU.
+			// report_benchmark_ratios.py matches an SSE4.1 run to its default run by the scenario name.
+			std::vector<std::optional<SimdLevel>> simdCaps{ std::nullopt };
+			if (supportedSimdLevels().size() > 1 && (sourceWidth != destWidth || sourceHeight != destHeight))
+				simdCaps.push_back(SimdLevel::Sse41);
 
-		if (sourceWidth == destWidth && sourceHeight == destHeight)
-		{
-			BENCHMARK(std::string("QImage::copy | ") + name)
-			{
-				const QImage dest = qImageSource.copy();
-				return dest.constBits()[dest.sizeInBytes() / 2];
+			const auto resizerName = [name](std::optional<SimdLevel> simdCap) {
+				const std::string levelTag = simdCap ? std::string{ " [" } + ImageProcessing::simdLevelName(*simdCap) + "]" : std::string{};
+				return "CImageResizer" + levelTag + " | " + name;
 			};
-		}
-		else
-		{
-			BENCHMARK(std::string("QImage::scaled | ") + name)
+
+			ImageProcessing::ParallelForFn parallelFor;
+			if (threadPool)
 			{
-				const QImage dest = qImageSource.scaled(
-					static_cast<int>(destWidth),
-					static_cast<int>(destHeight),
-					Qt::IgnoreAspectRatio,
-					Qt::SmoothTransformation);
-				return dest.constBits()[dest.sizeInBytes() / 2];
-			};
+				parallelFor = [threadPool](size_t count, const std::function<void(size_t)>& body)
+				{
+					threadPool->parallelFor(count, body);
+				};
+			}
+
+			// The QImage controls allocate their destination inside the timed call with no way to exclude it,
+			// so the resize pays destination allocation and first touch as well to keep the ratios fair.
+			for (const std::optional<SimdLevel> simdCap : simdCaps)
+			{
+				BENCHMARK(resizerName(simdCap) + (threadPool ? " [multithreaded]" : ""))
+				{
+					BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
+					auto destView = dest.mutableView();
+					ImageProcessing::resize(destView, sourceView, {}, parallelFor, ImageProcessing::ResizeKernel::Auto, simdCap);
+					return dest.data[dest.dataSize / 2];
+				};
+			}
+
+			// The serial run of the same scenario provides the QImage control; report_benchmark_ratios.py matches it by stripping the suffix
+			if (threadPool)
+				return;
+
+			if (sourceWidth == destWidth && sourceHeight == destHeight)
+			{
+				BENCHMARK(std::string("QImage::copy | ") + name)
+				{
+					const QImage dest = qImageSource.copy();
+					return dest.constBits()[dest.sizeInBytes() / 2];
+				};
+			}
+			else
+			{
+				BENCHMARK(std::string("QImage::scaled | ") + name)
+				{
+					const QImage dest = qImageSource.scaled(
+						static_cast<int>(destWidth),
+						static_cast<int>(destHeight),
+						Qt::IgnoreAspectRatio,
+						Qt::SmoothTransformation);
+					return dest.constBits()[dest.sizeInBytes() / 2];
+				};
+			}
 		}
 	}
 }

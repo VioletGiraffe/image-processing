@@ -321,6 +321,9 @@ which covers standard library calls that no function attribute of ours can reach
 - clang-cl: `[[clang::always_inline]]` on the block. Inside a template it crashes Clang 18.1.3 and Apple clang 21 (Xcode 26.6)
   in `Sema::CheckAlwaysInlineAttr`; 20.1.8 and 22.1.3 compile it.
 - GCC has no per-block form: the kernel's entry function is `flatten`ed. Clang off Windows takes the same form.
+- `flatten` under GCC on Neoverse-N2 (74b015c, three runs against seven): 24 MP -> 1080p 92.4 -> 78.3 ms, 1080p -> 240p
+  8.00 -> 6.63, 101 MP -> 720p 288 -> 262, level with Clang. 720p -> 4K RGBA32 slower, 22.2 -> 24.1. Other rows within 4%.
+  Under Clang on the same CPU: within 2.5%.
 - `std::min` over an initializer list is a library call under MSVC whatever the attributes: the kernels use the
   two-argument overload.
 
