@@ -39,10 +39,27 @@ namespace ImageProcessing::Detail
 			size_t end;
 		};
 
+		// The array pointers by value: stores in the calling loop may alias the AxisWeights and would force a reload per iteration
+		struct RunLookup
+		{
+			[[nodiscard]] IMAGE_PROCESSING_FORCE_INLINE Run runFor(size_t coordinate) const noexcept
+			{
+				const TapRun& run = runs[coordinate];
+				return { run.firstSource, { weights + run.firstWeight, run.weightCount } };
+			}
+
+			const TapRun* runs;
+			const float* weights;
+		};
+
+		[[nodiscard]] RunLookup runLookup() const noexcept
+		{
+			return { runs.data(), weights.data() };
+		}
+
 		[[nodiscard]] Run runFor(size_t coordinate) const noexcept
 		{
-			const TapRun& run = runs[coordinate];
-			return { run.firstSource, { weights.data() + run.firstWeight, run.weightCount } };
+			return runLookup().runFor(coordinate);
 		}
 
 		// The source indices read by the runs of dest coordinates [destBegin, destEnd)

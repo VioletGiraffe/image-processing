@@ -21,6 +21,12 @@
 #endif
 
 // The *_INLINE macros are forced: the kernels' per-column and per-pixel helpers must not become calls
+#if defined(__GNUC__) || defined(__clang__)
+	#define IMAGE_PROCESSING_FORCE_INLINE inline __attribute__((always_inline))
+#else
+	#define IMAGE_PROCESSING_FORCE_INLINE __forceinline
+#endif
+
 #if IMAGE_PROCESSING_X64 && (defined(__GNUC__) || defined(__clang__))
 	// GCC and Clang allow intrinsics above the baseline only in functions with the matching target
 	#define IMAGE_PROCESSING_AVX2_TARGET __attribute__((target("avx2,fma"), noinline))

@@ -221,16 +221,13 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			// Taps per block of 32 source floats
 			constexpr size_t blockTaps = 32 / floatsPerPixel;
 			const WeightSpreader<floatsPerPixel> weightSpreader{};
-			// Array pointers in locals: the loop's stores may alias xWeights, forcing a reload per pixel
-			const TapRun* const runs = xWeights.runs.data();
-			const float* const allWeights = xWeights.weights.data();
+			const AxisWeights::RunLookup xRunLookup = xWeights.runLookup();
 
 			for (size_t dx = destBegin; dx < destEnd; ++dx)
 			{
-				const TapRun& run = runs[dx];
-				const std::span<const float> weights{ allWeights + run.firstWeight, run.weightCount };
+				const auto [firstPixel, weights] = xRunLookup.runFor(dx);
 				const size_t tapCount = weights.size();
-				const size_t runFloatOffset = source.prepareRun(run.firstSource, tapCount);
+				const size_t runFloatOffset = source.prepareRun(firstPixel, tapCount);
 				const float* srcPixelA = source.floats[0] + runFloatOffset;
 				[[maybe_unused]] const float* srcPixelB = source.floats[Rows - 1] + runFloatOffset;
 
