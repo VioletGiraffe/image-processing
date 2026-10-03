@@ -27,6 +27,19 @@
 	#define IMAGE_PROCESSING_FORCE_INLINE __forceinline
 #endif
 
+// IMAGE_PROCESSING_FORCE_INLINE_CALLS, ahead of a block: forces inlining of the calls written in it, standard library ones included.
+// GCC has no per-block form: IMAGE_PROCESSING_FLATTEN on the kernel's entry function inlines every call in it instead.
+#if defined(__clang__)
+	#define IMAGE_PROCESSING_FORCE_INLINE_CALLS [[clang::always_inline]]
+	#define IMAGE_PROCESSING_FLATTEN
+#elif defined(_MSC_VER)
+	#define IMAGE_PROCESSING_FORCE_INLINE_CALLS [[msvc::forceinline_calls]]
+	#define IMAGE_PROCESSING_FLATTEN
+#else
+	#define IMAGE_PROCESSING_FORCE_INLINE_CALLS
+	#define IMAGE_PROCESSING_FLATTEN __attribute__((flatten))
+#endif
+
 #if IMAGE_PROCESSING_X64 && (defined(__GNUC__) || defined(__clang__))
 	// GCC and Clang allow intrinsics above the baseline only in functions with the matching target
 	#define IMAGE_PROCESSING_AVX2_TARGET __attribute__((target("avx2,fma"), noinline))

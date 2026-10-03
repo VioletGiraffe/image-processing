@@ -134,7 +134,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 				if (end > converted)
 				{
-					const size_t convertedTarget = std::min({ std::max(end, converted + conversionChunk), base + capacity, pixelEnd });
+					// Two-argument min: the initializer-list overload is a library call under MSVC
+					const size_t convertedTarget = std::min(std::min(std::max(end, converted + conversionChunk), base + capacity), pixelEnd);
 					const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
 					for (size_t row = 0; row < Rows; ++row)
 					{
@@ -223,7 +224,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			const WeightSpreader<floatsPerPixel> weightSpreader{};
 			const AxisWeights::RunLookup xRunLookup = xWeights.runLookup();
 
-			for (size_t dx = destBegin; dx < destEnd; ++dx)
+			for (size_t dx = destBegin; dx < destEnd; ++dx) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
 				const auto [firstPixel, weights] = xRunLookup.runFor(dx);
 				const size_t tapCount = weights.size();
@@ -398,7 +399,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				pixelTails = rgb32PixelTails(pixelTail[0]);
 
 			size_t pixel = 0;
-			for (; pixel < blockedPixelCount; pixel += pixelsPerBlock)
+			for (; pixel < blockedPixelCount; pixel += pixelsPerBlock) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
 				Floats8 accum0 = zeroFloats8();
 				Floats8 accum1 = zeroFloats8();
@@ -446,7 +447,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 			}
 
-			for (; pixel < destWidth; ++pixel)
+			for (; pixel < destWidth; ++pixel) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
 				std::array<float, Channels> accum{};
 				const float* weight = rowWeights.data();
@@ -479,7 +480,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 	// defeat the prefetch that hides each line's ownership read (measured ~1.2 cycles per temp byte, and software prefetch
 	// does not recover it) - the ring is rewritten every few rows and stays cache-owned.
 	template <size_t Channels, size_t PixelStride>
-	IMAGE_PROCESSING_SIMD_TARGET void resizeRows(
+	IMAGE_PROCESSING_FLATTEN IMAGE_PROCESSING_SIMD_TARGET void resizeRows(
 		const ImageView<true>& source,
 		Rect srcRect,
 		ImageView<false>& dest,

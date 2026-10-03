@@ -143,14 +143,14 @@ namespace ImageProcessing::Detail
 		return hasAlphaChannel(image.channels) && image.alphaKind == AlphaKind::Straight;
 	}
 
-	[[nodiscard]] inline uint8_t clampToByte(float value) noexcept
+	[[nodiscard]] IMAGE_PROCESSING_FORCE_INLINE uint8_t clampToByte(float value) noexcept
 	{
 		value = std::min(std::max(value, 0.0f), 255.0f);
 		return static_cast<uint8_t>(value + 0.5f);
 	}
 
 	// With alpha, color is capped at alpha: the output is premultiplied, and negative filter lobes can push color past alpha
-	inline void writePixelBytes(uint8_t* destPixel, const float* values, size_t channels) noexcept
+	IMAGE_PROCESSING_FORCE_INLINE void writePixelBytes(uint8_t* destPixel, const float* values, size_t channels) noexcept
 	{
 		if (hasAlphaChannel(channels))
 		{

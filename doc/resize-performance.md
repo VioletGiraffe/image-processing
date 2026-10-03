@@ -17,6 +17,8 @@ the table. Every table names the commit it was measured at: re-measure after cha
   - ubuntu-24.04-arm runner, Clang: about 1%.
   - macos-latest runner: up to 2x, too noisy to read per scenario.
   - A real M1, same-session A/B: about 1%.
+  - An Ubuntu VM on the PC: 10-20% between runs of one binary, whole runs drifting together. Fifteen alternating rounds,
+    read by each build's minimum and by the median of back-to-back pairs, resolve about 3%.
 - A CI comparison needs several samples per side: re-running the old commit's run alongside the new one gives same-time
   pairs. A re-run is a new attempt of the same run, with its own logs.
 - `QT_NO_GUI_THREADPOOL=1` keeps the Qt control serial; `run_tests` sets it.
@@ -34,6 +36,19 @@ the table. Every table names the commit it was measured at: re-measure after cha
 - A CI label's runner CPU varies between runs, and the ratios with it: Qt's SSE code and the AVX2 kernel do not scale
   alike. A job's numbers compare across runs only when the CPU line in its report header names the same model.
 - The report header names the commit, CPU, compiler and cache sizing.
+
+## Reading the generated code
+
+- The release builds use link-time optimization on every compiler, so the object files hold no machine code. Disassemble
+  the executable: `objdump -d -C`, or `dumpbin /disasm` with the PDB next to it.
+- Under MSVC the two kernel levels are generated differently: the SSE4.1 source at link time with the rest of the
+  project, the AVX2 source by its own compile rule. An inlining decision can differ between them.
+- Two builds' kernels compare by instruction sequence with the `nop`s and jump targets removed.
+- A variant build takes its define through the `CL` environment variable, set for the msbuild step only: set before
+  qmake, it breaks qmake's compiler probe. From Git Bash the value starts with `-D`, as a leading `/` is rewritten into a path.
+- VTune's hardware events need an elevated prompt. With about ten events each is counted throughout; the
+  `uarch-exploration` preset rotates some 190, and its totals came out inconsistent. `-report hw-events -group-by function`
+  separates instantiations of one template.
 
 ## Machines
 
@@ -297,8 +312,19 @@ CI, x64 GCC on the EPYC 7763, AVX2 ms, three runs per commit:
 
 `RunLookup::runFor` is force-inlined. MSVC's link-time code generation otherwise calls it once per output pixel in the
 SSE4.1 kernels, and did the same to a `std::span` constructor written directly in the loop (f2f4569): 4-6% on the SSE4.1
-upscales on the PC, 4-18% on the EPYC 7763 runner. The check is the disassembly: no kernel may contain a call to
-either.
+upscales on the PC, 4-18% on the EPYC 7763 runner.
+
+Calls written in the hot loop bodies are forced inline at the call site as well (`IMAGE_PROCESSING_FORCE_INLINE_CALLS`),
+which covers standard library calls that no function attribute of ours can reach.
+- MSVC: `[[msvc::forceinline_calls]]` takes effect on a block. Ahead of a `for` statement it left the calls in the loop's
+  body alone. `[[msvc::flatten]]` on the kernel left `writePixelBytes` out of line.
+- Clang: `[[clang::always_inline]]` on the block.
+- GCC has no per-block form: the kernel's entry function is `flatten`ed.
+- `std::min` over an initializer list is a library call under MSVC whatever the attributes: the kernels use the
+  two-argument overload.
+
+The check is the disassembly. Under MSVC a kernel's only calls are `memmove`, `memcpy` on the runtime-stride paths,
+allocation, the ring's constructor and `clearAvxUpperState`.
 
 ### Jumps kept off 32-byte boundaries under MSVC (14e731e)
 
@@ -317,8 +343,8 @@ placements:
 - Downscales do not react: 2-5% spread, the QImage controls' own.
 - The EPYC runners show at most a few percent on these rows, and not consistently: CI cannot check this.
 
-A reduced loop (two rows per iteration, a never-entered 32-tap block, a 4-tap step, run lengths 4, 1, 4) shows 7-28%
-between placements. VTune on it, per iteration, fast against slow placements:
+A reduced loop, `tests/msvc_loop_placement_repro.cpp` (two rows per iteration, a never-entered 32-tap block, a 4-tap
+step, run lengths 4, 1, 4), shows 7-28% between placements. VTune on it, per iteration, fast against slow placements:
 - Instructions, retired micro-ops, fused pairs and taken branches: equal.
 - Mispredictions and legacy-decoder micro-ops: none. The loop stream detector delivers nothing.
 - Cycles in which the micro-op cache delivers a partial group: 1.4-1.9 against 3.6-4.0.
@@ -333,6 +359,8 @@ the plain build at its two placements against eight padded builds with the switc
 | SSE4.1 720p -> 4K Grayscale8 | 9.32 | 8.32 | 8.28 - 8.89 |
 
 - Downscales with the switch: within -3% to 0% of the plain build.
+- The switch reaches both kernel levels through the compile flags, the link-time-generated one included: conditional
+  jumps crossing or ending on a 32-byte boundary went from 135 and 152 in the nine kernels per level to 1 each.
 - The same reduced loop under clang-cl 22 runs within 1% at every placement.
 
 ### Column strips (b9fea7e)
