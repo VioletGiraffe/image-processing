@@ -318,8 +318,9 @@ Calls written in the hot loop bodies are forced inline at the call site as well 
 which covers standard library calls that no function attribute of ours can reach.
 - MSVC: `[[msvc::forceinline_calls]]` takes effect on a block. Ahead of a `for` statement it left the calls in the loop's
   body alone. `[[msvc::flatten]]` on the kernel left `writePixelBytes` out of line.
-- Clang: `[[clang::always_inline]]` on the block.
-- GCC has no per-block form: the kernel's entry function is `flatten`ed.
+- clang-cl: `[[clang::always_inline]]` on the block. Inside a template it crashes Clang 18.1.3 and Apple clang 21 (Xcode 26.6)
+  in `Sema::CheckAlwaysInlineAttr`; 20.1.8 and 22.1.3 compile it.
+- GCC has no per-block form: the kernel's entry function is `flatten`ed. Clang off Windows takes the same form.
 - `std::min` over an initializer list is a library call under MSVC whatever the attributes: the kernels use the
   two-argument overload.
 
@@ -362,6 +363,9 @@ the plain build at its two placements against eight padded builds with the switc
 - The switch reaches both kernel levels through the compile flags, the link-time-generated one included: conditional
   jumps crossing or ending on a 32-byte boundary went from 135 and 152 in the nine kernels per level to 1 each.
 - The same reduced loop under clang-cl 22 runs within 1% at every placement.
+- EPYC 7763 (CI, same toolset as the PC), 03113a6 -> 14e731e, three runs each: AVX2 rows within 1%. SSE4.1 RGB32 upscales
+  slower in every run: 720p -> 4K 22.8-23.4 -> 26.6-28.1 ms, 1080p -> 1440p 16.2-17.5 -> 19.0-19.3 ms. The same two rows
+  on the PC: within 1.5% with and without the switch. The other SSE4.1 upscales on the EPYC: within 4%.
 
 ### Column strips (b9fea7e)
 
