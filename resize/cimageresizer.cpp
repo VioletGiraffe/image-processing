@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <numbers>
+#include <numeric>
 #include <optional>
 #include <string.h>
 #include <vector>
@@ -179,16 +180,36 @@ namespace
 		const double support = downscale ? (Kernel::radius / scale) : Kernel::radius;
 		const int64_t srcMax = static_cast<int64_t>(srcSize) - 1;
 
-		result.weights.reserve(dstSize * (static_cast<size_t>(2.0 * support) + 2));
+		// Dest coordinates a period apart sample the source at the same sub-pixel phase, periodSourceStep pixels apart.
+		// Their runs share one copy of the weights wherever border clamping touched neither: for an exact-ratio scale the
+		// weights then stay in L1 through a row sweep.
+		const uint64_t sizesGcd = std::gcd(srcSize, dstSize);
+		const uint64_t period = dstSize / sizesGcd;
+		const int64_t periodSourceStep = static_cast<int64_t>(srcSize / sizesGcd);
+		// Per run: its window's last source index, or windowClamped
+		constexpr int64_t windowClamped = -1;
+		std::vector<int64_t> windowEnds;
+		windowEnds.reserve(dstSize);
+
+		result.weights.reserve(std::min(dstSize, 2 * period) * (static_cast<size_t>(2.0 * support) + 2));
 		std::vector<double> foldedWeights;
 
 		for (uint64_t d = 0; d < dstSize; ++d)
 		{
+			if (d >= period && windowEnds[d - period] != windowClamped && windowEnds[d - period] + periodSourceStep <= srcMax)
+			{
+				const TapRun& samePhaseRun = result.runs[d - period];
+				result.runs.push_back(TapRun{ samePhaseRun.firstSource + static_cast<size_t>(periodSourceStep), samePhaseRun.firstWeight, samePhaseRun.weightCount });
+				windowEnds.push_back(windowEnds[d - period] + periodSourceStep);
+				continue;
+			}
+
 			const double srcPos = (static_cast<double>(d) + 0.5) / scale - 0.5;
 			const int64_t left = static_cast<int64_t>(std::floor(srcPos - support));
 			const int64_t right = static_cast<int64_t>(std::ceil(srcPos + support));
 			const int64_t runFirst = std::clamp(left, int64_t{ 0 }, srcMax);
 			const int64_t runLast = std::clamp(right, int64_t{ 0 }, srcMax);
+			windowEnds.push_back(left >= 0 && right <= srcMax ? right : windowClamped);
 
 			// Border clamping repeats the boundary pixel, so out-of-range weights add into the boundary weight
 			// exactly; folding them here (in double) is what keeps every run contiguous in the source.

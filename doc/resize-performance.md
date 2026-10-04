@@ -280,6 +280,21 @@ overlapped, and their zeroing and reduction were paid per column.
 - The chains are separate variables. As an array, MSVC moved one row's chains through a second register every block:
   101 MP -> 720p 907 ms against 851.
 
+### Runs a period apart share their weights
+
+Dest coordinates `dstSize / gcd(srcSize, dstSize)` apart sample the source at the same sub-pixel phase, a whole number of
+pixels apart. Such a run takes the earlier run's weights with its source position shifted, unless border clamping
+touched either window.
+
+- An exact-ratio scale's weights then stay in L1 through a row sweep: a 2:1 downscale has one run's weights where it had
+  92 KB for 1920 columns, swept out of L2 once per row pair.
+- The builder evaluates the kernel for one period and the borders, which shortens the serial part of a threaded resize.
+- A shared run's weights are those computed for the earlier coordinate: the same in exact arithmetic, a rounding step
+  apart in double.
+- N4100, ms: 4K -> 1080p RGB32 102.3 -> 94.5, Grayscale8 59.2 -> 52.6, 24 MP -> 1080p 231.3 -> 215.0, 4K -> 64x64
+  68.9 -> 61.8. With threads: 24 MP -> 1080p 68.0 -> 59.9, 1080p -> 240p 7.02 -> 5.71. Upscales -1% to -3%.
+- 101 MP -> 720p does not gain: its period is 160 columns, 35 KB of weights against a 24 KB L1.
+
 ### Column strips (b9fea7e)
 
 Each thread fills its ring for one column strip of the destination at a time. `stripWidthFor` bounds a ring to half the
@@ -356,8 +371,11 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
    code, not in memory traffic. Comparing MSVC's code for `filterHorizontalRowGroup` with clang-cl's is the next step.
 4. **The SSE4.1 kernels on the N4100:** opaque downscales stay 3x and more behind Qt after the two-chain block. Its log
    has where the time goes: the horizontal taps are 53-70% of a downscale, the vertical pass 46-72% of an upscale.
-   Candidates: the vertical pass's 12 row streams out of L2 (a ring budget sweep), and 16-bit fixed-point kernels at
-   this level.
+   - Where the weights' period is long they are still swept out of L2 once per row pair: 101 MP -> 720p would gain 8% from
+     weights in L1.
+   - Otherwise the taps are bound by instruction count on a core that decodes 3 per cycle. 16-bit fixed-point kernels
+     at this level would halve the loads and multiplies per tap and drop the float conversion.
+   - A ring small enough for L1 gains upscales 3-7% and costs downscales up to 25%.
 5. **Strips cost where the L2 is large:** 1-5% on Neoverse-N2's SIMD rows, 3-8% on the PC's downscales (the column strips
    section). A budget from the runtime L2 share would skip strips there.
 6. **Placement still moves MSVC's AVX2 upscale rows about 5%** with `/QIntel-jcc-erratum`, and the SSE4.1 ones, built

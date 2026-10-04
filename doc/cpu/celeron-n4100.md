@@ -189,7 +189,84 @@ of two alternating rounds against b8892fc and the experiment's binary:
 - Adding the product to the accumulator operand, in place of the reverse, did not remove those moves.
 - With the chains as separate variables the block loop matches the experiment's.
 
-### The generated code, RGB32 paired-row horizontal pass
+### Ring budget sweep (84bbe28)
+
+The detected budget, 512 KB, never splits these scenarios into strips: the ring is 276 KB for 4K -> 1080p RGB32 and lives
+in L2. An override of the budget, minimum ms of two alternating rounds:
+
+| Scenario | 512 KB | 128 KB | 64 KB | 32 KB | 16 KB | 8 KB |
+|---|---:|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | 234.4 | 236.2 | 240.1 | 252.5 | 269.1 | 292.5 |
+| 4K -> 1080p RGB32 | 103.4 | 103.1 | 107.5 | 108.9 | 114.7 | 119.4 |
+| 4K -> 1080p RGBA32 | 133.9 | 134.9 | 134.4 | 138.6 | 144.5 | 147.7 |
+| 4K -> 64x64 | 69.4 | 71.1 | 72.2 | 73.5 | 79.7 | 80.3 |
+| 101 MP -> 720p | 855.5 | 867.7 | 896.7 | 933.2 | 1016.3 | 1072.9 |
+| 720p -> 4K RGBA32 | 83.5 | 83.4 | 79.8 | 78.0 | 79.6 | 82.7 |
+| 720p -> 4K RGB32 | 66.9 | 65.3 | 65.7 | 65.0 | 64.3 | 66.2 |
+| 720p -> 4K RGB24 | 60.6 | 59.3 | 59.2 | 60.0 | 58.2 | 60.7 |
+| 1080p -> 1440p | 48.7 | 48.4 | 47.1 | 48.2 | 48.5 | 49.8 |
+| 24 MP -> 1080p, threads | 69.4 | 69.7 | 69.7 | 73.0 | 75.0 | 83.6 |
+| 720p -> 4K RGBA32, threads | 29.0 | 28.9 | 27.5 | 27.7 | 27.9 | 27.8 |
+
+- Downscales lose steadily below 128 KB: up to 25% at 8 KB.
+- Upscales gain 3-7% with a ring of 16-64 KB, RGBA32 most. The vertical pass reading its rows from L2 is a small part of
+  its cost.
+
+### What bounds the horizontal taps (84bbe28)
+
+- The clock under a single-threaded benchmark: 2.33 GHz, 212% of nominal on every core.
+- The 12-tap path of the RGB32 paired-row pass is about 148 instructions per column pair, 113 of them the taps: a first
+  block of 21, two more of 37, the reductions and the store.
+- The taps take 23 ns per column pair: 54 cycles, 2.1 instructions per cycle. A column pair has 27 loads and 24
+  multiplies: no single port accounts for 54 cycles.
+- With every column filtering through one column's weights, so that the weights stay in L1, minimum ms of two rounds:
+
+| Scenario | 84bbe28 | Weights in L1 |
+|---|---:|---:|
+| 24 MP -> 1080p | 234.4 | 214.4 |
+| 4K -> 1080p RGB32 | 103.4 | 95.1 |
+| 4K -> 1080p RGBA32 | 133.9 | 130.5 |
+| 4K -> 1080p Grayscale8 | 60.4 | 53.6 |
+| 1080p -> 240p | 20.9 | 19.5 |
+| 4K -> 64x64 | 69.4 | 65.1 |
+| 101 MP -> 720p | 855.5 | 784.0 |
+| 1080p -> 1440p | 48.7 | 44.8 |
+| 720p -> 4K RGB32 | 66.9 | 64.4 |
+
+- The weights of 1920 columns of 12 taps are 92 KB, swept once per row pair out of L2: that costs downscales 6-11%, RGBA32 3%.
+- With the weights in L1 the taps run at about 2.5 instructions per cycle on a core that decodes 3. What remains is
+  the instruction count.
+
+### Runs a period apart share their weights (after 84bbe28)
+
+Minimum ms of two alternating rounds: 84bbe28, the weights-in-L1 experiment above, and the builder sharing weights.
+
+| Scenario | 84bbe28 | Weights in L1 | Shared weights |
+|---|---:|---:|---:|
+| 24 MP -> 1080p | 231.3 | 212.9 | 215.0 |
+| 4K -> 1080p RGB32 | 102.3 | 95.1 | 94.5 |
+| 4K -> 1080p RGB24 | 101.1 | 94.6 | 93.7 |
+| 4K -> 1080p RGBA32 | 132.1 | 123.3 | 124.8 |
+| 4K -> 1080p Grayscale8 | 59.2 | 53.7 | 52.6 |
+| 1080p -> 240p | 20.6 | 19.4 | 19.2 |
+| 4K -> 64x64 | 68.9 | 64.9 | 61.8 |
+| 101 MP -> 720p | 852.1 | 783.4 | 847.1 |
+| 720p -> 4K RGB32 | 65.2 | 64.5 | 63.4 |
+| 720p -> 4K RGBA32 | 83.5 | 81.9 | 82.7 |
+| 720p -> 4K Grayscale8 | 31.5 | 31.4 | 30.5 |
+| 1080p -> 1440p | 46.1 | 45.5 | 45.8 |
+| 24 MP -> 1080p, threads | 68.0 | 63.0 | 59.9 |
+| 4K -> 1080p RGBA32, threads | 40.3 | 37.1 | 36.4 |
+| 4K -> 1080p RGB24, threads | 30.8 | 29.2 | 27.3 |
+| 1080p -> 240p, threads | 7.02 | 6.61 | 5.71 |
+| 4K -> 64x64, threads | 27.3 | 25.1 | 22.4 |
+| 101 MP -> 720p, threads | 284.2 | 249.7 | 285.1 |
+
+- Sharing reaches the experiment's gain wherever the period is short, and passes it where the weights' construction
+  shows: the builder evaluates the kernel for one period only, and that is serial time in a threaded resize.
+- 101 MP -> 720p: 11608 -> 1280 has a period of 160 columns of about 55 taps, 35 KB. It does not fit L1 and does not gain.
+
+### The generated code, RGB32 paired-row horizontal pass (b8892fc)
 
 MSVC's code for `filterHorizontalRowGroup` with two rows of 4-float pixels, read from the b8892fc binary:
 
