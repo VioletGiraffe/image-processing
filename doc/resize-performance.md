@@ -321,9 +321,17 @@ which covers standard library calls that no function attribute of ours can reach
 - clang-cl: `[[clang::always_inline]]` on the block. Inside a template it crashes Clang 18.1.3 and Apple clang 21 (Xcode 26.6)
   in `Sema::CheckAlwaysInlineAttr`; 20.1.8 and 22.1.3 compile it.
 - GCC has no per-block form: the kernel's entry function is `flatten`ed. Clang off Windows takes the same form.
-- `flatten` under GCC on Neoverse-N2 (74b015c, three runs against seven): 24 MP -> 1080p 92.4 -> 78.3 ms, 1080p -> 240p
-  8.00 -> 6.63, 101 MP -> 720p 288 -> 262, level with Clang. 720p -> 4K RGBA32 slower, 22.2 -> 24.1. Other rows within 4%.
+- `flatten` under GCC on Neoverse-N2 (74b015c and later, ten runs against seven): 24 MP -> 1080p 92.4 -> 78.3 ms,
+  1080p -> 240p 8.00 -> 6.60, 101 MP -> 720p 288 -> 261, level with Clang. Other rows within 5%, 720p -> 4K RGBA32 aside.
   Under Clang on the same CPU: within 2.5%.
+- 720p -> 4K RGBA32 in the same runs: 22.2 ms before, 24.0-24.3 at 74b015c and 15f240e (seven runs), 21.9 at 9811e5b (three
+  runs), which changed only the benchmark's source. The row follows the binary's layout, not the kernel's code.
+- `flatten` under GCC on the EPYC 7763, six runs against four: -0.9% on average. AVX2 720p -> 4K Grayscale8 7.42 -> 7.75 ms,
+  its SSE4.1 run 10.42 -> 9.80.
+- Call-site forcing under MSVC on the EPYC 7763, 03113a6 against 15f240e and 9811e5b, three runs each, by minimums: AVX2
+  -3.3%, SSE4.1 -2.8% on average.
+- The same GCC 14.2 on the Pi, 14e731e against 74b015c's kernels, one run of 30 samples each: 24 MP -> 1080p 480 -> 451 ms, 1080p -> 240p
+  40.1 -> 38.0. 720p -> 4K RGBA32 unchanged, 98.4 -> 97.7-99.2. Other rows within 1.5%.
 - `std::min` over an initializer list is a library call under MSVC whatever the attributes: the kernels use the
   two-argument overload.
 
@@ -369,10 +377,26 @@ build at its two placements against eight padded builds with the switch:
 - The same reduced loop under clang-cl 22 runs within 1% at every placement.
 - EPYC 7763 (CI, same toolset as the PC), 03113a6 -> 14e731e, three runs each: AVX2 rows within 1%. SSE4.1 RGB32 upscales
   slower in every run: 720p -> 4K 22.8-23.4 -> 26.6-28.1 ms, 1080p -> 1440p 16.2-17.5 -> 19.0-19.3 ms. The same two rows
-  on the PC: within 1.5% with and without the switch. The other SSE4.1 upscales on the EPYC: within 4%.
+  on the PC: within 1.5% with and without the switch. The other SSE4.1 upscales on the EPYC: within 4%. With the switch
+  on the AVX2 source alone (15f240e, 9811e5b; three runs): 23.1-23.9 and 16.8-19.0.
 - The PC's E-cores (Gracemont), MSVC, 03113a6 -> 14e731e, minimum of two rounds: AVX2 rows within noise. SSE4.1 RGB32
   downscales slower: 101 MP -> 720p 314 -> 415 ms, 4K -> 64x64 22.4 -> 30.2, 4K -> 1080p 42.4 -> 49.5, 24 MP -> 1080p 95 -> 111.
   Cause not investigated. With the switch on the AVX2 source alone: 311, 22.1, 40.7, 92.5.
+
+### One-channel upscales filter four columns at a time
+
+Where no x run exceeds 4 taps, the one-channel horizontal pass (`filterHorizontalShortRuns`) multiplies four columns' runs
+and reduces them together: one reduction and one store per four columns, no branch on the run's length. The general
+pass reduces and stores each column on its own. PC, MSVC, minimum ms of six rounds:
+
+| Scenario | Before | After |
+|---|---:|---:|
+| AVX2 720p -> 4K Grayscale8 | 7.13 | 5.45 |
+| SSE4.1 720p -> 4K Grayscale8 | 8.34 | 6.12 |
+
+- Each run loads 4 source floats and 4 weights whatever its length: the lanes past the run are masked out of the source,
+  and the weights array's slack keeps the load in bounds.
+- Not measured on ARM. Two-channel pixels still take the general pass.
 
 ### Column strips (b9fea7e)
 
@@ -523,3 +547,5 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
 7. **`/QIntel-jcc-erratum` on the SSE4.1 level is untested where that level runs:** it cost RGB32 upscales 13-17% on the
    EPYC 7763 and RGB32 downscales 17-35% on the PC's E-cores, and nothing on its P-cores (the section on jumps and 32-byte
    boundaries). To be measured on the Celeron N4100 and a Sandy Bridge.
+8. **GCC's 720p -> 4K RGBA32 on Neoverse-N2 moves 10% with the binary's layout** (the call-site attribute notes): 24.1 or
+   21.9 ms for the same kernel source. Code placement or the buffers' addresses, undetermined. The Pi does not react.

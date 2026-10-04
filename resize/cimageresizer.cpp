@@ -163,9 +163,13 @@ namespace
 		AxisWeights result;
 		result.runs.reserve(dstSize);
 
+		// The horizontal kernels load a run's weights 4 or 8 floats at a time: this slack keeps the last run's load in bounds
+		constexpr size_t weightsSlack = 4;
+
 		if (srcSize == 1) [[unlikely]]
 		{
-			result.weights.push_back(1.0f);
+			result.weights.resize(1 + weightsSlack);
+			result.weights[0] = 1.0f;
 			result.runs.resize(dstSize, TapRun{ 0, 0, 1 });
 			return result;
 		}
@@ -245,9 +249,7 @@ namespace
 			result.runs.push_back(TapRun{ static_cast<size_t>(runFirst) + runBegin, firstWeight, runEnd - runBegin });
 		}
 
-		// The horizontal kernel's 4-tap block reads a run's weights with one 8-float load; this slack keeps
-		// that read in bounds for the last run.
-		result.weights.resize(result.weights.size() + 4);
+		result.weights.resize(result.weights.size() + weightsSlack);
 
 		return result;
 	}

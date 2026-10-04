@@ -327,7 +327,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				if constexpr (Rows == 2)
 					accumB = sumHalves(accumPairsB);
 
-				// An eighth block covers a whole bicubic run of 1-float pixels
+				// An eighth block: 4 taps of 1-float pixels
 				if constexpr (floatsPerPixel == 1)
 				{
 					if (tap + 4 <= tapCount)
@@ -363,6 +363,78 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 						storeTempPixelWithTaps<floatsPerPixel>(tempRows[1] + (dx - destBegin) * Channels, accumB, srcPixelB + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
 				}
 			}
+		}
+
+		// filterHorizontalRowGroup for 1-float pixels where no run exceeds 4 taps: four dest columns share one reduction and one store.
+		// Requires xWeights.longestRun() <= 4.
+		template <size_t PixelStride, size_t Rows>
+		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalShortRuns(
+			SlidingSourceFloats<1, PixelStride, Rows>& source,
+			float* const (&tempRows)[Rows],
+			size_t destBegin,
+			size_t destEnd,
+			const AxisWeights& xWeights) noexcept
+		{
+			const AxisWeights::RunLookup xRunLookup = xWeights.runLookup();
+
+			for (size_t groupBegin = destBegin; groupBegin < destEnd; groupBegin += 4) IMAGE_PROCESSING_FORCE_INLINE_CALLS
+			{
+				Floats4 productsA[4];
+				[[maybe_unused]] Floats4 productsB[4];
+				for (size_t column = 0; column < 4; ++column)
+				{
+					// A group past the last column repeats it
+					const auto [firstPixel, weights] = xRunLookup.runFor(std::min(groupBegin + column, destEnd - 1));
+					const size_t tapCount = weights.size();
+					assert(tapCount <= 4);
+					// 4 floats are loaded whatever the run's length: the ones past it may be unconverted
+					const size_t runFloatOffset = source.prepareRun(firstPixel, 4);
+					const Floats4 runWeights = loadFloats4(weights.data());
+					productsA[column] = mulAdd(keepFirstLanes(loadFloats4(source.floats[0] + runFloatOffset), tapCount), runWeights, zeroFloats4());
+					if constexpr (Rows == 2)
+						productsB[column] = mulAdd(keepFirstLanes(loadFloats4(source.floats[1] + runFloatOffset), tapCount), runWeights, zeroFloats4());
+				}
+
+				const size_t columnCount = std::min<size_t>(4, destEnd - groupBegin);
+				Floats4 sums[Rows] = { sumEachOfFour(productsA[0], productsA[1], productsA[2], productsA[3]) };
+				if constexpr (Rows == 2)
+					sums[1] = sumEachOfFour(productsB[0], productsB[1], productsB[2], productsB[3]);
+
+				for (size_t row = 0; row < Rows; ++row)
+				{
+					float* const out = tempRows[row] + (groupBegin - destBegin);
+					if (columnCount == 4)
+						storeFloats4(out, sums[row]);
+					else
+					{
+						alignas(16) float columnSums[4];
+						storeFloats4(columnSums, sums[row]);
+						::memcpy(out, columnSums, columnCount * sizeof(float));
+					}
+				}
+			}
+		}
+
+		// shortRuns: no x run exceeds 4 taps
+		template <size_t Channels, size_t PixelStride, size_t Rows>
+		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontal(
+			SlidingSourceFloats<Channels, PixelStride, Rows>& source,
+			float* const (&tempRows)[Rows],
+			size_t destBegin,
+			size_t destEnd,
+			const AxisWeights& xWeights,
+			[[maybe_unused]] bool shortRuns) noexcept
+		{
+			if constexpr (Channels == 1)
+			{
+				if (shortRuns)
+				{
+					filterHorizontalShortRuns(source, tempRows, destBegin, destEnd, xWeights);
+					return;
+				}
+			}
+
+			filterHorizontalRowGroup(source, tempRows, destBegin, destEnd, xWeights);
 		}
 
 		// A block's pixels, color capped at alpha, as bytes packed Channels per pixel
@@ -504,7 +576,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2 };
 
-		const size_t sourceFloatsCapacity = SourceRowPair::capacityFor(xWeights.longestRun());
+		const size_t longestXRun = xWeights.longestRun();
+		const bool shortXRuns = longestXRun <= 4;
+		const size_t sourceFloatsCapacity = SourceRowPair::capacityFor(longestXRun);
 		const auto sourceFloats = std::make_unique_for_overwrite<float[]>(2 * sourceFloatsCapacity * floatsPerPixel);
 		float* const sourceFloatsA = sourceFloats.get();
 		float* const sourceFloatsB = sourceFloatsA + sourceFloatsCapacity * floatsPerPixel;
@@ -536,14 +610,14 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					{
 						SourceRowPair sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, spanEnd, pixelStride, premultiplyAlpha };
 						float* const tempRows[2] = { ring.row(produced), ring.row(produced + 1) };
-						filterHorizontalRowGroup(sourceRows, tempRows, stripBegin, stripEnd, xWeights);
+						filterHorizontal(sourceRows, tempRows, stripBegin, stripEnd, xWeights, shortXRuns);
 						produced += 2;
 					}
 					else
 					{
 						SourceRow sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, spanEnd, pixelStride, premultiplyAlpha };
 						float* const tempRows[1] = { ring.row(produced) };
-						filterHorizontalRowGroup(sourceRow, tempRows, stripBegin, stripEnd, xWeights);
+						filterHorizontal(sourceRow, tempRows, stripBegin, stripEnd, xWeights, shortXRuns);
 						++produced;
 					}
 				}
