@@ -29,6 +29,9 @@ namespace ImageProcessing::Detail::Neon
 	// The alpha bytes writeEightRgb32Pixels sets
 	using Rgb32PixelTails = uint8x16_t;
 
+	// The horizontal pass's accumulation chains per row, a Floats8 each
+	inline constexpr size_t horizontalChainCount = 4;
+
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 zeroFloats8() noexcept { return { vdupq_n_f32(0.0f), vdupq_n_f32(0.0f) }; }
@@ -53,6 +56,7 @@ namespace ImageProcessing::Detail::Neon
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 broadcastFloats4(float value) noexcept { return vdupq_n_f32(value); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 add(Floats8 a, Floats8 b) noexcept { return { vaddq_f32(a.low, b.low), vaddq_f32(a.high, b.high) }; }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 add(Floats4 a, Floats4 b) noexcept { return vaddq_f32(a, b); }
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 mul(Floats8 a, Floats8 b) noexcept { return { vmulq_f32(a.low, b.low), vmulq_f32(a.high, b.high) }; }
 
 	// a * b + accum, fused
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 mulAdd(Floats8 a, Floats8 b, Floats8 accum) noexcept

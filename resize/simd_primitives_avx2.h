@@ -30,6 +30,9 @@ namespace ImageProcessing::Detail::Avx2
 	// The alpha bytes writeEightRgb32Pixels sets
 	using Rgb32PixelTails = __m128i;
 
+	// The horizontal pass's accumulation chains per row, a Floats8 each
+	inline constexpr size_t horizontalChainCount = 4;
+
 	// The code after the kernel is legacy-SSE encoded, and stalls while the upper YMM state is dirty
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept { SimdSupport::clearAvxUpperState(); }
 
@@ -43,6 +46,7 @@ namespace ImageProcessing::Detail::Avx2
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 broadcastFloats4(float value) noexcept { return _mm_set1_ps(value); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 add(Floats8 a, Floats8 b) noexcept { return _mm256_add_ps(a, b); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 add(Floats4 a, Floats4 b) noexcept { return _mm_add_ps(a, b); }
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 mul(Floats8 a, Floats8 b) noexcept { return _mm256_mul_ps(a, b); }
 	// a * b + accum, fused
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 mulAdd(Floats8 a, Floats8 b, Floats8 accum) noexcept { return _mm256_fmadd_ps(a, b, accum); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 mulAdd(Floats4 a, Floats4 b, Floats4 accum) noexcept { return _mm_fmadd_ps(a, b, accum); }

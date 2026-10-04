@@ -35,6 +35,9 @@ namespace ImageProcessing::Detail::Sse41
 	// The alpha bytes writeEightRgb32Pixels sets
 	using Rgb32PixelTails = __m128i;
 
+	// The horizontal pass's accumulation chains per row, a Floats8 each: a row pair's must fit the 16 XMM registers
+	inline constexpr size_t horizontalChainCount = 2;
+
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 zeroFloats8() noexcept { return { _mm_setzero_ps(), _mm_setzero_ps() }; }
@@ -59,6 +62,7 @@ namespace ImageProcessing::Detail::Sse41
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 broadcastFloats4(float value) noexcept { return _mm_set1_ps(value); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 add(Floats8 a, Floats8 b) noexcept { return { _mm_add_ps(a.low, b.low), _mm_add_ps(a.high, b.high) }; }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 add(Floats4 a, Floats4 b) noexcept { return _mm_add_ps(a, b); }
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 mul(Floats8 a, Floats8 b) noexcept { return { _mm_mul_ps(a.low, b.low), _mm_mul_ps(a.high, b.high) }; }
 
 	// a * b + accum
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 mulAdd(Floats8 a, Floats8 b, Floats8 accum) noexcept

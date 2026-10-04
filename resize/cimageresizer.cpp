@@ -163,8 +163,8 @@ namespace
 		AxisWeights result;
 		result.runs.reserve(dstSize);
 
-		// The horizontal kernels load a run's weights 4 or 8 floats at a time: this slack keeps the last run's load in bounds
-		constexpr size_t weightsSlack = 4;
+		// The horizontal kernels load 8 weights where as few as 2 of the run remain: this slack keeps the last run's load in bounds
+		constexpr size_t weightsSlack = 6;
 
 		if (srcSize == 1) [[unlikely]]
 		{

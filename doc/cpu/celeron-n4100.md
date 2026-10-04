@@ -11,7 +11,7 @@ The measurement log for this CPU. Conclusions that shape the design are summariz
 | SIMD | SSE4.2; no AVX, no FMA. The SSE4.1 kernels are the only level it runs |
 | Caches | 24 KB L1D, 4 MB L2 shared by all cores |
 | Detected sizing | 1024 KB of L2 per logical processor, ring budget 512 KB |
-| RAM | 3.9 GB, about 1 GB free during the runs. The 101 MP source alone is 404 MB |
+| RAM | 3.9 GB. During the runs about 1 GB free, and a further 770 MB of standby cache. The 101 MP source alone is 404 MB |
 | Toolchain | MSVC 19.51.36260, Qt 6.12.0 |
 | OS | Windows 11 |
 
@@ -108,6 +108,86 @@ The switch gains nothing here and costs up to 5.6%. The QImage controls of the t
   RGB24 downscales -7% to -9%, 24 MP -6%, 101 MP -3.6%. Upscales within 1%.
 - 15f240e -> b8892fc (the one-channel short-run pass): 720p -> 4K Grayscale8 -20%, 4K -> 1080p Grayscale8 -4%.
   720p -> 4K RGB32 +2.8%, which that change does not touch: unexplained.
+
+### Where the time goes
+
+Subtractive builds of b8892fc, minimum ms of three alternating rounds. Each removes one part; the split is by differences,
+so it is approximate.
+- Taps: the horizontal pass's arithmetic, from the block to the store.
+- Conversion: `prepareRun`, with the byte-to-float conversion and the buffer's slides.
+- Vertical: `filterVerticalDestRow`.
+- Rest: the column loop's skeleton, the weights, the destination's allocation and page faults.
+
+| Scenario | Total | Taps | Conversion | Vertical | Rest |
+|---|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | 260.2 | 161.8 | 50.5 | 35.7 | 12.2 |
+| 4K -> 1080p RGB32 | 114.8 | 60.7 | 20.3 | 25.4 | 8.5 |
+| 4K -> 1080p RGBA32 | 136.0 | 57.9 | 35.3 | 35.1 | 7.7 |
+| 4K -> 1080p Grayscale8 | 59.7 | 32.3 | 11.9 | 8.2 | 7.3 |
+| 1080p -> 240p | 23.2 | 13.9 | 4.7 | 3.0 | 1.6 |
+| 4K -> 64x64 | 70.7 | 49.7 | 17.4 | 1.9 | 1.8 |
+| 101 MP -> 720p | 912.7 | 625.0 | 200.5 | 62.6 | 24.6 |
+| 720p -> 4K RGB32 | 66.4 | 13.2 | 5.9 | 44.4 | 2.9 |
+| 720p -> 4K RGBA32 | 83.1 | 11.4 | 9.2 | 60.2 | 2.3 |
+| 720p -> 4K RGB24 | 61.7 | 13.0 | 5.2 | 38.8 | 4.7 |
+| 1080p -> 1440p | 46.9 | 13.6 | 6.6 | 21.5 | 5.2 |
+
+- Downscales: the taps are 53-70%, conversion 18-26%.
+- Upscales: the vertical pass is 46-72%.
+- Grayscale8's taps cost half of RGB32's for a quarter of the floats.
+
+### Horizontal pass variants
+
+Experiments on b8892fc, not committed. Minimum ms of three alternating rounds; the unpatched build of the same worktree
+matched b8892fc within 2% on the single-threaded rows.
+- Two chains: a block of 16 source floats through two chains per row, then one vector of 8.
+- Assigned first block: the first block's products initialize the accumulators, with no add to zero.
+- Single rows: the paired-row sweep replaced by one row per sweep.
+
+| Scenario | b8892fc | Two chains | + assigned first block | Single rows | Single rows, two chains, assigned |
+|---|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | 260.2 | 246.5 | 230.6 | 312.8 | 296.3 |
+| 4K -> 1080p RGB32 | 114.8 | 109.7 | 102.5 | 136.4 | 130.1 |
+| 4K -> 1080p RGB24 | 115.6 | 109.4 | 101.9 | 136.8 | 128.4 |
+| 4K -> 1080p RGBA32 | 136.0 | 129.7 | 132.5 | 156.6 | 150.2 |
+| 4K -> 1080p Grayscale8 | 59.7 | 59.2 | 58.9 | 84.0 | 83.6 |
+| 1080p -> 240p | 23.2 | 21.5 | 20.3 | 26.4 | 26.0 |
+| 4K -> 64x64 | 70.7 | 70.5 | 69.3 | 77.2 | 83.1 |
+| 101 MP -> 720p | 912.7 | 893.5 | 848.3 | 1092.5 | 1093.4 |
+| 720p -> 4K RGB32 | 66.4 | 66.6 | 65.2 | 76.7 | 76.8 |
+| 720p -> 4K RGBA32 | 83.1 | 83.9 | 82.9 | 92.1 | 91.9 |
+| 720p -> 4K RGB24 | 61.7 | 63.7 | 60.2 | 72.7 | 72.4 |
+| 720p -> 4K Grayscale8 | 31.6 | 31.2 | 31.8 | 40.2 | 40.3 |
+| 1080p -> 1440p | 46.9 | 50.7 | 46.8 | 58.9 | 57.9 |
+| 24 MP -> 1080p, threads | 74.5 | 73.3 | 68.1 | 90.5 | 85.0 |
+| 4K -> 1080p RGB24, threads | 34.7 | 33.6 | 30.8 | 40.9 | 38.3 |
+
+- Two chains with the assigned first block: opaque 4-byte and RGB24 downscales -7% to -12%, 4K -> 64x64 aside (-2%).
+  Upscales within 2.5%. The tests pass.
+- 4K -> 1080p RGBA32 gains 2.5% with both and 4.6% with two chains alone. Not explained.
+- Two chains alone cost 1080p -> 1440p 8%: a 4-tap run then pays a block's zeroing and reduction.
+- Single rows lose 9-41% everywhere: paired rows share the column's lookup, weights and loop.
+
+The tree's implementation after b8892fc: two chains at this level, the assigned first block at every level. Minimum ms
+of two alternating rounds against b8892fc and the experiment's binary:
+
+| Scenario | b8892fc | Experiment | Implementation |
+|---|---:|---:|---:|
+| 24 MP -> 1080p | 260.4 | 231.0 | 231.0 |
+| 4K -> 1080p RGB32 | 115.6 | 103.1 | 102.1 |
+| 4K -> 1080p RGB24 | 117.3 | 101.5 | 101.3 |
+| 4K -> 1080p RGBA32 | 137.4 | 132.7 | 134.7 |
+| 1080p -> 240p | 22.9 | 20.7 | 20.7 |
+| 4K -> 64x64 | 70.8 | 69.4 | 69.1 |
+| 101 MP -> 720p | 916.5 | 850.6 | 851.0 |
+| 720p -> 4K RGB32 | 66.5 | 64.9 | 64.7 |
+| 1080p -> 1440p | 48.1 | 46.1 | 46.7 |
+| 24 MP -> 1080p, threads | 76.5 | 68.3 | 69.0 |
+
+- A first version held the chains in an array passed to the block's helper. MSVC kept them in registers but moved one
+  row's four through a second register every block: 101 MP -> 720p 907.4 ms, 4K -> 64x64 73.6, 4K -> 1080p RGB32 105.8.
+- Adding the product to the accumulator operand, in place of the reverse, did not remove those moves.
+- With the chains as separate variables the block loop matches the experiment's.
 
 ### The generated code, RGB32 paired-row horizontal pass
 

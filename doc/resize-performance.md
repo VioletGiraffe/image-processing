@@ -185,8 +185,9 @@ Resizer / QImage, 1080p -> 1440p: ARM Clang runner 1.79 -> 2.07 with the call; P
 
 The SIMD outline serves 1-4 channels at any pixel stride.
 - The sliding source buffer holds 1, 2 or 4 floats per pixel. RGB gets a 4th float, 0, and runs the 4-channel code.
-- The horizontal pass works in blocks of 32 source floats through four FMA chains: 8 taps of 4-float pixels, 16 of 2-float,
-  32 of 1-float. 1- and 2-float pixels end with a horizontal sum per output pixel.
+- The horizontal pass works in blocks of 8 source floats per chain. AVX2 and NEON run four chains: 8 taps of 4-float
+  pixels, 16 of 2-float, 32 of 1-float. SSE4.1 runs two (the section on two chains). 1- and 2-float pixels end with a
+  horizontal sum per output pixel.
 - The vertical pass writes blocks of 32 floats, 24 for RGB.
 - Tight packing and RGB32 get a compile-time stride, with whole-vector conversion and writes. Other strides convert and
   store pixel by pixel.
@@ -263,6 +264,22 @@ pass reduces and stores each column on its own.
   Neoverse-N2. Not investigated.
 - Two-channel pixels still take the general pass.
 
+### Two chains at SSE4.1, and a first block that assigns
+
+A `Floats8` is two XMM registers at SSE4.1, so a row pair's four chains were 16 accumulators, x64's whole register file:
+MSVC kept eight on the stack. A 12-tap run, a 2x Lanczos3 downscale, ran the four-chain block once: its chains never
+overlapped, and their zeroing and reduction were paid per column.
+
+- Each primitives header states its level's chain count: 2 at SSE4.1, 4 at AVX2 and NEON.
+- A run's first block starts the chains with its products: no zeroed accumulators, no add to zero. With FMA the result
+  is bit-identical.
+- N4100, MSVC: opaque 4-byte and RGB24 downscales -7% to -14% (4K -> 1080p RGB32 115.6 -> 102.1 ms), 4K -> 64x64 -2%,
+  upscales within 3%.
+- Two chains without the assigned first block cost 1080p -> 1440p 8%: a 4-tap run then pays a block's zeroing and reduction.
+- One row per sweep, the other way to fit the registers, loses 9-41%: paired rows share the column's lookup, weights and loop.
+- The chains are separate variables. As an array, MSVC moved one row's chains through a second register every block:
+  101 MP -> 720p 907 ms against 851.
+
 ### Column strips (b9fea7e)
 
 Each thread fills its ring for one column strip of the destination at a time. `stripWidthFor` bounds a ring to half the
@@ -337,10 +354,10 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
 3. **Pre-conversion costs MSVC's upscales:** 1080p -> 1440p 7.25 -> 8.5-8.7 ms on the PC (experiment 6). The scalar path
    lost 7-13% on its three-channel upscales under MSVC alone, and its phase timings put the loss in the horizontal filter's
    code, not in memory traffic. Comparing MSVC's code for `filterHorizontalRowGroup` with clang-cl's is the next step.
-4. **The SSE4.1 kernels are untuned:** 1.3-1.7x the AVX2 time on the PC under MSVC. The horizontal pass's paired-row
-   block needs 16 XMM accumulators, x64's whole register file: MSVC keeps eight of them on the stack. Single rows or fewer
-   chains at this level are the candidates, to be judged on the Celeron N4100. Its log has the baseline and the
-   generated code's per-column costs.
+4. **The SSE4.1 kernels on the N4100:** opaque downscales stay 3x and more behind Qt after the two-chain block. Its log
+   has where the time goes: the horizontal taps are 53-70% of a downscale, the vertical pass 46-72% of an upscale.
+   Candidates: the vertical pass's 12 row streams out of L2 (a ring budget sweep), and 16-bit fixed-point kernels at
+   this level.
 5. **Strips cost where the L2 is large:** 1-5% on Neoverse-N2's SIMD rows, 3-8% on the PC's downscales (the column strips
    section). A budget from the runtime L2 share would skip strips there.
 6. **Placement still moves MSVC's AVX2 upscale rows about 5%** with `/QIntel-jcc-erratum`, and the SSE4.1 ones, built
@@ -350,3 +367,5 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
    is indifferent (the section on jumps and 32-byte boundaries).
 8. **GCC's 720p -> 4K RGBA32 on Neoverse-N2 moves 10% with the binary's layout** (the call-site attribute notes): 24.1 or
    21.9 ms for the same kernel source. Code placement or the buffers' addresses, undetermined. The Pi does not react.
+9. **The assigned first block is unmeasured at AVX2 and NEON.** The AVX2 kernel's listing shows no stack traffic. The PC's
+   placement-sensitive upscale rows and the Pi need a run.

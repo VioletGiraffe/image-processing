@@ -202,10 +202,73 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				return spreader.template spread<Chain % FloatsPerPixel>(loadWeightBlock(blockWeights + weightBlock * 8));
 		}
 
+		// One chain's 8 floats of a block, for both rows. Start: the products start the chain; otherwise they are added to it.
+		template <bool Start, size_t Chain, size_t Rows, size_t FloatsPerPixel>
+		IMAGE_PROCESSING_SIMD_INLINE void filterBlockChain(
+			const WeightSpreader<FloatsPerPixel>& spreader,
+			const float* blockWeights,
+			WeightBlock firstWeights,
+			const float* blockPixelsA,
+			[[maybe_unused]] const float* blockPixelsB,
+			Floats8& chainA,
+			[[maybe_unused]] Floats8& chainB) noexcept
+		{
+			const Floats8 weights = chainWeights<Chain>(spreader, blockWeights, firstWeights);
+			if constexpr (Start)
+			{
+				chainA = mul(loadFloats8(blockPixelsA + Chain * 8), weights);
+				if constexpr (Rows == 2)
+					chainB = mul(loadFloats8(blockPixelsB + Chain * 8), weights);
+			}
+			else
+			{
+				chainA = mulAdd(loadFloats8(blockPixelsA + Chain * 8), weights, chainA);
+				if constexpr (Rows == 2)
+					chainB = mulAdd(loadFloats8(blockPixelsB + Chain * 8), weights, chainB);
+			}
+		}
+
+		// A row's chains, as separate variables: MSVC moves an array's elements through a second register every block
+		struct RowChains
+		{
+			Floats8 chain0;
+			Floats8 chain1;
+			Floats8 chain2;
+			Floats8 chain3;
+		};
+
+		// A block of 8 source floats per chain
+		template <bool Start, size_t Rows, size_t FloatsPerPixel>
+		IMAGE_PROCESSING_SIMD_INLINE void filterBlock(
+			const WeightSpreader<FloatsPerPixel>& spreader,
+			const float* blockWeights,
+			const float* blockPixelsA,
+			const float* blockPixelsB,
+			RowChains& chainsA,
+			RowChains& chainsB) noexcept
+		{
+			const WeightBlock firstWeights = loadWeightBlock(blockWeights);
+			filterBlockChain<Start, 0, Rows>(spreader, blockWeights, firstWeights, blockPixelsA, blockPixelsB, chainsA.chain0, chainsB.chain0);
+			filterBlockChain<Start, 1, Rows>(spreader, blockWeights, firstWeights, blockPixelsA, blockPixelsB, chainsA.chain1, chainsB.chain1);
+			if constexpr (horizontalChainCount == 4)
+			{
+				filterBlockChain<Start, 2, Rows>(spreader, blockWeights, firstWeights, blockPixelsA, blockPixelsB, chainsA.chain2, chainsB.chain2);
+				filterBlockChain<Start, 3, Rows>(spreader, blockWeights, firstWeights, blockPixelsA, blockPixelsB, chainsA.chain3, chainsB.chain3);
+			}
+		}
+
+		IMAGE_PROCESSING_SIMD_INLINE Floats8 sumChains(const RowChains& chains) noexcept
+		{
+			if constexpr (horizontalChainCount == 4)
+				return add(add(chains.chain0, chains.chain1), add(chains.chain2, chains.chain3));
+			else
+				return add(chains.chain0, chains.chain1);
+		}
+
 		// Filters Rows source rows in one destination-column sweep. The weight loads, permutes and broadcasts
 		// depend only on the column, so paired rows share them, while each row keeps its own accumulators and
-		// its exact single-row arithmetic. Two rows is the register budget: the four spread constants plus four
-		// accumulators per row nearly fill the file, a third row would spill inside the hottest loop.
+		// its exact single-row arithmetic. Two rows is the register budget: the spread constants plus a row pair's
+		// chains nearly fill the file, a third row would spill inside the hottest loop.
 		// Rows are passed as individual pointers: a pair of temp rows may straddle the ring's wrap.
 		// Filters dest columns [destBegin, destEnd) into the temp rows' start.
 		template <size_t Channels, size_t PixelStride, size_t Rows>
@@ -219,8 +282,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			static_assert(Rows == 1 || Rows == 2);
 
 			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
-			// Taps per block of 32 source floats
-			constexpr size_t blockTaps = 32 / floatsPerPixel;
+			// Taps per block: 8 source floats per chain
+			constexpr size_t blockTaps = horizontalChainCount * 8 / floatsPerPixel;
 			const WeightSpreader<floatsPerPixel> weightSpreader{};
 			const AxisWeights::RunLookup xRunLookup = xWeights.runLookup();
 
@@ -237,80 +300,51 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				[[maybe_unused]] Floats8 accumPairsB = zeroFloats8();
 				size_t tap = 0;
 
-				// A run is consecutive pixels, so a block goes through four independent FMA chains of 8 floats;
-				// per-tap accumulation into one register would serialize on the FMA latency.
-				// Upscaling never enters this branch: a trimmed bicubic run is at most 4 taps.
+				// A run is consecutive pixels, so a block goes through independent chains of 8 floats;
+				// per-tap accumulation into one register would serialize on the multiply-add latency.
 				if (tapCount >= blockTaps)
 				{
-					Floats8 accumA0 = zeroFloats8();
-					Floats8 accumA1 = zeroFloats8();
-					Floats8 accumA2 = zeroFloats8();
-					Floats8 accumA3 = zeroFloats8();
-					[[maybe_unused]] Floats8 accumB0 = zeroFloats8();
-					[[maybe_unused]] Floats8 accumB1 = zeroFloats8();
-					[[maybe_unused]] Floats8 accumB2 = zeroFloats8();
-					[[maybe_unused]] Floats8 accumB3 = zeroFloats8();
+					RowChains chainsA;
+					RowChains chainsB;
+					filterBlock<true, Rows>(weightSpreader, weights.data(), srcPixelA, srcPixelB, chainsA, chainsB);
+					for (tap = blockTaps; tap + blockTaps <= tapCount; tap += blockTaps)
+						filterBlock<false, Rows>(weightSpreader, weights.data() + tap, srcPixelA + tap * floatsPerPixel, srcPixelB + tap * floatsPerPixel, chainsA, chainsB);
 
-					for (; tap + blockTaps <= tapCount; tap += blockTaps)
+					accumPairsA = sumChains(chainsA);
+					if constexpr (Rows == 2)
+						accumPairsB = sumChains(chainsB);
+				}
+
+				// 16 floats, half a four-chain block: a whole bicubic run of 4-float pixels
+				if constexpr (horizontalChainCount == 4)
+				{
+					if (tap + 16 / floatsPerPixel <= tapCount)
 					{
-						const float* blockPixelsA = srcPixelA + tap * floatsPerPixel;
-						[[maybe_unused]] const float* blockPixelsB = srcPixelB + tap * floatsPerPixel;
+						// A whole WeightBlock though only 4 weights may be in play: the builder pads the weights array to keep the overread
+						// in bounds. On AVX2 the natural 4-float load + castps128_ps256 compiles under MSVC to a 16-byte stack store that the
+						// 32-byte vpermps memory operand then reloads, and a load wider than the store it overlaps cannot be
+						// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
 						const float* blockWeights = weights.data() + tap;
 						const WeightBlock firstWeights = loadWeightBlock(blockWeights);
-
 						const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, firstWeights);
-						accumA0 = mulAdd(loadFloats8(blockPixelsA), w0, accumA0);
-						if constexpr (Rows == 2)
-							accumB0 = mulAdd(loadFloats8(blockPixelsB), w0, accumB0);
-
 						const Floats8 w1 = chainWeights<1>(weightSpreader, blockWeights, firstWeights);
-						accumA1 = mulAdd(loadFloats8(blockPixelsA + 8), w1, accumA1);
-						if constexpr (Rows == 2)
-							accumB1 = mulAdd(loadFloats8(blockPixelsB + 8), w1, accumB1);
 
-						const Floats8 w2 = chainWeights<2>(weightSpreader, blockWeights, firstWeights);
-						accumA2 = mulAdd(loadFloats8(blockPixelsA + 16), w2, accumA2);
+						const float* blockPixelsA = srcPixelA + tap * floatsPerPixel;
+						accumPairsA = mulAdd(loadFloats8(blockPixelsA), w0, mulAdd(loadFloats8(blockPixelsA + 8), w1, accumPairsA));
 						if constexpr (Rows == 2)
-							accumB2 = mulAdd(loadFloats8(blockPixelsB + 16), w2, accumB2);
+						{
+							const float* blockPixelsB = srcPixelB + tap * floatsPerPixel;
+							accumPairsB = mulAdd(loadFloats8(blockPixelsB), w0, mulAdd(loadFloats8(blockPixelsB + 8), w1, accumPairsB));
+						}
 
-						const Floats8 w3 = chainWeights<3>(weightSpreader, blockWeights, firstWeights);
-						accumA3 = mulAdd(loadFloats8(blockPixelsA + 24), w3, accumA3);
-						if constexpr (Rows == 2)
-							accumB3 = mulAdd(loadFloats8(blockPixelsB + 24), w3, accumB3);
+						tap += 16 / floatsPerPixel;
 					}
-
-					accumPairsA = add(add(accumA0, accumA1), add(accumA2, accumA3));
-					if constexpr (Rows == 2)
-						accumPairsB = add(add(accumB0, accumB1), add(accumB2, accumB3));
 				}
 
-				// A half block covers a whole bicubic run of 4-float pixels and most of a block remainder
-				if (tap + blockTaps / 2 <= tapCount)
+				// 8 floats: a whole bicubic run of 2-float pixels. Four chains leave 4-float pixels' remainder to the per-tap loop.
+				if constexpr (horizontalChainCount == 2 || floatsPerPixel <= 2)
 				{
-					// A whole WeightBlock though only 4 weights may be in play: the builder pads the weights array to keep the overread
-					// in bounds. On AVX2 the natural 4-float load + castps128_ps256 compiles under MSVC to a 16-byte stack store that the
-					// 32-byte vpermps memory operand then reloads, and a load wider than the store it overlaps cannot be
-					// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
-					const float* blockWeights = weights.data() + tap;
-					const WeightBlock firstWeights = loadWeightBlock(blockWeights);
-					const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, firstWeights);
-					const Floats8 w1 = chainWeights<1>(weightSpreader, blockWeights, firstWeights);
-
-					const float* blockPixelsA = srcPixelA + tap * floatsPerPixel;
-					accumPairsA = mulAdd(loadFloats8(blockPixelsA), w0, mulAdd(loadFloats8(blockPixelsA + 8), w1, accumPairsA));
-					if constexpr (Rows == 2)
-					{
-						const float* blockPixelsB = srcPixelB + tap * floatsPerPixel;
-						accumPairsB = mulAdd(loadFloats8(blockPixelsB), w0, mulAdd(loadFloats8(blockPixelsB + 8), w1, accumPairsB));
-					}
-
-					tap += blockTaps / 2;
-				}
-
-				// A quarter block covers a whole bicubic run of 2-float pixels
-				if constexpr (floatsPerPixel <= 2)
-				{
-					if (tap + blockTaps / 4 <= tapCount)
+					if (tap + 8 / floatsPerPixel <= tapCount)
 					{
 						const float* blockWeights = weights.data() + tap;
 						const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, loadWeightBlock(blockWeights));
@@ -318,7 +352,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 						if constexpr (Rows == 2)
 							accumPairsB = mulAdd(loadFloats8(srcPixelB + tap * floatsPerPixel), w0, accumPairsB);
 
-						tap += blockTaps / 4;
+						tap += 8 / floatsPerPixel;
 					}
 				}
 
@@ -327,7 +361,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				if constexpr (Rows == 2)
 					accumB = sumHalves(accumPairsB);
 
-				// An eighth block: 4 taps of 1-float pixels
+				// 4 taps of 1-float pixels
 				if constexpr (floatsPerPixel == 1)
 				{
 					if (tap + 4 <= tapCount)
