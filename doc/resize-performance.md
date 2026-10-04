@@ -396,7 +396,18 @@ pass reduces and stores each column on its own. PC, MSVC, minimum ms of six roun
 
 - Each run loads 4 source floats and 4 weights whatever its length: the lanes past the run are masked out of the source,
   and the weights array's slack keeps the load in bounds.
-- Not measured on ARM. Two-channel pixels still take the general pass.
+- CI, 720p -> 4K Grayscale8 at 0bd90e4 against the three commits before it, same CPU:
+
+  | Compiler, CPU | Default level | SSE4.1 |
+  |---|---:|---:|
+  | MSVC, EPYC 7763 | -29% | -30% |
+  | Clang, EPYC 7763 | -28% | -27% |
+  | GCC, EPYC 7763 | -8% | -10% |
+  | Clang, Neoverse-N2 | -14% | |
+  | GCC, Neoverse-N2 | -2% | |
+
+- GCC gains a third or less of what the others do, on both architectures. Not investigated.
+- Two-channel pixels still take the general pass.
 
 ### Column strips (b9fea7e)
 
