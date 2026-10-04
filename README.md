@@ -36,4 +36,5 @@ Image resizer with hand-optimized SIMD kernels for x64 and ARM64
 ## Docs
 
 - [doc/resize-performance.md](doc/resize-performance.md): measurements behind the design, and the experiments that lost.
+- [doc/cpu/](doc/cpu/): per-CPU measurement logs.
 - [doc/tests_spec.md](doc/tests_spec.md): test work still to add.

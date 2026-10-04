@@ -4,6 +4,9 @@ The measurements behind the resizer's design, and the experiments that lost. Ben
 `tests/cimageresizer_benchmarks.cpp`; `scripts/run_tests --benchmark` runs them and `tests/report_benchmark_ratios.py` prints
 the table. Every table names the commit it was measured at: re-measure after changing the resizer.
 
+This document holds what the design rests on, with headline figures. The full tables are in the per-CPU logs in `doc/cpu/`,
+under the same section headings.
+
 ## Reading the numbers
 
 - The resizer / QImage ratio is the only figure that compares across runs, machines and CI jobs.
@@ -17,6 +20,7 @@ the table. Every table names the commit it was measured at: re-measure after cha
   - ubuntu-24.04-arm runner, Clang: about 1%.
   - macos-latest runner: up to 2x, too noisy to read per scenario.
   - A real M1, same-session A/B: about 1%.
+  - Celeron N4100: 0.5-1%.
   - An Ubuntu VM on the PC: 10-20% between runs of one binary, whole runs drifting together. Fifteen alternating rounds,
     read by each build's minimum and by the median of back-to-back pairs, resolve about 3%.
 - A CI comparison needs several samples per side: re-running the old commit's run alongside the new one gives same-time
@@ -54,106 +58,79 @@ the table. Every table names the commit it was measured at: re-measure after cha
 
 | | CPU | Caches | Toolchain |
 |---|---|---|---|
-| PC | Core i5-12600K, P-cores | 48 KB L1D, 1.25 MB private L2 per P-core | MSVC 19.51 (toolset v145), Qt 6.11.2 |
-| Raspberry Pi 4 | 4x Cortex-A72 | 32 KB L1D, 1 MB L2 shared by all cores | Clang 22 unless noted |
-| ubuntu-24.04-arm | Cobalt 100 (Neoverse N2), 4 cores | 1 MB private L2 per core | GCC and Clang jobs |
-| ubuntu-latest, windows-latest | 2 cores, 4 threads, varying by run. Seen: AMD EPYC 9V45 (Zen 5), 9V74 (Zen 4), 7763 (Zen 3); Xeon Platinum 8573C, 8370C, Xeon 6973P-C | Private L2 per core: 1 MB on Zen 4 and 5, 512 KB on Zen 3, 2 MB on the Xeons (1.25 MB on the 8370C) | GCC and Clang; MSVC and clang-cl |
-| macos-latest | Apple M1 (virtual), 3 cores | 12 MB L2 | Apple Clang |
+| [PC](cpu/core-i5-12600k.md) | Core i5-12600K, P-cores | 48 KB L1D, 1.25 MB private L2 per P-core | MSVC 19.51 (toolset v145), Qt 6.11.2 |
+| [Raspberry Pi 4](cpu/raspberry-pi-4.md) | 4x Cortex-A72, 1.8 GHz | 32 KB L1D, 1 MB L2 shared by all cores | Clang 22 unless noted |
+| [Celeron N4100](cpu/celeron-n4100.md) | 4x Goldmont Plus, no AVX: SSE4.1 is its only level | 24 KB L1D, 4 MB L2 shared by all cores | MSVC 19.51, Qt 6.12.0 |
+| [ubuntu-24.04-arm](cpu/neoverse-n2.md) | Cobalt 100 (Neoverse N2), 4 cores | 1 MB private L2 per core | GCC and Clang jobs |
+| [ubuntu-latest, windows-latest](cpu/x64-ci-runners.md) | 2 cores, 4 threads, varying by run. Seen: AMD EPYC 9V45 (Zen 5), 9V74 (Zen 4), 7763 (Zen 3); Xeon Platinum 8573C, 8370C, Xeon 6973P-C | Private L2 per core: 1 MB on Zen 4 and 5, 512 KB on Zen 3, 2 MB on the Xeons (1.25 MB on the 8370C) | GCC and Clang; MSVC and clang-cl |
+| [macos-latest](cpu/apple-m1.md) | Apple M1 (virtual), 3 cores | 12 MB L2 | Apple Clang |
 
 ## Standing against Qt
 
-Resizer / QImage, lower is better. PC at 9d86565, before column strips (mean of three rounds). Pi at 6b6bf7e. Grayscale8
-and RGB24 on both at e5ea70d. "-": no such benchmark.
+Resizer / QImage, lower is better. "T": with threads. "-": no such benchmark.
+- PC at 9d86565, before column strips (mean of three rounds).
+- Pi at 6b6bf7e.
+- Grayscale8 and RGB24 on both at e5ea70d.
+- N4100 at b8892fc (minimum of four rounds).
 
-| Scenario | PC | PC, threads | Pi | Pi, threads |
-|---|---|---|---|---|
-| 24 MP -> 1080p | 1.77 | 0.51 | 2.90 | 0.84 |
-| 4K -> 1080p RGB32 | 1.99 | - | 4.97 | - |
-| 4K -> 1080p RGBA32 | 0.94 | 0.28 | 2.33 | 0.72 |
-| 720p -> 4K RGB32 | 0.59 | - | 1.08 | - |
-| 720p -> 4K RGBA32 | 0.31 | 0.07 | 0.32 | 0.10 |
-| 1080p -> 1440p | 0.87 | 0.21 | 1.84 | 0.63 |
-| 1080p -> 240p | 2.36 | 0.95 | 3.66 | 1.18 |
-| 4K -> 64x64 | 2.56 | 1.05 | 3.52 | 1.37 |
-| 101 MP -> 720p | 2.22 | 0.64 | 3.91 | 1.17 |
-| 1080p, native size | 1.12 | - | 1.00 | - |
-| 4K -> 1080p Grayscale8 | 0.50 | - | 0.74 | - |
-| 720p -> 4K Grayscale8 | 0.48 | - | 0.44 | - |
-| 4K -> 1080p RGB24 | 0.81 | 0.27 | 2.75 | 0.80 |
-| 720p -> 4K RGB24 | 0.56 | 0.20 | 0.77 | 0.29 |
+| Scenario | PC | PC, T | Pi | Pi, T | N4100 | N4100, T |
+|---|---|---|---|---|---|---|
+| 24 MP -> 1080p | 1.77 | 0.51 | 2.90 | 0.84 | 3.66 | 1.04 |
+| 4K -> 1080p RGB32 | 1.99 | - | 4.97 | - | 3.91 | - |
+| 4K -> 1080p RGBA32 | 0.94 | 0.28 | 2.33 | 0.72 | 1.70 | 0.51 |
+| 720p -> 4K RGB32 | 0.59 | - | 1.08 | - | 0.80 | - |
+| 720p -> 4K RGBA32 | 0.31 | 0.07 | 0.32 | 0.10 | 0.39 | 0.13 |
+| 1080p -> 1440p | 0.87 | 0.21 | 1.84 | 0.63 | 1.27 | 0.42 |
+| 1080p -> 240p | 2.36 | 0.95 | 3.66 | 1.18 | 4.92 | 1.65 |
+| 4K -> 64x64 | 2.56 | 1.05 | 3.52 | 1.37 | 3.60 | 1.42 |
+| 101 MP -> 720p | 2.22 | 0.64 | 3.91 | 1.17 | 4.27 | 1.35 |
+| 1080p, native size | 1.12 | - | 1.00 | - | 0.99 | - |
+| 4K -> 1080p Grayscale8 | 0.50 | - | 0.74 | - | 0.71 | - |
+| 720p -> 4K Grayscale8 | 0.48 | - | 0.44 | - | 0.33 | - |
+| 4K -> 1080p RGB24 | 0.81 | 0.27 | 2.75 | 0.80 | 1.57 | 0.47 |
+| 720p -> 4K RGB24 | 0.56 | 0.20 | 0.77 | 0.29 | 0.56 | 0.19 |
 
 - PC: upscales, straight-alpha images, Grayscale8 and RGB24 beat Qt; Qt premultiplies alpha in a separate pass.
 - Pi: straight-alpha upscales, Grayscale8 and the RGB24 upscale beat Qt single-threaded, and the opaque 720p -> 4K about
   matches it. With threads every upscale beats it, and the 24 MP, RGBA32 and RGB24 downscales too.
-- Opaque 4-byte downscales stay about 2x behind Qt single-threaded on the PC and 3-5x on the Pi.
+- N4100: the PC's pattern. In absolute time it runs 1.6-1.8x faster than the Pi.
+- Opaque 4-byte downscales stay behind Qt single-threaded: about 2x on the PC, 3-5x on the Pi, 3.6-4.9x on the N4100.
 
 ## What the design rests on
 
-### Per-instruction-set primitives, not SIMDe
+### Per-instruction-set primitives, not SIMDe (963b54b)
 
 The kernel outline is written against primitives that state what the kernel needs, such as spreading a weight pair or
 packing 8 floats to words. Each instruction set implements them natively. SIMDe, translating AVX2 intrinsics op by op,
 falls short both ways:
 - AVX2 code lowered to SSE4.1 falls back to scalar loops in the hot paths: `permutevar8x32_ps`, `cvttps_epi32` and the
   256-bit `shuffle_ps`, plus `cvtepu8_epi32` under MSVC, which lacks vector extensions.
-- On AArch64, GCC kept SIMDe's 256-bit type in memory, copying it through the stack at every operation. Resizer / QImage
-  on the ARM runners, 24 MP -> 1080p single-threaded, at d436d41: GCC 4.95, Clang 2.30.
+- On AArch64, GCC kept SIMDe's 256-bit type in memory, copying it through the stack at every operation.
 
-CI, 9c5c6ac and 4b5fdf8 -> 963b54b, SIMD rows:
-- ARM GCC: -40% to -55% everywhere. It is now within 2-22% of Clang, down from about 2x.
-- ARM Clang: upscales -12% to -23%, downscales within 3%.
-- Pi, Clang, 6b6bf7e -> 3049bb0: upscales -6% to -13%, downscales -4% to -9%; the scalar rows within 4%.
-- M1, Apple Clang, three alternating rounds of 4b5fdf8 and 963b54b: -2% to -12%, the scalar rows within 1%.
-- x64: the AVX2 instructions are unchanged under clang-cl and MSVC. MSVC's code layout moved, and its RGBA32 downscales
-  on the EPYC 7763 runner are 6-9% slower, against neutral on the PC.
+Against SIMDe, SIMD rows:
+- ARM GCC on Neoverse-N2: -40% to -55% everywhere, now within 2-22% of Clang, down from about 2x.
+- ARM Clang, the Pi and the M1: -2% to -23%, upscales most.
+- x64: the AVX2 instructions are unchanged.
 
 ### Source rows converted to float once (d436d41)
 
 The horizontal pass used to widen bytes to floats at every tap; each pixel is now converted once. x64 widens as part of
 the load, NEON needs separate instructions. So the change pays on ARM and is about neutral on x64.
 
-CI, resizer / QImage single-threaded, f435b80 -> d436d41:
-
-| Job | 24 MP -> 1080p | 4K -> 1080p | 4K -> 64x64 | 101 MP -> 720p |
-|---|---|---|---|---|
-| ARM Clang | 5.14 -> 2.30 | 7.42 -> 3.41 | 6.49 -> 2.47 | 7.05 -> 2.89 |
-| ARM GCC | 6.46 -> 4.95 | 9.78 -> 7.32 | 7.07 -> 5.47 | 8.91 -> 6.06 |
-| macOS | 3.91 -> 2.50 | 3.72 -> 2.90 | 3.87 -> 1.61 | 6.14 -> 1.86 |
-| x64 GCC | 2.71 -> 2.77 | 3.10 -> 3.00 | 3.55 -> 4.04 | 3.79 -> 3.96 |
-| MSVC | 2.27 -> 2.44 | 2.09 -> 2.18 | 1.84 -> 2.66 | 2.49 -> 2.54 |
+CI, resizer / QImage, 24 MP -> 1080p single-threaded: ARM Clang 5.14 -> 2.30, ARM GCC 6.46 -> 4.95, macOS 3.91 -> 2.50,
+x64 GCC 2.71 -> 2.77, MSVC 2.27 -> 2.44.
 
 ### A sliding source buffer, not whole converted rows (a9756cb)
 
 Whole converted rows are 4x the byte rows. On the Pi, four threads' float rows overflow the shared 1 MB L2, and threading
 stopped paying. `SlidingSourceFloats` converts into a buffer of a few KB per row that slides along the row.
 
-Pi, SIMD ms: 7919eaf / whole rows (d436d41) / sliding (a9756cb, chunk 64):
-
-| Scenario | Single-threaded | Threads |
-|---|---|---|
-| 24 MP -> 1080p | 542 / 427 / 476 | 246 / 462 / 232 |
-| 4K -> 1080p | 220 / 172 / 200 | 124 / 220 / 125 |
-| 101 MP -> 720p | 2023 / 1534 / 1680 | 639 / 1600 / 587 |
-| 1080p -> 1440p | 81.1 / 69.1 / 78.0 | 22.6 / 44.1 / 23.9 |
-| 1080p -> 240p | 45.1 / 31.7 / 37.7 | 15.3 / 15.9 / 13.2 |
-| 4K -> 64x64 | 129 / 84 / 114 | 45.6 / 41.4 / 43.1 |
-
-- Whole rows: the threaded times doubled wherever the float rows are large. Sliding brings them back to 7919eaf's.
+- Pi, 24 MP -> 1080p with threads, ms: 246 before, 462 with whole rows, 232 sliding. Single-threaded: 542, 427, 476.
 - Single-threaded, sliding keeps a third to two thirds of the whole-row gain.
-- The PC has private L2 per core, so there all three stay within about 10% of each other.
 - Capacity is two of the longest runs, plus a back margin and a conversion chunk. The first version held one run plus
   72 pixels. For 4K -> 64x64 (360-pixel windows), that copied every source pixel about 5 extra times per sweep.
-
-CI runners with large private L2 prefer whole rows single-threaded. Resizer / QImage on ARM Clang, whole rows (d436d41) ->
-sliding (1ecd630):
-
-| Scenario | Whole rows -> sliding |
-|---|---|
-| 4K -> 1080p | 3.41 -> 3.64 |
-| 1080p -> 1440p | 1.60 -> 1.79 |
-| 4K -> 64x64 | 2.47 -> 3.09 |
-
-Threads were even on those runners. The Pi decides: it is the target hardware, and its gain is far larger.
+- CI runners with large private L2 prefer whole rows single-threaded: ARM Clang 4K -> 1080p 3.41 -> 3.64. The Pi decides:
+  it is the target hardware, and its gain is far larger.
 
 ### Conversion chunk of 128 pixels (1ecd630)
 
@@ -172,48 +149,16 @@ Estimates for 24 MP -> 1080p:
 | 32 | 1.3 KB | 55% |
 | 16 | 1.0 KB | 78% |
 
-Pi, SIMD ms, chunk 64 (2 runs) / 256 (2 runs) / 128, single-threaded:
-
-| Scenario | 64 | 256 | 128 |
-|---|---|---|---|
-| 24 MP -> 1080p | 476, 487 | 467, 460 | 458 |
-| 4K -> 1080p | 200, 203 | 225, 198 | 196 |
-| 1080p -> 1440p | 78.0, 80.9 | 78.4, 77.2 | 76.7 |
-| 4K -> 64x64 | 114, 118 | 105, 104 | 110 |
-| 101 MP -> 720p | 1680, 1713 | 1684, 1664 | 1683 |
-
-Pi, the same with threads:
-
-| Scenario | 64 | 256 | 128 |
-|---|---|---|---|
-| 24 MP -> 1080p | 232, 230 | 251, 242 | 236, 235 |
-| 4K -> 1080p | 125, 123 | 133, 132 | 128, 127 |
-| 1080p -> 1440p | 23.9, 23.2 | 26.0, 25.9 | 24.0, 22.6 |
-| 4K -> 64x64 | 43.1, 41.3 | 40.6, 41.7 | 39.6, 39.5 |
-| 101 MP -> 720p | 587, 585 | 595, 587 | 558, 583 |
-
 - 256 costs the Pi 5-10% with threads, likely from L1 pressure: more buffer next to a 23 KB temp row in a 32 KB L1.
 - 128 matches 64 with threads, and matches or beats 256 single-threaded.
-- PC, 64 -> 256: upscales gain 3-6% single-threaded, and 101 MP with threads gains 4-5%; nothing loses outside noise.
-
-Net on the Pi, 7919eaf -> 1ecd630, ms:
-
-| Scenario | Single-threaded | Threads |
-|---|---|---|
-| 24 MP -> 1080p | 542 -> 458 | 246 -> 235 |
-| 4K -> 1080p | 220 -> 196 | 124 -> 125 |
-| 101 MP -> 720p | 2023 -> 1683 | 639 -> 578 |
-| 4K -> 64x64 | 129 -> 110 | 45.6 -> 42.7 |
-| 1080p -> 1440p | 81 -> 77 | 22.6 -> 22.6-25.3 |
+- Net on the Pi, 7919eaf -> 1ecd630, 24 MP -> 1080p: 542 -> 458 ms single-threaded, 246 -> 235 with threads.
 
 ### Straight alpha premultiplied in the kernel (003d5e6)
 
 Qt converts straight alpha to `ARGB32_Premultiplied` before scaling. That pass is the difference between its RGBA32 and
 RGB32 4K -> 1080p controls: 18.7 against 8.1 ms on the PC, 87.9 against 40.2 on the Pi. The same conversion in our Qt bridge
 would add a pass and a 33 MB temporary per 4K frame. Premultiplying while converting to float costs nothing measurable on
-the SIMD path on the PC: at 1ecd630 the 4K -> 1080p RGBA32 ratio was 0.858 and 0.797 in two runs, and at 003d5e6 it was
-0.885. The untouched RGB32 row moved by as much in the same runs. On the Pi it costs about 5% single-threaded: 2.36 at
-1ecd630, 2.47 at 1199012.
+the PC, and about 5% single-threaded on the Pi.
 
 ### 128-bit packs for the output bytes (e16c6c4)
 
@@ -222,16 +167,8 @@ The vertical pass rounds floats to bytes:
   element by element on NEON.
 - 128-bit packs keep element order, so the permute is not needed.
 
-Resizer / QImage, before -> after. On the ARM runner and the Pi, both builds called `prepareRun` out of line (see the next
-section).
-
-| Scenario | ARM Clang CI | Pi | PC |
-|---|---|---|---|
-| 720p -> 4K RGBA32 | 0.31 -> 0.28 | 0.39 -> 0.37 | 0.31 -> 0.31 |
-| 720p -> 4K RGBA32, threads | 0.081 -> 0.072 | 0.31 -> 0.28 | 0.074 -> 0.068 |
-| 1080p -> 1440p | 2.07 -> 1.95 | 2.10 -> 2.01 | 0.92 -> 0.87 |
-
-Downscales stayed within about 4% on all three.
+Resizer / QImage, 720p -> 4K RGBA32: ARM Clang CI 0.31 -> 0.28, Pi 0.39 -> 0.37, PC 0.31 -> 0.31. Downscales stayed within
+about 4% on all three.
 
 ### Forced inlining on every platform (1199012)
 
@@ -242,18 +179,7 @@ platform:
   column.
 - A per-column cost weighs most on upscales, which have the most columns per source pixel.
 
-ARM Clang runner, 1ecd630 -> 003d5e6: 24 MP 2.32 -> 2.58, 4K -> 1080p 3.64 -> 4.09, 1080p -> 1440p 1.79 -> 2.07,
-4K -> 64x64 3.09 -> 3.26.
-
-Pi, single-threaded. Columns: 1ecd630 / f116725 (out-of-line call) / 1199012 (inlined, with the 128-bit packs):
-
-| Scenario | Resizer / QImage |
-|---|---|
-| 24 MP -> 1080p | 2.94 / 3.11 / 2.97 |
-| 4K -> 1080p RGB32 | 4.96 / 5.24 / 4.83 |
-| 1080p -> 1440p | 1.92 / 2.10 / 1.85 |
-| 4K -> 64x64 | 3.62 / 3.63 / 3.41 |
-| 101 MP -> 720p | 4.32 / 4.47 / 4.29 |
+Resizer / QImage, 1080p -> 1440p: ARM Clang runner 1.79 -> 2.07 with the call; Pi 1.92 before it, 2.10 with it, 1.85 inlined.
 
 ### One outline for every pixel layout (e5ea70d)
 
@@ -265,23 +191,10 @@ The SIMD outline serves 1-4 channels at any pixel stride.
 - Tight packing and RGB32 get a compile-time stride, with whole-vector conversion and writes. Other strides convert and
   store pixel by pixel.
 
-PC, ms, 42a4330 -> e5ea70d, three alternating rounds:
-
-| Scenario | MSVC | clang-cl |
-|---|---|---|
-| 4K -> 1080p Grayscale8 | 22.5 -> 10.6 | 16.8 -> 8.7 |
-| 720p -> 4K Grayscale8 | 14.1 -> 7.3 | 9.4 -> 7.0 |
-| 4K -> 1080p RGB24 | 59.1 -> 16.5 | 39.9 -> 17.7 |
-| 720p -> 4K RGB24 | 41.3 -> 10.9 | 25.0 -> 10.9 |
-| 4K -> 1080p RGB24, threads | 16.5 -> 5.2 | 11.7 -> 5.8 |
-| 720p -> 4K RGB24, threads | 12.4 -> 3.9 | 7.5 -> 3.9 |
-
-- RGB24 now costs what RGB32 does: 16.5 against 16.6 ms on 4K -> 1080p under MSVC.
-- The 4-byte rows held within 4% under MSVC; clang-cl's upscales gained 4-11%.
-- SSE4.1 / AVX2 time under MSVC: Grayscale8 1.1x, RGB24 1.25-1.7x.
-- Pi, Clang, resizer / QImage, 6b6bf7e -> e5ea70d: Grayscale8 1.19 -> 0.74 and 0.59 -> 0.44, RGB24 3.76 -> 2.75 and
-  1.09 -> 0.77.
-- Pi, GCC against Clang at e5ea70d: 7-17% slower on downscales.
+Against the scalar path it replaced:
+- PC, MSVC, ms: 4K -> 1080p RGB24 59.1 -> 16.5, 4K -> 1080p Grayscale8 22.5 -> 10.6. RGB24 now costs what RGB32 does.
+- Pi, Clang, resizer / QImage: 4K -> 1080p RGB24 3.76 -> 2.75, Grayscale8 1.19 -> 0.74.
+- SSE4.1 / AVX2 time under MSVC on the PC: Grayscale8 1.1x, RGB24 1.25-1.7x.
 
 ### The run lookup holds its array pointers by value (f2f4569, 03113a6)
 
@@ -289,30 +202,14 @@ The horizontal pass looks up each output pixel's run through `AxisWeights::RunLo
 Through the `AxisWeights` reference the compiler reloads both per pixel: the loop's stores may alias the object.
 
 - The reload sits ahead of the load that yields the pixel's tap count, so every branch on that count resolves later.
-- x64 GCC kept the reference itself on the stack in the 3-channel AVX2 kernel at e5ea70d, a third load in that chain. That
-  kernel ran 4-5% slower than at 8baefb9, with the same instructions in every hot loop.
+- x64 GCC kept the reference itself on the stack in the 3-channel AVX2 kernel at e5ea70d, a third load in that chain.
 
-CI, x64 GCC on the EPYC 7763, AVX2 ms, three runs per commit:
-
-| Scenario | 8baefb9 | f04db84 | f2f4569 |
-|---|---:|---:|---:|
-| 720p -> 4K RGB32 | 12.77 | 13.21 | 12.56 |
-| 1080p -> 1440p | 10.36 | 10.88 | 10.09 |
-| 4K -> 1080p RGB32 | 27.22 | 27.85 | 25.82 |
-| 4K -> 1080p RGBA32 | 26.79 | 27.31 | 25.84 |
-| 720p -> 4K RGBA32 | 12.95 | 13.16 | 13.08 |
-| 4K -> 1080p Grayscale8 | - | 12.91 | 11.89 |
-| 720p -> 4K RGB24 | - | 12.90 | 11.86 |
-
-- x64 GCC: the SSE4.1 kernels gain 2-8% as well. 4K -> 64x64 does not gain. 03113a6 is within 2% of f2f4569.
-- ARM GCC on Neoverse-N2, f04db84 -> 03113a6, 6 and 4 runs: 4-byte rows -1% to -5%, Grayscale8 -8% and -5%,
-  720p -> 4K RGB24 -16%.
-- Clang on ARM and x64, and clang-cl: within 2%.
-- PC, MSVC, AVX2, ten alternating rounds: downscales -3% to -6%.
+Gains: x64 GCC on the EPYC 7763 5-8% on most AVX2 rows (4K -> 1080p RGB32 27.85 -> 25.82 ms), ARM GCC 1-16%, MSVC's AVX2
+downscales on the PC 3-6%. Clang: within 2% everywhere.
 
 `RunLookup::runFor` is force-inlined. MSVC's link-time code generation otherwise calls it once per output pixel in the
 SSE4.1 kernels, and did the same to a `std::span` constructor written directly in the loop (f2f4569): 4-6% on the SSE4.1
-upscales on the PC, 4-18% on the EPYC 7763 runner.
+upscales on the PC, 4-18% on the EPYC 7763 runner, nothing on the N4100.
 
 Calls written in the hot loop bodies are forced inline at the call site as well (`IMAGE_PROCESSING_FORCE_INLINE_CALLS`),
 which covers standard library calls that no function attribute of ours can reach.
@@ -321,19 +218,14 @@ which covers standard library calls that no function attribute of ours can reach
 - clang-cl: `[[clang::always_inline]]` on the block. Inside a template it crashes Clang 18.1.3 and Apple clang 21 (Xcode 26.6)
   in `Sema::CheckAlwaysInlineAttr`; 20.1.8 and 22.1.3 compile it.
 - GCC has no per-block form: the kernel's entry function is `flatten`ed. Clang off Windows takes the same form.
-- `flatten` under GCC on Neoverse-N2 (74b015c and later, ten runs against seven): 24 MP -> 1080p 92.4 -> 78.3 ms,
-  1080p -> 240p 8.00 -> 6.60, 101 MP -> 720p 288 -> 261, level with Clang. Other rows within 5%, 720p -> 4K RGBA32 aside.
-  Under Clang on the same CPU: within 2.5%.
-- 720p -> 4K RGBA32 in the same runs: 22.2 ms before, 24.0-24.3 at 74b015c and 15f240e (seven runs), 21.9 at 9811e5b (three
-  runs), which changed only the benchmark's source. The row follows the binary's layout, not the kernel's code.
-- `flatten` under GCC on the EPYC 7763, six runs against four: -0.9% on average. AVX2 720p -> 4K Grayscale8 7.42 -> 7.75 ms,
-  its SSE4.1 run 10.42 -> 9.80.
-- Call-site forcing under MSVC on the EPYC 7763, 03113a6 against 15f240e and 9811e5b, three runs each, by minimums: AVX2
-  -3.3%, SSE4.1 -2.8% on average.
-- The same GCC 14.2 on the Pi, 14e731e against 74b015c's kernels, one run of 30 samples each: 24 MP -> 1080p 480 -> 451 ms, 1080p -> 240p
-  40.1 -> 38.0. 720p -> 4K RGBA32 unchanged, 98.4 -> 97.7-99.2. Other rows within 1.5%.
 - `std::min` over an initializer list is a library call under MSVC whatever the attributes: the kernels use the
   two-argument overload.
+
+Gains:
+- `flatten` under GCC on Neoverse-N2: 24 MP -> 1080p 92.4 -> 78.3 ms, level with Clang. On the Pi: 480 -> 451 ms.
+  On the EPYC 7763: -0.9% on average.
+- Call-site forcing under MSVC: about 3% on the EPYC 7763. On the N4100, the span that holds it took 7-9% off the
+  4-byte and RGB24 downscales.
 
 The check is the disassembly. Under MSVC a kernel's only calls are `memmove`, `memcpy` on the runtime-stride paths,
 allocation, the ring's constructor and `clearAvxUpperState`.
@@ -343,70 +235,32 @@ allocation, the ring's constructor and `clearAvxUpperState`.
 MSVC aligns loops to 16 bytes. On the PC's P-cores the kernels' upscale path runs at two speeds depending on where its
 loops land within a 64-byte line, with identical instructions. Any edit that moves the kernels' code flips it.
 
-PC, MSVC, 03113a6 with 0-56 `nop` bytes at each kernel's start, median ms of six rounds. The eight builds fall into two
-placements:
+- Each kernel has its own placements. Downscales do not react.
+- A reduced loop, `tests/msvc_loop_placement_repro.cpp`, shows 7-28% between placements. VTune finds equal instruction,
+  micro-op and branch counts and no mispredictions; the slow placement has the micro-op cache deliver partial groups in
+  3.6-4.0 cycles per iteration against 1.4-1.9.
+- The same loop under clang-cl 22 runs within 1% at every placement.
+- The EPYC runners show at most a few percent, and not consistently: CI cannot check this.
 
-| Scenario | Placement A | Placement B |
-|---|---|---|
-| AVX2 720p -> 4K Grayscale8 | 7.70 - 8.05 | 7.37 - 7.44 |
+`/QIntel-jcc-erratum` pads so that no jump crosses or ends on a 32-byte boundary. Only the AVX2 source is compiled with it.
+- PC, AVX2 720p -> 4K Grayscale8, median ms: 8.12 and 7.56 at the plain build's two placements, 7.41-7.80 with the switch.
+- On the SSE4.1 level the switch costs wherever that level was measured, the PC's P-cores aside:
+  - EPYC 7763: RGB32 upscales 13-17%.
+  - The PC's E-cores (Gracemont): RGB32 downscales 17-35%. Cause not investigated.
+  - N4100: up to 5.6%, no row gaining.
 
-- Each kernel has its own placements: AVX2 720p -> 4K RGB24 moves 6% and SSE4.1 720p -> 4K Grayscale8 12-14%, at other
-  paddings than the row above.
-- Downscales do not react: 2-5% spread, the QImage controls' own.
-- The EPYC runners show at most a few percent on these rows, and not consistently: CI cannot check this.
-
-A reduced loop, `tests/msvc_loop_placement_repro.cpp` (two rows per iteration, a never-entered 32-tap block, a 4-tap
-step, run lengths 4, 1, 4), shows 7-28% between placements. VTune on it, per iteration, fast against slow placements:
-- Instructions, retired micro-ops, fused pairs and taken branches: equal.
-- Mispredictions and legacy-decoder micro-ops: none. The loop stream detector delivers nothing.
-- Cycles in which the micro-op cache delivers a partial group: 1.4-1.9 against 3.6-4.0.
-
-`/QIntel-jcc-erratum` pads so that no jump crosses or ends on a 32-byte boundary. Only the AVX2 source is compiled with
-it. The measurements below are of 14e731e, which applied it to both levels. PC, MSVC, median ms of six rounds; the plain
-build at its two placements against eight padded builds with the switch:
-
-| Scenario | Plain, slow | Plain, fast | With the switch |
-|---|---:|---:|---|
-| AVX2 720p -> 4K Grayscale8 | 8.12 | 7.56 | 7.41 - 7.80 |
-| AVX2 720p -> 4K RGB24 | 12.18 | 11.74 | 11.56 - 11.94 |
-| SSE4.1 720p -> 4K Grayscale8 | 9.32 | 8.32 | 8.28 - 8.89 |
-
-- Downscales with the switch: within -3% to 0% of the plain build.
-- Conditional jumps crossing or ending on a 32-byte boundary went from 135 and 152 in the nine kernels per level to 1 each.
-  The link-time-generated level takes the switch from the compile flags too.
-- The same reduced loop under clang-cl 22 runs within 1% at every placement.
-- EPYC 7763 (CI, same toolset as the PC), 03113a6 -> 14e731e, three runs each: AVX2 rows within 1%. SSE4.1 RGB32 upscales
-  slower in every run: 720p -> 4K 22.8-23.4 -> 26.6-28.1 ms, 1080p -> 1440p 16.2-17.5 -> 19.0-19.3 ms. The same two rows
-  on the PC: within 1.5% with and without the switch. The other SSE4.1 upscales on the EPYC: within 4%. With the switch
-  on the AVX2 source alone (15f240e, 9811e5b; three runs): 23.1-23.9 and 16.8-19.0.
-- The PC's E-cores (Gracemont), MSVC, 03113a6 -> 14e731e, minimum of two rounds: AVX2 rows within noise. SSE4.1 RGB32
-  downscales slower: 101 MP -> 720p 314 -> 415 ms, 4K -> 64x64 22.4 -> 30.2, 4K -> 1080p 42.4 -> 49.5, 24 MP -> 1080p 95 -> 111.
-  Cause not investigated. With the switch on the AVX2 source alone: 311, 22.1, 40.7, 92.5.
-
-### One-channel upscales filter four columns at a time
+### One-channel upscales filter four columns at a time (0bd90e4)
 
 Where no x run exceeds 4 taps, the one-channel horizontal pass (`filterHorizontalShortRuns`) multiplies four columns' runs
 and reduces them together: one reduction and one store per four columns, no branch on the run's length. The general
-pass reduces and stores each column on its own. PC, MSVC, minimum ms of six rounds:
-
-| Scenario | Before | After |
-|---|---:|---:|
-| AVX2 720p -> 4K Grayscale8 | 7.13 | 5.45 |
-| SSE4.1 720p -> 4K Grayscale8 | 8.34 | 6.12 |
+pass reduces and stores each column on its own.
 
 - Each run loads 4 source floats and 4 weights whatever its length: the lanes past the run are masked out of the source,
   and the weights array's slack keeps the load in bounds.
-- CI, 720p -> 4K Grayscale8 at 0bd90e4 against the three commits before it, same CPU:
-
-  | Compiler, CPU | Default level | SSE4.1 |
-  |---|---:|---:|
-  | MSVC, EPYC 7763 | -29% | -30% |
-  | Clang, EPYC 7763 | -28% | -27% |
-  | GCC, EPYC 7763 | -8% | -10% |
-  | Clang, Neoverse-N2 | -14% | |
-  | GCC, Neoverse-N2 | -2% | |
-
-- GCC gains a third or less of what the others do, on both architectures. Not investigated.
+- 720p -> 4K Grayscale8: PC, MSVC, AVX2 7.13 -> 5.45 ms, SSE4.1 8.34 -> 6.12. MSVC and Clang on the EPYC 7763 -27% to -30%.
+  N4100 -20%. Clang on Neoverse-N2 -14%.
+- GCC gains a third or less of what the others do, on both architectures: -8% to -10% on the EPYC 7763, -2% on
+  Neoverse-N2. Not investigated.
 - Two-channel pixels still take the general pass.
 
 ### Column strips (b9fea7e)
@@ -419,83 +273,27 @@ only the strip's source span (29b97e9).
 |---|---:|---:|
 | Pi 4 | 256 KB (1 MB, four cores) | 128 KB |
 | PC | 512 KB (E-core cluster: 2 MB, four cores) | 256 KB |
+| N4100 | 1024 KB (4 MB, four cores) | 512 KB |
 
 The tests pass the Pi's budget on every machine, so they cover the same strip layouts everywhere.
 
-Full-width rings overflowed the Pi's shared L2 with four threads. Per thread, ring plus float row plus accumulator row came
-to about 350 KB for 720p -> 4K RGBA32, 390 KB for 4K -> 1080p RGB24, 500 KB for 24 MP -> 1080p, 1.2 MB for 101 MP -> 720p.
-Pi PMU counters, whole process, "Parallel resize" reduced to 720p -> 4K RGBA32, 8ca3148 (two passes through a whole-image
-temp) -> 2b371a2 (full-width ring):
+Full-width rings overflowed the Pi's shared L2 with four threads: evicted dirty ring rows are written out to DRAM and
+read back.
+- Pi, ms with threads: 24 MP -> 1080p 236.8 -> 136.4, 4K -> 1080p RGBA32 167.3 -> 69.9.
+- Both paths scale 3.1-3.6x on the Pi's four cores; before strips the SIMD path scaled 1.3-3.1x.
+- Single-threaded the Pi is about neutral.
+- Where full-width rings already fit, only the overhead shows: SIMD +1-5% single-threaded on Neoverse-N2, 3-5% on the
+  PC's downscales.
 
-| Event | 8ca3148 | 2b371a2 |
-|---|---:|---:|
-| L2 read refills (0x52) | 85.8 M | 103.0 M |
-| L2 write refills (0x53) | 4.6 M | 10.3 M |
-| Bus reads (0x60) | 359 M | 450 M |
-| Bus writes (0x61) | 144 M | 177 M |
-| Cycles (0x11) | 19.0 G | 22.2 G |
-| Kernel time | 1.48 s | 0.50 s |
-
-- DRAM traffic grew both ways despite less work: evicted dirty ring rows are written out and read back.
-- The 3.2 G extra cycles over the 17.2 M extra read refills come to about 186 cycles each, a full DRAM latency.
-- The whole-image temp caused few write refills: the A72 stops allocating on long sequential store runs. Its kernel time
-  is the temp's page faults on every call.
-- The A72 does not count backend stalls (0x24).
-
-Pi, ms with threads, 2b371a2 -> b9fea7e. Scalar also against 8ca3148. Speedup: single-threaded / threaded time, with strips.
-
-| Scenario | SIMD | Scalar: 8ca3148 / 2b371a2 -> b9fea7e | Speedup: SIMD, scalar |
-|---|---|---|---|
-| 24 MP -> 1080p | 236.8 -> 136.4 | 304.7 / 308.8 -> 171.8 | 3.36x, 3.52x |
-| 4K -> 1080p RGBA32 | 167.3 -> 69.9 | 214.6 / 228.7 -> 91.4 | 3.13x, 3.23x |
-| 4K -> 1080p RGB24 | - | 136.4 / 156.6 -> 74.2 | -, 3.42x |
-| 720p -> 4K RGBA32 | 88.6 -> 36.5 | 127.0 / 144.5 -> 77.2 | 3.08x, 2.04x |
-| 720p -> 4K RGB24 | - | 62.7 / 60.5 -> 38.7 | -, 3.12x |
-| 101 MP -> 720p | 624.8 -> 481.0 | 840.8 / 1034.8 -> 614.9 | 3.11x, 3.62x |
-| 1080p -> 240p | 13.0 -> 11.9 | 16.7 / 16.7 -> 16.8 | - |
-| 1080p -> 1440p (one strip) | 23.0 -> 24.7 | 38.4 / 34.2 -> 38.2 | - |
-| 4K -> 64x64 | 42.6 -> 44.3 | 47.1 / 58.6 -> 59.2 | 2.46x, 2.85x |
-
-- Both paths scale 3.1-3.6x on four cores; before strips the SIMD path scaled 1.3-3.1x, the scalar one 1.1-2.9x.
-- Weak rows: 4K -> 64x64, whose two strips each re-convert about 360 shared source pixels, and scalar 720p -> 4K RGBA32.
-- Single-threaded the Pi is about neutral: 101 MP SIMD gains 9-12% (its ring overflowed the L2 even alone), 4K -> 64x64 SIMD
-  loses 8%.
-- Where full-width rings already fit, only the overhead shows. ARM Clang on Neoverse-N2 (1 MB private L2), CI,
-  2b371a2 -> 29b97e9, 3-4 samples per side:
-  - SIMD +1-5% single-threaded.
-  - Scalar downscales +5-11%, scalar upscales -5-6%.
-  - With threads within 4%, except scalar 24 MP and 101 MP: +8-9%.
-
-Without the pre-touch below, strips cost x64 Windows single-threaded, the SIMD upscales most. CI, EPYC 7763, resizer / QImage, 2b371a2 -> 29b97e9,
-2-4 samples per side:
-- MSVC and clang-cl: SIMD 720p -> 4K +53-62%, 4K -> 1080p RGB32 +9-14%; scalar upscales +4-20%.
-- With threads: MSVC -8% to +7%, clang-cl gains 3-11%.
-- x64 Clang on Linux, same CPU model: within 4%.
-
-The cost is Windows' demand-zero page faults on a fresh destination:
-- A process-fault-counter probe on the PC: one fault per page with and without strips, but about 1.1-1.2 us each when strips
-  first write the pages out of address order, against 0.45 us in order.
-- With a reused destination strips cost the upscales -4% to +6%.
+Without the pre-touch below, strips cost x64 Windows single-threaded, the SIMD upscales most: 720p -> 4K +53-62% on the
+EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' demand-zero page faults on a fresh destination:
+- One fault per page with and without strips, but about 1.1-1.2 us each when strips first write the pages out of address
+  order, against 0.45 us in order.
 - Finishing each page while cached does not help: see experiment 8.
 - `touchDestPagesInOrder` writes one byte per page in address order before a band's strips run.
 - Linux on the same CPU model shows no cost; why is unmeasured.
-
-PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destinations, three runs.
-
-| Scenario | 2b371a2 | 29b97e9 (strips, cap) | Pre-touch |
-|---|---:|---:|---:|
-| 720p -> 4K RGBA32 | 13.65 | 19.59 (+43%) | 13.93 (+2%) |
-| 720p -> 4K RGB32 | 12.72 | 18.56 (+46%) | 13.29 (+4%) |
-| 4K -> 1080p RGB32 | 15.89 | 18.53 (+17%) | 16.73 (+5%) |
-| 24 MP -> 1080p | 35.84 | 38.64 (+8%) | 36.93 (+3%) |
-| 720p -> 4K RGB32, scalar | 44.24 | 48.67 (+10%) | 44.85 (+1%) |
-| 720p -> 4K RGBA32, threads | 5.35 | 7.57 (+41%) | 5.47 (+2%) |
-
-- The remaining 3-5% on downscales is strip overhead: it remains with a reused destination.
+- PC, 720p -> 4K RGBA32, ms: 13.65 before strips, 19.59 with them, 13.93 with the pre-touch.
 - Pre-touching a reused destination costs nothing measurable, with or without threads.
-- CI, EPYC 7763, single-threaded against 2b371a2, 6b6bf7e: MSVC and clang-cl upscales -3% to +3% (strips alone: +53-62%),
-  4K -> 1080p +1-7%. The Linux and ARM jobs held within 5% of strips alone.
-- The cap (29b97e9) took 4-5 points off the SIMD cost before the pre-touch.
 
 ## Experiments that lost
 
@@ -506,14 +304,7 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
    - The cost was GCC's 256-bit type going through memory, not the permute.
 2. **An early return and register-held span state in `prepareRun`** (e71b61c, reverted by d8172a0).
    - Aimed at MSVC, which lacks type-based alias analysis and may reload the buffer's fields after every float store.
-   - PC, MSVC, three rounds each, ms. Columns: sliding, + early return, + both.
-
-     | Scenario | Sliding | + early return | + both |
-     |---|---|---|---|
-     | 1080p -> 1440p | 8.55, 8.89, 8.92 | 8.08, 8.15, 8.47 | 8.70, 8.84, 8.97 |
-     | 720p -> 1080p | 4.53, 4.63, 4.66 | 4.33, 4.35, 4.58 | 4.64, 4.65, 4.70 |
-     | 4K -> 1080p | 15.75, 15.99, 16.35 | 15.41, 15.45, 16.06 | 14.92, 15.28, 15.42 |
-     | 24 MP -> 1080p | 35.46, 35.50, 35.75 | 34.81, 35.31, 35.66 | 35.22, 35.31, 36.06 |
+   - PC, MSVC: within 5% either way, no row gaining from both together on upscales.
    - Pi: both together cost 2-5% single-threaded and nothing with threads. Clang already keeps the fields in registers,
      so the locals only add register pressure.
 3. **Chunk 256** (97b96ed, replaced by 128): the Pi's thread cost above.
@@ -531,7 +322,6 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
    - Aimed at a suspected dependency chain through `cvtsi2ss`. MSVC already breaks it with `xorps`.
    - PC: scalar downscales 2-5% faster, 1080p -> 1440p unchanged, across sessions.
    - Dropped: unmeasured on ARM, where a table lookup blocks vectorizing the conversion.
-
 8. **Row blocks for the Windows cost of strips** (not committed).
    - What: each thread ran all strips over a block of about 2.7 MB of destination rows before the next block, so every
      destination page filled while cached.
@@ -549,14 +339,14 @@ PC, MSVC, mean ms of five alternating rounds; threads: a probe with fresh destin
    code, not in memory traffic. Comparing MSVC's code for `filterHorizontalRowGroup` with clang-cl's is the next step.
 4. **The SSE4.1 kernels are untuned:** 1.3-1.7x the AVX2 time on the PC under MSVC. The horizontal pass's paired-row
    block needs 16 XMM accumulators, x64's whole register file: MSVC keeps eight of them on the stack. Single rows or fewer
-   chains at this level are the candidates, to be judged on the Celeron N4100.
+   chains at this level are the candidates, to be judged on the Celeron N4100. Its log has the baseline and the
+   generated code's per-column costs.
 5. **Strips cost where the L2 is large:** 1-5% on Neoverse-N2's SIMD rows, 3-8% on the PC's downscales (the column strips
    section). A budget from the runtime L2 share would skip strips there.
 6. **Placement still moves MSVC's AVX2 upscale rows about 5%** with `/QIntel-jcc-erratum`, and the SSE4.1 ones, built
    without it, up to 12-14%. Which loop of the upscale path reacts is unidentified: padding at the kernel's start shifts
    them all together. MSVC has no loop alignment control; clang-cl's code for the reduced loop does not react.
-7. **`/QIntel-jcc-erratum` on the SSE4.1 level is untested where that level runs:** it cost RGB32 upscales 13-17% on the
-   EPYC 7763 and RGB32 downscales 17-35% on the PC's E-cores, and nothing on its P-cores (the section on jumps and 32-byte
-   boundaries). To be measured on the Celeron N4100 and a Sandy Bridge.
+7. **`/QIntel-jcc-erratum` on the SSE4.1 level is untested on a Sandy Bridge.** Every CPU measured so far loses with it or
+   is indifferent (the section on jumps and 32-byte boundaries).
 8. **GCC's 720p -> 4K RGBA32 on Neoverse-N2 moves 10% with the binary's layout** (the call-site attribute notes): 24.1 or
    21.9 ms for the same kernel source. Code placement or the buffers' addresses, undetermined. The Pi does not react.

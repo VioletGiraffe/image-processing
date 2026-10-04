@@ -1,0 +1,160 @@
+# Raspberry Pi 4
+
+The measurement log for this machine. Sections carry the headings of [resize-performance.md](../resize-performance.md),
+which holds each one's rationale.
+
+## Machine
+
+| | |
+|---|---|
+| CPU | 4x Cortex-A72, 1.8 GHz |
+| Caches | 32 KB L1D, 1 MB L2 shared by all cores |
+| Toolchain | Clang 22 unless noted; GCC 14.2 where named |
+
+- Run-to-run noise: 5-10%.
+- Without cooling it throttles under sustained load: `vcgencmd get_throttled` must print `0x0` after a run.
+
+## Per-instruction-set primitives, not SIMDe (963b54b)
+
+Clang, 6b6bf7e -> 3049bb0: upscales -6% to -13%, downscales -4% to -9%; the scalar rows within 4%.
+
+## A sliding source buffer, not whole converted rows (a9756cb)
+
+SIMD ms: 7919eaf / whole rows (d436d41) / sliding (a9756cb, chunk 64):
+
+| Scenario | Single-threaded | Threads |
+|---|---|---|
+| 24 MP -> 1080p | 542 / 427 / 476 | 246 / 462 / 232 |
+| 4K -> 1080p | 220 / 172 / 200 | 124 / 220 / 125 |
+| 101 MP -> 720p | 2023 / 1534 / 1680 | 639 / 1600 / 587 |
+| 1080p -> 1440p | 81.1 / 69.1 / 78.0 | 22.6 / 44.1 / 23.9 |
+| 1080p -> 240p | 45.1 / 31.7 / 37.7 | 15.3 / 15.9 / 13.2 |
+| 4K -> 64x64 | 129 / 84 / 114 | 45.6 / 41.4 / 43.1 |
+
+- Whole rows: the threaded times doubled wherever the float rows are large. Sliding brings them back to 7919eaf's.
+- Single-threaded, sliding keeps a third to two thirds of the whole-row gain.
+
+## Conversion chunk of 128 pixels (1ecd630)
+
+SIMD ms, chunk 64 (2 runs) / 256 (2 runs) / 128, single-threaded:
+
+| Scenario | 64 | 256 | 128 |
+|---|---|---|---|
+| 24 MP -> 1080p | 476, 487 | 467, 460 | 458 |
+| 4K -> 1080p | 200, 203 | 225, 198 | 196 |
+| 1080p -> 1440p | 78.0, 80.9 | 78.4, 77.2 | 76.7 |
+| 4K -> 64x64 | 114, 118 | 105, 104 | 110 |
+| 101 MP -> 720p | 1680, 1713 | 1684, 1664 | 1683 |
+
+The same with threads:
+
+| Scenario | 64 | 256 | 128 |
+|---|---|---|---|
+| 24 MP -> 1080p | 232, 230 | 251, 242 | 236, 235 |
+| 4K -> 1080p | 125, 123 | 133, 132 | 128, 127 |
+| 1080p -> 1440p | 23.9, 23.2 | 26.0, 25.9 | 24.0, 22.6 |
+| 4K -> 64x64 | 43.1, 41.3 | 40.6, 41.7 | 39.6, 39.5 |
+| 101 MP -> 720p | 587, 585 | 595, 587 | 558, 583 |
+
+- 256 costs 5-10% with threads, likely from L1 pressure: more buffer next to a 23 KB temp row in a 32 KB L1.
+- 128 matches 64 with threads, and matches or beats 256 single-threaded.
+
+Net, 7919eaf -> 1ecd630, ms:
+
+| Scenario | Single-threaded | Threads |
+|---|---|---|
+| 24 MP -> 1080p | 542 -> 458 | 246 -> 235 |
+| 4K -> 1080p | 220 -> 196 | 124 -> 125 |
+| 101 MP -> 720p | 2023 -> 1683 | 639 -> 578 |
+| 4K -> 64x64 | 129 -> 110 | 45.6 -> 42.7 |
+| 1080p -> 1440p | 81 -> 77 | 22.6 -> 22.6-25.3 |
+
+## Straight alpha premultiplied in the kernel (003d5e6)
+
+- Qt's 4K -> 1080p controls: RGBA32 87.9 ms, RGB32 40.2 ms.
+- Premultiplying in the kernel costs about 5% single-threaded: 4K -> 1080p RGBA32 ratio 2.36 at 1ecd630, 2.47 at 1199012.
+
+## 128-bit packs for the output bytes (e16c6c4)
+
+Resizer / QImage, before -> after. Both builds called `prepareRun` out of line.
+
+| Scenario | |
+|---|---|
+| 720p -> 4K RGBA32 | 0.39 -> 0.37 |
+| 720p -> 4K RGBA32, threads | 0.31 -> 0.28 |
+| 1080p -> 1440p | 2.10 -> 2.01 |
+
+Downscales stayed within about 4%.
+
+## Forced inlining on every platform (1199012)
+
+Single-threaded resizer / QImage. Columns: 1ecd630 / f116725 (out-of-line call) / 1199012 (inlined, with the 128-bit packs):
+
+| Scenario | Resizer / QImage |
+|---|---|
+| 24 MP -> 1080p | 2.94 / 3.11 / 2.97 |
+| 4K -> 1080p RGB32 | 4.96 / 5.24 / 4.83 |
+| 1080p -> 1440p | 1.92 / 2.10 / 1.85 |
+| 4K -> 64x64 | 3.62 / 3.63 / 3.41 |
+| 101 MP -> 720p | 4.32 / 4.47 / 4.29 |
+
+## One outline for every pixel layout (e5ea70d)
+
+- Clang, resizer / QImage, 6b6bf7e -> e5ea70d: Grayscale8 1.19 -> 0.74 and 0.59 -> 0.44, RGB24 3.76 -> 2.75 and
+  1.09 -> 0.77.
+- GCC against Clang at e5ea70d: 7-17% slower on downscales.
+
+## The run lookup holds its array pointers by value (f2f4569, 03113a6)
+
+`flatten` under GCC 14.2, 14e731e against 74b015c's kernels, one run of 30 samples each: 24 MP -> 1080p 480 -> 451 ms,
+1080p -> 240p 40.1 -> 38.0. 720p -> 4K RGBA32 unchanged, 98.4 -> 97.7-99.2. Other rows within 1.5%.
+
+## Column strips (b9fea7e)
+
+- L2 share per logical processor 256 KB (1 MB, four cores), ring budget 128 KB.
+- Full-width rings overflowed the shared L2 with four threads. Per thread, ring plus float row plus accumulator row came
+  to about 350 KB for 720p -> 4K RGBA32, 390 KB for 4K -> 1080p RGB24, 500 KB for 24 MP -> 1080p, 1.2 MB for 101 MP -> 720p.
+
+PMU counters, whole process, "Parallel resize" reduced to 720p -> 4K RGBA32, 8ca3148 (two passes through a whole-image
+temp) -> 2b371a2 (full-width ring):
+
+| Event | 8ca3148 | 2b371a2 |
+|---|---:|---:|
+| L2 read refills (0x52) | 85.8 M | 103.0 M |
+| L2 write refills (0x53) | 4.6 M | 10.3 M |
+| Bus reads (0x60) | 359 M | 450 M |
+| Bus writes (0x61) | 144 M | 177 M |
+| Cycles (0x11) | 19.0 G | 22.2 G |
+| Kernel time | 1.48 s | 0.50 s |
+
+- DRAM traffic grew both ways despite less work: evicted dirty ring rows are written out and read back.
+- The 3.2 G extra cycles over the 17.2 M extra read refills come to about 186 cycles each, a full DRAM latency.
+- The whole-image temp caused few write refills: the A72 stops allocating on long sequential store runs. Its kernel time
+  is the temp's page faults on every call.
+- The A72 does not count backend stalls (0x24).
+
+ms with threads, 2b371a2 -> b9fea7e. Scalar also against 8ca3148. Speedup: single-threaded / threaded time, with strips.
+
+| Scenario | SIMD | Scalar: 8ca3148 / 2b371a2 -> b9fea7e | Speedup: SIMD, scalar |
+|---|---|---|---|
+| 24 MP -> 1080p | 236.8 -> 136.4 | 304.7 / 308.8 -> 171.8 | 3.36x, 3.52x |
+| 4K -> 1080p RGBA32 | 167.3 -> 69.9 | 214.6 / 228.7 -> 91.4 | 3.13x, 3.23x |
+| 4K -> 1080p RGB24 | - | 136.4 / 156.6 -> 74.2 | -, 3.42x |
+| 720p -> 4K RGBA32 | 88.6 -> 36.5 | 127.0 / 144.5 -> 77.2 | 3.08x, 2.04x |
+| 720p -> 4K RGB24 | - | 62.7 / 60.5 -> 38.7 | -, 3.12x |
+| 101 MP -> 720p | 624.8 -> 481.0 | 840.8 / 1034.8 -> 614.9 | 3.11x, 3.62x |
+| 1080p -> 240p | 13.0 -> 11.9 | 16.7 / 16.7 -> 16.8 | - |
+| 1080p -> 1440p (one strip) | 23.0 -> 24.7 | 38.4 / 34.2 -> 38.2 | - |
+| 4K -> 64x64 | 42.6 -> 44.3 | 47.1 / 58.6 -> 59.2 | 2.46x, 2.85x |
+
+- Both paths scale 3.1-3.6x on four cores; before strips the SIMD path scaled 1.3-3.1x, the scalar one 1.1-2.9x.
+- Weak rows: 4K -> 64x64, whose two strips each re-convert about 360 shared source pixels, and scalar 720p -> 4K RGBA32.
+- Single-threaded about neutral: 101 MP SIMD gains 9-12% (its ring overflowed the L2 even alone), 4K -> 64x64 SIMD
+  loses 8%.
+
+## Experiments that lost
+
+**2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing
+with threads. Clang already keeps the fields in registers, so the locals only add register pressure.
+
+**4. Chunks of 32 and 16.** Not measured: with 5-10% noise, telling them apart from 64 would take several runs of each.
