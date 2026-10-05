@@ -319,10 +319,13 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 						accumPairs[1] = sumChains(chainsB);
 				}
 
+				// [[likely]] on the three steps below is for code placement, not a claim about the run lengths:
+				// GCC moves a step whose body is a loop over the rows out of line without it.
+
 				// 16 floats, half a four-chain block: a whole bicubic run of 4-float pixels
 				if constexpr (horizontalChainCount == 4)
 				{
-					if (tap + 16 / floatsPerPixel <= tapCount)
+					if (tap + 16 / floatsPerPixel <= tapCount) [[likely]]
 					{
 						// A whole WeightBlock though only 4 weights may be in play: the builder pads the weights array to keep the overread
 						// in bounds. On AVX2 the natural 4-float load + castps128_ps256 compiles under MSVC to a 16-byte stack store that the
@@ -343,7 +346,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 
 				// 8 floats: a whole bicubic run of 2-float pixels
-				if (tap + 8 / floatsPerPixel <= tapCount)
+				if (tap + 8 / floatsPerPixel <= tapCount) [[likely]]
 				{
 					const float* blockWeights = weights.data() + tap;
 					const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, loadWeightBlock(blockWeights));
@@ -360,7 +363,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				// 4 taps of 1-float pixels
 				if constexpr (floatsPerPixel == 1)
 				{
-					if (tap + 4 <= tapCount)
+					if (tap + 4 <= tapCount) [[likely]]
 					{
 						const Floats4 w = loadFloats4(weights.data() + tap);
 						for (size_t row = 0; row < Rows; ++row)
