@@ -179,15 +179,14 @@ namespace ImageProcessing::Detail::Sse41
 
 	IMAGE_PROCESSING_SIMD_INLINE __m128i roundFourFloatsToInts(__m128 values) noexcept
 	{
-		// packus_epi32 saturates negatives to 0; the 255 cap must stay - values past 32767 would wrap negative through the signed-input packus_epi16
-		values = _mm_min_ps(_mm_set1_ps(255.0f), values);
 		return _mm_cvttps_epi32(_mm_add_ps(values, _mm_set1_ps(0.5f)));
 	}
 
-	// Rounds 8 floats to 8 words in order
+	// Rounds 8 floats to 8 signed words in order.
+	// Signed saturation: packus_epi16 reads its input as signed, and then clamps what is below 0 or past 255.
 	IMAGE_PROCESSING_SIMD_INLINE __m128i packEightFloatsToWords(Floats8 values) noexcept
 	{
-		return _mm_packus_epi32(roundFourFloatsToInts(values.low), roundFourFloatsToInts(values.high));
+		return _mm_packs_epi32(roundFourFloatsToInts(values.low), roundFourFloatsToInts(values.high));
 	}
 
 	IMAGE_PROCESSING_SIMD_INLINE __m128i packSixteenFloatsToBytes(Floats8 first, Floats8 second) noexcept

@@ -185,14 +185,13 @@ namespace ImageProcessing::Detail::Avx2
 		return _mm256_blend_ps(premultiplied, pixels, FloatsPerPixel == 4 ? 0x88 : 0xAA);
 	}
 
-	// Rounds 8 floats to 8 words in order.
+	// Rounds 8 floats to 8 signed words in order.
 	// The packs are 128-bit: 256-bit packs work per lane and need a lane-crossing permute after them.
+	// Signed saturation: packus_epi16 reads its input as signed, and then clamps what is below 0 or past 255.
 	IMAGE_PROCESSING_SIMD_INLINE __m128i packEightFloatsToWords(Floats8 values) noexcept
 	{
-		// packus_epi32 saturates negatives to 0; the 255 cap must stay - values past 32767 would wrap negative through the signed-input packus_epi16
-		values = _mm256_min_ps(_mm256_set1_ps(255.0f), values);
 		const __m256i integers = _mm256_cvttps_epi32(_mm256_add_ps(values, _mm256_set1_ps(0.5f)));
-		return _mm_packus_epi32(_mm256_castsi256_si128(integers), _mm256_extracti128_si256(integers, 1));
+		return _mm_packs_epi32(_mm256_castsi256_si128(integers), _mm256_extracti128_si256(integers, 1));
 	}
 
 	IMAGE_PROCESSING_SIMD_INLINE __m128i packSixteenFloatsToBytes(Floats8 first, Floats8 second) noexcept

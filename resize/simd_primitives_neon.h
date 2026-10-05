@@ -177,10 +177,9 @@ namespace ImageProcessing::Detail::Neon
 		return { premultiplyPixels<FloatsPerPixel>(pixels.low), premultiplyPixels<FloatsPerPixel>(pixels.high) };
 	}
 
-	// Rounds 4 floats to 4 words: truncation after adding 0.5, and saturation, as the AVX2 pack does
+	// Rounds 4 floats to 4 words: truncation after adding 0.5. Below 0 saturates here, past 255 in the narrowing to bytes.
 	IMAGE_PROCESSING_SIMD_INLINE uint16x4_t packFourFloatsToWords(float32x4_t values) noexcept
 	{
-		values = vminq_f32(vdupq_n_f32(255.0f), values);
 		return vqmovun_s32(vcvtq_s32_f32(vaddq_f32(values, vdupq_n_f32(0.5f))));
 	}
 
