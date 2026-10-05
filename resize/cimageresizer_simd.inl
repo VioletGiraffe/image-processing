@@ -341,19 +341,16 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					}
 				}
 
-				// 8 floats: a whole bicubic run of 2-float pixels. Four chains leave 4-float pixels' remainder to the per-tap loop.
-				if constexpr (horizontalChainCount == 2 || floatsPerPixel <= 2)
+				// 8 floats: a whole bicubic run of 2-float pixels
+				if (tap + 8 / floatsPerPixel <= tapCount)
 				{
-					if (tap + 8 / floatsPerPixel <= tapCount)
-					{
-						const float* blockWeights = weights.data() + tap;
-						const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, loadWeightBlock(blockWeights));
-						accumPairsA = mulAdd(loadFloats8(srcPixelA + tap * floatsPerPixel), w0, accumPairsA);
-						if constexpr (Rows == 2)
-							accumPairsB = mulAdd(loadFloats8(srcPixelB + tap * floatsPerPixel), w0, accumPairsB);
+					const float* blockWeights = weights.data() + tap;
+					const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, loadWeightBlock(blockWeights));
+					accumPairsA = mulAdd(loadFloats8(srcPixelA + tap * floatsPerPixel), w0, accumPairsA);
+					if constexpr (Rows == 2)
+						accumPairsB = mulAdd(loadFloats8(srcPixelB + tap * floatsPerPixel), w0, accumPairsB);
 
-						tap += 8 / floatsPerPixel;
-					}
+					tap += 8 / floatsPerPixel;
 				}
 
 				Floats4 accumA = sumHalves(accumPairsA);
