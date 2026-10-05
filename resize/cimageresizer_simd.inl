@@ -228,7 +228,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
-		// A row's chains, as separate variables: MSVC moves an array's elements through a second register every block
+		// A row's chains, as separate variables: MSVC moves chains held in an array, or indexed by row, through a second register every block
 		struct RowChains
 		{
 			Floats8 chain0;
@@ -292,27 +292,31 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				const auto [firstPixel, weights] = xRunLookup.runFor(dx);
 				const size_t tapCount = weights.size();
 				const size_t runFloatOffset = source.prepareRun(firstPixel, tapCount);
-				const float* srcPixelA = source.floats[0] + runFloatOffset;
-				[[maybe_unused]] const float* srcPixelB = source.floats[Rows - 1] + runFloatOffset;
-
+				const float* runPixels[Rows];
 				// Lanes hold partial sums of 8 / floatsPerPixel pixels until the reductions below the blocks
-				Floats8 accumPairsA = zeroFloats8();
-				[[maybe_unused]] Floats8 accumPairsB = zeroFloats8();
+				Floats8 accumPairs[Rows];
+				for (size_t row = 0; row < Rows; ++row)
+				{
+					runPixels[row] = source.floats[row] + runFloatOffset;
+					accumPairs[row] = zeroFloats8();
+				}
+
 				size_t tap = 0;
 
 				// A run is consecutive pixels, so a block goes through independent chains of 8 floats;
 				// per-tap accumulation into one register would serialize on the multiply-add latency.
 				if (tapCount >= blockTaps)
 				{
+					// The rows' chains by name, not by row index: see RowChains
 					RowChains chainsA;
 					RowChains chainsB;
-					filterBlock<true, Rows>(weightSpreader, weights.data(), srcPixelA, srcPixelB, chainsA, chainsB);
+					filterBlock<true, Rows>(weightSpreader, weights.data(), runPixels[0], runPixels[Rows - 1], chainsA, chainsB);
 					for (tap = blockTaps; tap + blockTaps <= tapCount; tap += blockTaps)
-						filterBlock<false, Rows>(weightSpreader, weights.data() + tap, srcPixelA + tap * floatsPerPixel, srcPixelB + tap * floatsPerPixel, chainsA, chainsB);
+						filterBlock<false, Rows>(weightSpreader, weights.data() + tap, runPixels[0] + tap * floatsPerPixel, runPixels[Rows - 1] + tap * floatsPerPixel, chainsA, chainsB);
 
-					accumPairsA = sumChains(chainsA);
+					accumPairs[0] = sumChains(chainsA);
 					if constexpr (Rows == 2)
-						accumPairsB = sumChains(chainsB);
+						accumPairs[1] = sumChains(chainsB);
 				}
 
 				// 16 floats, half a four-chain block: a whole bicubic run of 4-float pixels
@@ -328,13 +332,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 						const WeightBlock firstWeights = loadWeightBlock(blockWeights);
 						const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, firstWeights);
 						const Floats8 w1 = chainWeights<1>(weightSpreader, blockWeights, firstWeights);
-
-						const float* blockPixelsA = srcPixelA + tap * floatsPerPixel;
-						accumPairsA = mulAdd(loadFloats8(blockPixelsA), w0, mulAdd(loadFloats8(blockPixelsA + 8), w1, accumPairsA));
-						if constexpr (Rows == 2)
+						for (size_t row = 0; row < Rows; ++row)
 						{
-							const float* blockPixelsB = srcPixelB + tap * floatsPerPixel;
-							accumPairsB = mulAdd(loadFloats8(blockPixelsB), w0, mulAdd(loadFloats8(blockPixelsB + 8), w1, accumPairsB));
+							const float* blockPixels = runPixels[row] + tap * floatsPerPixel;
+							accumPairs[row] = mulAdd(loadFloats8(blockPixels), w0, mulAdd(loadFloats8(blockPixels + 8), w1, accumPairs[row]));
 						}
 
 						tap += 16 / floatsPerPixel;
@@ -346,17 +347,15 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				{
 					const float* blockWeights = weights.data() + tap;
 					const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, loadWeightBlock(blockWeights));
-					accumPairsA = mulAdd(loadFloats8(srcPixelA + tap * floatsPerPixel), w0, accumPairsA);
-					if constexpr (Rows == 2)
-						accumPairsB = mulAdd(loadFloats8(srcPixelB + tap * floatsPerPixel), w0, accumPairsB);
+					for (size_t row = 0; row < Rows; ++row)
+						accumPairs[row] = mulAdd(loadFloats8(runPixels[row] + tap * floatsPerPixel), w0, accumPairs[row]);
 
 					tap += 8 / floatsPerPixel;
 				}
 
-				Floats4 accumA = sumHalves(accumPairsA);
-				[[maybe_unused]] Floats4 accumB = zeroFloats4();
-				if constexpr (Rows == 2)
-					accumB = sumHalves(accumPairsB);
+				Floats4 accum[Rows];
+				for (size_t row = 0; row < Rows; ++row)
+					accum[row] = sumHalves(accumPairs[row]);
 
 				// 4 taps of 1-float pixels
 				if constexpr (floatsPerPixel == 1)
@@ -364,9 +363,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					if (tap + 4 <= tapCount)
 					{
 						const Floats4 w = loadFloats4(weights.data() + tap);
-						accumA = mulAdd(loadFloats4(srcPixelA + tap), w, accumA);
-						if constexpr (Rows == 2)
-							accumB = mulAdd(loadFloats4(srcPixelB + tap), w, accumB);
+						for (size_t row = 0; row < Rows; ++row)
+							accum[row] = mulAdd(loadFloats4(runPixels[row] + tap), w, accum[row]);
 
 						tap += 4;
 					}
@@ -377,21 +375,18 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					for (; tap < tapCount; ++tap)
 					{
 						const Floats4 weight = broadcastFloats4(weights[tap]);
-						accumA = mulAdd(loadFloats4(srcPixelA + tap * 4), weight, accumA);
-						if constexpr (Rows == 2)
-							accumB = mulAdd(loadFloats4(srcPixelB + tap * 4), weight, accumB);
+						for (size_t row = 0; row < Rows; ++row)
+							accum[row] = mulAdd(loadFloats4(runPixels[row] + tap * 4), weight, accum[row]);
 					}
 
-					storeTempPixel<Channels>(tempRows[0] + (dx - destBegin) * Channels, accumA);
-					if constexpr (Rows == 2)
-						storeTempPixel<Channels>(tempRows[1] + (dx - destBegin) * Channels, accumB);
+					for (size_t row = 0; row < Rows; ++row)
+						storeTempPixel<Channels>(tempRows[row] + (dx - destBegin) * Channels, accum[row]);
 				}
 				else
 				{
 					const size_t remainingTaps = tapCount - tap;
-					storeTempPixelWithTaps<floatsPerPixel>(tempRows[0] + (dx - destBegin) * Channels, accumA, srcPixelA + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
-					if constexpr (Rows == 2)
-						storeTempPixelWithTaps<floatsPerPixel>(tempRows[1] + (dx - destBegin) * Channels, accumB, srcPixelB + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
+					for (size_t row = 0; row < Rows; ++row)
+						storeTempPixelWithTaps<floatsPerPixel>(tempRows[row] + (dx - destBegin) * Channels, accum[row], runPixels[row] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
 				}
 			}
 		}

@@ -188,6 +188,11 @@ of two alternating rounds against b8892fc and the experiment's binary:
   row's four through a second register every block: 101 MP -> 720p 907.4 ms, 4K -> 64x64 73.6, 4K -> 1080p RGB32 105.8.
 - Adding the product to the accumulator operand, in place of the reverse, did not remove those moves.
 - With the chains as separate variables the block loop matches the experiment's.
+- A later rewrite of the pass with every step in a loop over the rows indexed the chains by row, as an array of the
+  per-row struct. The SSE4.1 3- and 4-channel kernels gained 12 register moves each: 101 MP -> 720p 852.8 -> 907.9 ms,
+  4K -> 64x64 62.6 -> 67.9, 4K -> 1080p RGB24 94.2 -> 98.4. The AVX2 kernels did not change.
+- With the block's chains kept as two named variables and the other steps looped over the rows: within 1.5% of the
+  code before it on every single-threaded row, the 3- and 4-channel kernels within 2 instructions.
 
 ### Ring budget sweep (84bbe28)
 

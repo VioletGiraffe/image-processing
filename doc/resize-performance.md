@@ -277,8 +277,8 @@ overlapped, and their zeroing and reduction were paid per column.
   upscales within 3%.
 - Two chains without the assigned first block cost 1080p -> 1440p 8%: a 4-tap run then pays a block's zeroing and reduction.
 - One row per sweep, the other way to fit the registers, loses 9-41%: paired rows share the column's lookup, weights and loop.
-- The chains are separate variables. As an array, MSVC moved one row's chains through a second register every block:
-  101 MP -> 720p 907 ms against 851.
+- The chains are separate variables, and the block's helper takes the two rows' by name. Held in an array, or indexed by
+  row, MSVC moved one row's chains through a second register every block at SSE4.1: 101 MP -> 720p 907 ms against 851.
 
 ### Runs a period apart share their weights
 
