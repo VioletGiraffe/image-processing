@@ -44,6 +44,48 @@ GCC 14.2, one run, ms.
 - The N4100 at 93775b0 runs downscales 1.4-2.0x faster and upscales 1.2-1.6x: 4K -> 1080p RGB32 94.4 ms,
   24 MP -> 1080p 217.0, 720p -> 4K RGB32 63.9, 720p -> 4K RGBA32 82.9, 1080p -> 1440p 45.2.
 
+## 2026-10-05, after 74c02b3: four changes, and two chains at NEON
+
+- Before: 74c02b3. After: the output packed without the clamp, `storeTempPixelWithTaps` with scalar sums, the short-run
+  pass's columns by name. (The fourth change, the SSE4.1 conversion loads, does not exist at NEON.)
+- Two chains: the same with `horizontalChainCount` 2 at NEON.
+- Minimum ms of three alternating rounds per compiler. The tests pass in all four changed builds.
+
+| Scenario | GCC before | GCC after | GCC, two chains | Clang before | Clang after | Clang, two chains |
+|---|---:|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | 410.9 | 404.4 | 386.4 | 385.9 | 382.9 | 380.1 |
+| 4K -> 1080p RGB32 | 178.0 | 177.8 | 167.8 | 163.9 | 163.3 | 163.1 |
+| 4K -> 1080p RGBA32 | 191.0 | 191.8 | 182.5 | 198.6 | 197.6 | 199.0 |
+| 4K -> 1080p RGB24 | 181.4 | 182.4 | 173.2 | 164.1 | 163.8 | 164.3 |
+| 4K -> 1080p Grayscale8 | 74.4 | 69.4 | 68.1 | 77.4 | 70.3 | 69.7 |
+| 720p -> 4K RGBA32 | 97.2 | 89.2 | 88.9 | 100.5 | 96.3 | 97.7 |
+| 720p -> 4K RGB32 | 89.5 | 84.4 | 83.5 | 87.3 | 82.7 | 83.7 |
+| 720p -> 4K RGB24 | 85.2 | 79.8 | 81.5 | 84.9 | 80.6 | 81.7 |
+| 720p -> 4K Grayscale8 | 36.3 | 28.7 | 28.5 | 39.6 | 29.9 | 30.1 |
+| 1080p -> 1440p | 69.5 | 67.1 | 67.4 | 66.1 | 64.5 | 66.3 |
+| 1080p -> 240p | 34.3 | 35.2 | 33.2 | 32.4 | 31.1 | 31.7 |
+| 4K -> 64x64 | 107.1 | 107.1 | 109.7 | 93.2 | 94.6 | 102.0 |
+| 101 MP -> 720p | 1427.6 | 1450.1 | 1391.3 | 1344.2 | 1332.8 | 1370.7 |
+| 24 MP -> 1080p, threads | 116.7 | 119.7 | 111.0 | 108.3 | 111.1 | 106.9 |
+| 4K -> 64x64, threads | 37.9 | 39.3 | 37.5 | 34.7 | 35.0 | 37.1 |
+| 101 MP -> 720p, threads | 438.4 | 453.2 | 435.0 | 405.9 | 410.8 | 426.2 |
+
+The three changes:
+- Upscales -2% to -8% under both compilers; 720p -> 4K Grayscale8 -21% (GCC) and -25% (Clang); 4K -> 1080p Grayscale8
+  -7% and -9%.
+- GCC, 4K -> 64x64: +3.3% over five rounds of an earlier session, +6.4% in another, 0 in this one; 101 MP -> 720p +1.4%
+  to +1.8% in all three. A build that kept the NEON clamp, alone of the three changes, read +1.4% and +1.0%, and lost
+  the upscales' gain.
+- The cause is in GCC's listing. The four-chain block for two rows is 16 accumulators and 2 weight registers, and GCC
+  loads all 16 pixel vectors of a block before multiplying: 32 registers. With the clamp's constant gone the allocation
+  around the kernel shifts, and the block loop stores one pixel vector to the stack and reloads it: 31 instructions
+  against 29.
+
+Two chains at NEON:
+- GCC: downscales -4% to -6% against the current code (4K -> 1080p RGB32 177.8 -> 167.8), 4K -> 64x64 +2.4%.
+- Clang: downscales within 1%, 4K -> 64x64 +8%, 101 MP -> 720p +3%, their threaded rows +4% to +6%.
+- Not adopted: Clang, the faster compiler here on downscales, loses its long runs.
+
 ## Per-instruction-set primitives, not SIMDe (963b54b)
 
 Clang, 6b6bf7e -> 3049bb0: upscales -6% to -13%, downscales -4% to -9%; the scalar rows within 4%.

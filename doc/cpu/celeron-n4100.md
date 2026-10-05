@@ -24,34 +24,94 @@ The measurement log for this CPU. Conclusions that shape the design are summariz
 - A remote-desktop session inflates everything: 4K -> 1080p RGB32 measured 198 ms with one attached, 115 without.
 - Builds take about 100 s per binary.
 
-## Standing against Qt, 93775b0
+## Standing against Qt, a6c69e7
 
-One binary, minimum ms of four rounds. Since b8892fc: two chains with the assigned first block, shared weights, the
-8-float step for every layout, the pass's steps looped over the rows.
+MSVC, minimum ms of three rounds. Since b8892fc: two chains with the assigned first block, shared weights, the 8-float
+step for every layout, the pass's steps looped over the rows, and the four changes of the next section.
 
 | Scenario | Resizer | QImage | Ratio | Threads | Ratio | Speedup |
 |---|---:|---:|---:|---:|---:|---:|
-| 24 MP -> 1080p | 217.0 | 72.2 | 3.00 | 61.0 | 0.84 | 3.56x |
-| 4K -> 1080p RGB32 | 94.4 | 30.2 | 3.13 | - | - | - |
-| 4K -> 1080p RGBA32 | 125.9 | 80.8 | 1.56 | 35.9 | 0.44 | 3.51x |
-| 4K -> 1080p RGB24 | 94.1 | 77.0 | 1.22 | 27.5 | 0.36 | 3.42x |
-| 4K -> 1080p Grayscale8 | 52.5 | 84.3 | 0.62 | - | - | - |
-| 720p -> 4K RGBA32 | 82.9 | 215.0 | 0.39 | 28.1 | 0.13 | 2.95x |
-| 720p -> 4K RGB32 | 63.9 | 83.7 | 0.76 | - | - | - |
-| 720p -> 4K RGB24 | 59.7 | 110.0 | 0.54 | 20.4 | 0.19 | 2.92x |
-| 720p -> 4K Grayscale8 | 30.7 | 95.9 | 0.32 | - | - | - |
-| 1080p -> 1440p | 45.2 | 38.3 | 1.18 | 14.9 | 0.39 | 3.03x |
-| 1080p -> 240p | 18.9 | 4.77 | 3.97 | 5.69 | 1.19 | 3.33x |
-| 4K -> 64x64 | 62.4 | 20.0 | 3.12 | 22.8 | 1.14 | 2.73x |
-| 101 MP -> 720p | 856.0 | 216.8 | 3.95 | 304.4 | 1.40 | 2.81x |
-| 1080p, native size | 5.30 | 5.31 | 1.00 | - | - | - |
+| 24 MP -> 1080p | 206.8 | 71.1 | 2.91 | 58.5 | 0.82 | 3.54x |
+| 4K -> 1080p RGB32 | 90.8 | 29.9 | 3.04 | - | - | - |
+| 4K -> 1080p RGBA32 | 118.8 | 79.7 | 1.49 | 34.1 | 0.43 | 3.49x |
+| 4K -> 1080p RGB24 | 92.4 | 73.5 | 1.26 | 26.2 | 0.36 | 3.52x |
+| 4K -> 1080p Grayscale8 | 47.1 | 84.0 | 0.56 | - | - | - |
+| 720p -> 4K RGBA32 | 77.6 | 213.0 | 0.36 | 25.7 | 0.12 | 3.02x |
+| 720p -> 4K RGB32 | 60.3 | 83.3 | 0.72 | - | - | - |
+| 720p -> 4K RGB24 | 54.9 | 107.5 | 0.51 | 19.3 | 0.18 | 2.85x |
+| 720p -> 4K Grayscale8 | 26.4 | 93.8 | 0.28 | - | - | - |
+| 1080p -> 1440p | 43.3 | 37.7 | 1.15 | 14.3 | 0.38 | 3.04x |
+| 1080p -> 240p | 17.9 | 4.73 | 3.79 | 5.46 | 1.16 | 3.28x |
+| 4K -> 64x64 | 59.9 | 19.5 | 3.08 | 21.9 | 1.12 | 2.74x |
+| 101 MP -> 720p | 813.8 | 213.3 | 3.82 | 242.8 | 1.14 | 3.35x |
+| 1080p, native size | 5.26 | 5.77 | 0.91 | - | - | - |
 
-- Against b8892fc below, ms: 4K -> 1080p RGB32 115.2 -> 94.4, 24 MP -> 1080p 260.5 -> 217.0, 1080p -> 240p 23.0 -> 18.9,
-  4K -> 64x64 70.4 -> 62.4, 101 MP -> 720p 913 -> 856, 4K -> 1080p Grayscale8 59.5 -> 52.5. With threads: 24 MP -> 1080p
-  74.3 -> 61.0, 1080p -> 240p 7.7 -> 5.69.
-- Upscales: 720p -> 4K RGB32 66.3 -> 63.9, 1080p -> 1440p 47.3 -> 45.2; the others within 3%.
-- With threads, the 24 MP downscale now beats Qt; 1080p -> 240p, 4K -> 64x64 and 101 MP stay behind it.
-- 101 MP -> 720p with threads is not a gain or a loss: one binary's minimum ranged 284-338 ms between the day's sessions.
+- Against b8892fc below, ms: 4K -> 1080p RGB32 115.2 -> 90.8, 24 MP -> 1080p 260.5 -> 206.8, 1080p -> 240p 23.0 -> 17.9,
+  4K -> 64x64 70.4 -> 59.9, 101 MP -> 720p 913 -> 814, 4K -> 1080p Grayscale8 59.5 -> 47.1. With threads: 24 MP -> 1080p
+  74.3 -> 58.5, 1080p -> 240p 7.7 -> 5.46.
+- Upscales: 720p -> 4K RGB32 66.3 -> 60.3, 1080p -> 1440p 47.3 -> 43.3.
+- With threads, the 24 MP downscale beats Qt; 1080p -> 240p, 4K -> 64x64 and 101 MP stay behind it.
+- 101 MP -> 720p with threads varies by session: one binary's minimum ranged 284-338 ms between the sessions at 93775b0.
+
+## 2026-10-05, after 74c02b3: clang-cl, and four changes
+
+clang-cl 22.1.3 (the Visual Studio install's) beside MSVC 19.51. "Before" is 74c02b3, "after" the tree with the four
+changes below. Minimum ms of three alternating rounds of the four binaries.
+
+| Scenario | MSVC before | MSVC after | clang-cl before | clang-cl after | QImage |
+|---|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | 213.3 | 206.8 | 215.7 | 213.9 | 71.0 |
+| 4K -> 1080p RGB32 | 94.7 | 90.8 | 96.6 | 95.7 | 29.6 |
+| 4K -> 1080p RGBA32 | 125.1 | 118.8 | 118.4 | 112.4 | 79.4 |
+| 4K -> 1080p RGB24 | 93.8 | 92.4 | 97.8 | 96.0 | 72.8 |
+| 4K -> 1080p Grayscale8 | 52.7 | 47.1 | 47.2 | 41.4 | 82.9 |
+| 720p -> 4K RGBA32 | 83.3 | 77.6 | 80.7 | 75.7 | 213.0 |
+| 720p -> 4K RGB32 | 63.3 | 60.3 | 63.9 | 60.7 | 83.3 |
+| 720p -> 4K RGB24 | 58.4 | 54.9 | 58.7 | 56.0 | 107.1 |
+| 720p -> 4K Grayscale8 | 29.3 | 26.4 | 26.5 | 24.6 | 93.5 |
+| 1080p -> 1440p | 45.4 | 43.3 | 45.0 | 43.9 | 37.7 |
+| 1080p -> 240p | 19.0 | 17.9 | 18.8 | 18.5 | 4.71 |
+| 4K -> 64x64 | 62.3 | 59.9 | 60.6 | 59.3 | 19.2 |
+| 101 MP -> 720p | 844.2 | 813.7 | 835.8 | 819.9 | 213.0 |
+| 24 MP -> 1080p, threads | 59.5 | 58.5 | 60.2 | 58.6 | - |
+| 4K -> 1080p RGBA32, threads | 35.9 | 34.1 | 33.1 | 32.3 | - |
+| 4K -> 1080p RGB24, threads | 26.1 | 26.2 | 28.1 | 27.9 | - |
+| 720p -> 4K RGBA32, threads | 26.7 | 25.7 | 26.8 | 26.3 | - |
+| 1080p -> 240p, threads | 5.65 | 5.46 | 5.76 | 5.55 | - |
+| 4K -> 64x64, threads | 22.6 | 21.8 | 22.0 | 22.0 | - |
+
+- The compilers before: within 2-4% on the 3-channel rows; clang-cl ahead by 10% on both Grayscale8 rows and 5% on the
+  RGBA32 downscale. Upscale rows ran about 10% slower in this session than in the day's first for both compilers; same-session
+  figures only.
+- After: MSVC ahead by 4-5% on the RGB32 and RGB24 downscales; clang-cl ahead by 12% on the Grayscale8 downscale, 7% on
+  the Grayscale8 upscale and 5% on the RGBA32 downscale. Neither gap is explained.
+- The tests pass under both.
+
+The four changes, each measured alone against its compiler's baseline, minimum of two rounds:
+
+| Change | MSVC | clang-cl |
+|---|---|---|
+| Signed pack to words, no clamp to 255 | Upscales -6% to -8%, downscales -1% to -4% | Upscales -2% to -6% |
+| SSE4.1 conversion: each widening loads its 4 bytes | 4-byte downscales -3% to -5% | Within 2%, either way |
+| `storeTempPixelWithTaps`: the sums as scalars | 4K -> 1080p Grayscale8 53.1 -> 48.0 | No change |
+| Short-run pass: the four columns by name | 720p -> 4K Grayscale8 28.9 -> 27.0 | 26.3 -> 25.3 |
+
+- The last two came from the listings. In the one-channel kernels MSVC stored each column's sums to the stack, reloaded
+  them as a scalar and again as an integer to copy them out; and it ran the short-run pass's four columns as a loop, with
+  the products in stack arrays. clang-cl did neither.
+
+Variants that lost, same method:
+
+| Variant | MSVC | clang-cl |
+|---|---|---|
+| Vertical pass: the row's nonzero taps listed once per dest row with their weights broadcast, the first tap assigned | Upscales about 0, downscales +2% to +4%: six register moves per tap. With the accumulators zeroed, or passed to a helper by reference: no better than the tree | Upscales -5% to -8% |
+| Streaming stores to the destination | Within 1% | RGB32 and RGBA32 upscales -3% to -4%; RGB24, whose blocks are not 16-aligned, +85% |
+| The x weights pre-spread 4 per tap in a 16-aligned table, as the multiply's memory operand | 4-byte downscales +2% to +5%, 101 MP +8% | -2% to -4% on some downscales, 101 MP +5%, threaded small rows +20% (the table's construction per call) |
+| A prefetch 256 bytes ahead on each vertical tap's row | Within 2% | Within 4%, either way |
+
+- MSVC's vertical tap loop at 74c02b3 is 26 instructions per tap for a 3-channel block, 18 of them the loads, multiplies
+  and adds: the rewritten loop is no shorter under MSVC.
+- The upscale's vertical pass is not waiting on the destination's memory: streaming stores change nothing under MSVC.
 
 ## 2026-10-04, b8892fc
 
