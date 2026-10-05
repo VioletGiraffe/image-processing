@@ -57,6 +57,10 @@ namespace ImageProcessing::Detail::Neon
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 add(Floats8 a, Floats8 b) noexcept { return { vaddq_f32(a.low, b.low), vaddq_f32(a.high, b.high) }; }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 add(Floats4 a, Floats4 b) noexcept { return vaddq_f32(a, b); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 mul(Floats8 a, Floats8 b) noexcept { return { vmulq_f32(a.low, b.low), vmulq_f32(a.high, b.high) }; }
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 mul(Floats4 a, Floats4 b) noexcept { return vmulq_f32(a, b); }
+
+	template <size_t Index>
+	IMAGE_PROCESSING_SIMD_INLINE float lane(Floats4 values) noexcept { return vgetq_lane_f32(values, Index); }
 
 	// a * b + accum, fused
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 mulAdd(Floats8 a, Floats8 b, Floats8 accum) noexcept

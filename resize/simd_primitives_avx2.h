@@ -47,6 +47,18 @@ namespace ImageProcessing::Detail::Avx2
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 add(Floats8 a, Floats8 b) noexcept { return _mm256_add_ps(a, b); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 add(Floats4 a, Floats4 b) noexcept { return _mm_add_ps(a, b); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 mul(Floats8 a, Floats8 b) noexcept { return _mm256_mul_ps(a, b); }
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 mul(Floats4 a, Floats4 b) noexcept { return _mm_mul_ps(a, b); }
+
+	template <size_t Index>
+	IMAGE_PROCESSING_SIMD_INLINE float lane(Floats4 values) noexcept
+	{
+		static_assert(Index < 4);
+		if constexpr (Index == 0)
+			return _mm_cvtss_f32(values);
+		else
+			return _mm_cvtss_f32(_mm_shuffle_ps(values, values, Index * 0x55));
+	}
+
 	// a * b + accum, fused
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 mulAdd(Floats8 a, Floats8 b, Floats8 accum) noexcept { return _mm256_fmadd_ps(a, b, accum); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 mulAdd(Floats4 a, Floats4 b, Floats4 accum) noexcept { return _mm_fmadd_ps(a, b, accum); }

@@ -63,6 +63,17 @@ namespace ImageProcessing::Detail::Sse41
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 add(Floats8 a, Floats8 b) noexcept { return { _mm_add_ps(a.low, b.low), _mm_add_ps(a.high, b.high) }; }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 add(Floats4 a, Floats4 b) noexcept { return _mm_add_ps(a, b); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 mul(Floats8 a, Floats8 b) noexcept { return { _mm_mul_ps(a.low, b.low), _mm_mul_ps(a.high, b.high) }; }
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 mul(Floats4 a, Floats4 b) noexcept { return _mm_mul_ps(a, b); }
+
+	template <size_t Index>
+	IMAGE_PROCESSING_SIMD_INLINE float lane(Floats4 values) noexcept
+	{
+		static_assert(Index < 4);
+		if constexpr (Index == 0)
+			return _mm_cvtss_f32(values);
+		else
+			return _mm_cvtss_f32(_mm_shuffle_ps(values, values, Index * 0x55));
+	}
 
 	// a * b + accum
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 mulAdd(Floats8 a, Floats8 b, Floats8 accum) noexcept
@@ -136,9 +147,11 @@ namespace ImageProcessing::Detail::Sse41
 		second = { _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_srli_si128(bytes, 8))), _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_srli_si128(bytes, 12))) };
 	}
 
+	// Each widening loads its own 4 bytes: MSVC otherwise copies and shifts one 16-byte load three times
 	IMAGE_PROCESSING_SIMD_INLINE void loadSixteenBytesAsFloats(const uint8_t* bytes, Floats8& first, Floats8& second) noexcept
 	{
-		sixteenBytesAsFloats(_mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes)), first, second);
+		first = { _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadu_si32(bytes))), _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadu_si32(bytes + 4))) };
+		second = { _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadu_si32(bytes + 8))), _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_loadu_si32(bytes + 12))) };
 	}
 
 	// 4 RGB pixels as 4 floats each, the 4th 0: pixels 0 and 1 go to pixels01. Reads 16 bytes, 4 past the pixels.
