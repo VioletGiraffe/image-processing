@@ -282,6 +282,8 @@ overlapped, and their zeroing and reduction were paid per column.
 - One row per sweep, the other way to fit the registers, loses 9-41%: paired rows share the column's lookup, weights and loop.
 - The chains are separate variables, and the block's helper takes the two rows' by name. Held in an array, or indexed by
   row, MSVC moved one row's chains through a second register every block at SSE4.1: 101 MP -> 720p 907 ms against 851.
+- CI, EPYC 7763: two chains take 10-17% off the SSE4.1 downscales under Clang and GCC as well. The assigned first block
+  takes 2-8% off the AVX2 downscales under Clang and GCC, and 4-9% off GCC's on Neoverse-N2; Clang there is within 3%.
 
 ### Runs a period apart share their weights
 
@@ -297,6 +299,22 @@ touched either window.
 - N4100, ms: 4K -> 1080p RGB32 102.3 -> 94.5, Grayscale8 59.2 -> 52.6, 24 MP -> 1080p 231.3 -> 215.0, 4K -> 64x64
   68.9 -> 61.8. With threads: 24 MP -> 1080p 68.0 -> 59.9, 1080p -> 240p 7.02 -> 5.71. Upscales -1% to -3%.
 - 101 MP -> 720p does not gain: its period is 160 columns, 35 KB of weights against a 24 KB L1.
+- CI: downscales -5% to -10% on Neoverse-N2 under GCC and Clang, threaded ones up to -17%; Clang's AVX2 downscales on
+  the EPYC 7763 -4% to -10%.
+
+### The row-group pass's shape is part of its tuning
+
+`filterHorizontalRowGroup` writes each step once, in a loop over the rows, with three exceptions. Each answers one
+compiler, and each is commented where it stands:
+
+| Compiler | Behaviour | In the code | Cost without it |
+|---|---|---|---|
+| MSVC | Moves chains held in an array, or indexed by row, through a second register every block | `RowChains` with named fields; the block helper takes the two rows by name | SSE4.1 downscales +3% to +8% on the N4100 |
+| GCC | Leaves a loop over the rows rolled when its body holds a loop, with the rows' state in memory | `storeTempPixelWithTaps` called per row | 4K -> 1080p Grayscale8 +31% to +50% on the Pi, Neoverse-N2 and the EPYC 7763 |
+| GCC | Places a step whose body is a loop over the rows out of line | `[[likely]]` on the three leftover-tap steps | 4K -> 1080p Grayscale8 +20% to +26% at AVX2 on the EPYC 7763 and 9V45; nothing on Golden Cove |
+
+- A change to this function is compared by listing under MSVC, GCC and Clang against the commit before it.
+- The 3- and 4-channel kernels under GCC carry about 3% more instructions with the row loops than without. No row shows it.
 
 ### Column strips (b9fea7e)
 
@@ -388,5 +406,6 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
    is indifferent (the section on jumps and 32-byte boundaries).
 8. **GCC's 720p -> 4K RGBA32 on Neoverse-N2 moves 10% with the binary's layout** (the call-site attribute notes): 24.1 or
    21.9 ms for the same kernel source. Code placement or the buffers' addresses, undetermined. The Pi does not react.
-9. **The assigned first block is unmeasured at AVX2 and NEON.** The AVX2 kernel's listing shows no stack traffic. The PC's
-   placement-sensitive upscale rows and the Pi need a run.
+9. **The PC has not run anything since 0bd90e4:** the assigned first block, the shared weights, the 8-float step for
+   4-float pixels and the row loops are measured on CI, the Pi and the N4100 only. Its MSVC upscale rows are the
+   placement-sensitive ones.
