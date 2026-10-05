@@ -152,6 +152,21 @@ ms with threads, 2b371a2 -> b9fea7e. Scalar also against 8ca3148. Speedup: singl
 - Single-threaded about neutral: 101 MP SIMD gains 9-12% (its ring overflowed the L2 even alone), 4K -> 64x64 SIMD
   loses 8%.
 
+## The pass's steps looped over the rows (93775b0)
+
+GCC 14.2, 4K -> 1080p Grayscale8, one run each; the QImage control 106.8-109.5 ms throughout.
+
+| | ms |
+|---|---:|
+| 1eb77df, each step written per row | 78.4 |
+| 93775b0, each step in a loop over the rows | 103.5 |
+| 93775b0 with `storeTempPixelWithTaps` called per row | 78.3 |
+
+- GCC unrolled every row loop but the one around `storeTempPixelWithTaps`, whose body holds the scalar tap loop: an outer
+  loop. It kept both rows' sums, source pointers and temp-row pointers in memory for it.
+- Only 1- and 2-float pixels take that step. Clang and MSVC unrolled it.
+- The CI's GCC jobs showed the same at 93775b0: +31% on Neoverse-N2, +43% at AVX2 and +50% at SSE4.1 on the EPYC 7763.
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing

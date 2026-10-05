@@ -385,8 +385,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				else
 				{
 					const size_t remainingTaps = tapCount - tap;
-					for (size_t row = 0; row < Rows; ++row)
-						storeTempPixelWithTaps<floatsPerPixel>(tempRows[row] + (dx - destBegin) * Channels, accum[row], runPixels[row] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
+					// Not a loop over the rows: its body holds a loop, and GCC leaves such an outer loop rolled, with the rows' state in memory
+					storeTempPixelWithTaps<floatsPerPixel>(tempRows[0] + (dx - destBegin) * Channels, accum[0], runPixels[0] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
+					if constexpr (Rows == 2)
+						storeTempPixelWithTaps<floatsPerPixel>(tempRows[1] + (dx - destBegin) * Channels, accum[1], runPixels[1] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
 				}
 			}
 		}
