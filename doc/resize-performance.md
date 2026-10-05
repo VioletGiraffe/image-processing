@@ -71,30 +71,32 @@ Resizer / QImage, lower is better. "T": with threads. "-": no such benchmark.
 - PC at 9d86565, before column strips (mean of three rounds).
 - Pi at 6b6bf7e.
 - Grayscale8 and RGB24 on both at e5ea70d.
-- N4100 at b8892fc (minimum of four rounds).
+- N4100 at 93775b0 (minimum of four rounds). The PC and the Pi predate the two-chain block's assigned first block and
+  the shared weights.
 
 | Scenario | PC | PC, T | Pi | Pi, T | N4100 | N4100, T |
 |---|---|---|---|---|---|---|
-| 24 MP -> 1080p | 1.77 | 0.51 | 2.90 | 0.84 | 3.66 | 1.04 |
-| 4K -> 1080p RGB32 | 1.99 | - | 4.97 | - | 3.91 | - |
-| 4K -> 1080p RGBA32 | 0.94 | 0.28 | 2.33 | 0.72 | 1.70 | 0.51 |
-| 720p -> 4K RGB32 | 0.59 | - | 1.08 | - | 0.80 | - |
+| 24 MP -> 1080p | 1.77 | 0.51 | 2.90 | 0.84 | 3.00 | 0.84 |
+| 4K -> 1080p RGB32 | 1.99 | - | 4.97 | - | 3.13 | - |
+| 4K -> 1080p RGBA32 | 0.94 | 0.28 | 2.33 | 0.72 | 1.56 | 0.44 |
+| 720p -> 4K RGB32 | 0.59 | - | 1.08 | - | 0.76 | - |
 | 720p -> 4K RGBA32 | 0.31 | 0.07 | 0.32 | 0.10 | 0.39 | 0.13 |
-| 1080p -> 1440p | 0.87 | 0.21 | 1.84 | 0.63 | 1.27 | 0.42 |
-| 1080p -> 240p | 2.36 | 0.95 | 3.66 | 1.18 | 4.92 | 1.65 |
-| 4K -> 64x64 | 2.56 | 1.05 | 3.52 | 1.37 | 3.60 | 1.42 |
-| 101 MP -> 720p | 2.22 | 0.64 | 3.91 | 1.17 | 4.27 | 1.35 |
-| 1080p, native size | 1.12 | - | 1.00 | - | 0.99 | - |
-| 4K -> 1080p Grayscale8 | 0.50 | - | 0.74 | - | 0.71 | - |
-| 720p -> 4K Grayscale8 | 0.48 | - | 0.44 | - | 0.33 | - |
-| 4K -> 1080p RGB24 | 0.81 | 0.27 | 2.75 | 0.80 | 1.57 | 0.47 |
-| 720p -> 4K RGB24 | 0.56 | 0.20 | 0.77 | 0.29 | 0.56 | 0.19 |
+| 1080p -> 1440p | 0.87 | 0.21 | 1.84 | 0.63 | 1.18 | 0.39 |
+| 1080p -> 240p | 2.36 | 0.95 | 3.66 | 1.18 | 3.97 | 1.19 |
+| 4K -> 64x64 | 2.56 | 1.05 | 3.52 | 1.37 | 3.12 | 1.14 |
+| 101 MP -> 720p | 2.22 | 0.64 | 3.91 | 1.17 | 3.95 | 1.40 |
+| 1080p, native size | 1.12 | - | 1.00 | - | 1.00 | - |
+| 4K -> 1080p Grayscale8 | 0.50 | - | 0.74 | - | 0.62 | - |
+| 720p -> 4K Grayscale8 | 0.48 | - | 0.44 | - | 0.32 | - |
+| 4K -> 1080p RGB24 | 0.81 | 0.27 | 2.75 | 0.80 | 1.22 | 0.36 |
+| 720p -> 4K RGB24 | 0.56 | 0.20 | 0.77 | 0.29 | 0.54 | 0.19 |
 
 - PC: upscales, straight-alpha images, Grayscale8 and RGB24 beat Qt; Qt premultiplies alpha in a separate pass.
 - Pi: straight-alpha upscales, Grayscale8 and the RGB24 upscale beat Qt single-threaded, and the opaque 720p -> 4K about
   matches it. With threads every upscale beats it, and the 24 MP, RGBA32 and RGB24 downscales too.
-- N4100: the PC's pattern. In absolute time it runs 1.6-1.8x faster than the Pi.
-- Opaque 4-byte downscales stay behind Qt single-threaded: about 2x on the PC, 3-5x on the Pi, 3.6-4.9x on the N4100.
+- N4100: the PC's pattern. At b8892fc its ratios were 3.6-4.9 on the opaque 4-byte downscales, and in absolute time it
+  ran 1.6-1.8x faster than the Pi.
+- Opaque 4-byte downscales stay behind Qt single-threaded: about 2x on the PC, 3-5x on the Pi, 3.0-4.0x on the N4100.
 
 ## What the design rests on
 

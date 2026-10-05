@@ -24,6 +24,35 @@ The measurement log for this CPU. Conclusions that shape the design are summariz
 - A remote-desktop session inflates everything: 4K -> 1080p RGB32 measured 198 ms with one attached, 115 without.
 - Builds take about 100 s per binary.
 
+## Standing against Qt, 93775b0
+
+One binary, minimum ms of four rounds. Since b8892fc: two chains with the assigned first block, shared weights, the
+8-float step for every layout, the pass's steps looped over the rows.
+
+| Scenario | Resizer | QImage | Ratio | Threads | Ratio | Speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | 217.0 | 72.2 | 3.00 | 61.0 | 0.84 | 3.56x |
+| 4K -> 1080p RGB32 | 94.4 | 30.2 | 3.13 | - | - | - |
+| 4K -> 1080p RGBA32 | 125.9 | 80.8 | 1.56 | 35.9 | 0.44 | 3.51x |
+| 4K -> 1080p RGB24 | 94.1 | 77.0 | 1.22 | 27.5 | 0.36 | 3.42x |
+| 4K -> 1080p Grayscale8 | 52.5 | 84.3 | 0.62 | - | - | - |
+| 720p -> 4K RGBA32 | 82.9 | 215.0 | 0.39 | 28.1 | 0.13 | 2.95x |
+| 720p -> 4K RGB32 | 63.9 | 83.7 | 0.76 | - | - | - |
+| 720p -> 4K RGB24 | 59.7 | 110.0 | 0.54 | 20.4 | 0.19 | 2.92x |
+| 720p -> 4K Grayscale8 | 30.7 | 95.9 | 0.32 | - | - | - |
+| 1080p -> 1440p | 45.2 | 38.3 | 1.18 | 14.9 | 0.39 | 3.03x |
+| 1080p -> 240p | 18.9 | 4.77 | 3.97 | 5.69 | 1.19 | 3.33x |
+| 4K -> 64x64 | 62.4 | 20.0 | 3.12 | 22.8 | 1.14 | 2.73x |
+| 101 MP -> 720p | 856.0 | 216.8 | 3.95 | 304.4 | 1.40 | 2.81x |
+| 1080p, native size | 5.30 | 5.31 | 1.00 | - | - | - |
+
+- Against b8892fc below, ms: 4K -> 1080p RGB32 115.2 -> 94.4, 24 MP -> 1080p 260.5 -> 217.0, 1080p -> 240p 23.0 -> 18.9,
+  4K -> 64x64 70.4 -> 62.4, 101 MP -> 720p 913 -> 856, 4K -> 1080p Grayscale8 59.5 -> 52.5. With threads: 24 MP -> 1080p
+  74.3 -> 61.0, 1080p -> 240p 7.7 -> 5.69.
+- Upscales: 720p -> 4K RGB32 66.3 -> 63.9, 1080p -> 1440p 47.3 -> 45.2; the others within 3%.
+- With threads, the 24 MP downscale now beats Qt; 1080p -> 240p, 4K -> 64x64 and 101 MP stay behind it.
+- 101 MP -> 720p with threads is not a gain or a loss: one binary's minimum ranged 284-338 ms between the day's sessions.
+
 ## 2026-10-04, b8892fc
 
 ### Method
