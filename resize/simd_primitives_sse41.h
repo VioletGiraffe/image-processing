@@ -37,6 +37,8 @@ namespace ImageProcessing::Detail::Sse41
 
 	// The horizontal pass's accumulation chains per row, a Floats8 each: a row pair's must fit the 16 XMM registers
 	inline constexpr size_t horizontalChainCount = 2;
+	// Blocks the vertical pass filters per step: one block already has 6-8 accumulators, two registers per Floats8
+	inline constexpr size_t verticalBlocksPerStep = 1;
 
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 

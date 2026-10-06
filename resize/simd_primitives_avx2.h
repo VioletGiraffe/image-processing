@@ -32,6 +32,8 @@ namespace ImageProcessing::Detail::Avx2
 
 	// The horizontal pass's accumulation chains per row, a Floats8 each
 	inline constexpr size_t horizontalChainCount = 4;
+	// Blocks the vertical pass filters per step. 2: a block's taps go through only 3-4 registers here, and a pair shares each tap's weight and zero test
+	inline constexpr size_t verticalBlocksPerStep = 2;
 
 	// The code after the kernel is legacy-SSE encoded, and stalls while the upper YMM state is dirty
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept { SimdSupport::clearAvxUpperState(); }

@@ -502,6 +502,101 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				writeThirtyTwoBytes(dest, values0, values1, values2, values3);
 		}
 
+		// A vertical block's accumulators, by name: see RowChains
+		struct BlockAccums
+		{
+			Floats8 accum0;
+			Floats8 accum1;
+			Floats8 accum2;
+			Floats8 accum3;
+		};
+
+		// Adds one tap to a block: its BlockFloats floats at source, times the weight
+		template <size_t BlockFloats>
+		IMAGE_PROCESSING_SIMD_INLINE void addTapToBlock(BlockAccums& block, const float* source, Floats8 weightVector) noexcept
+		{
+			block.accum0 = mulAdd(loadFloats8(source), weightVector, block.accum0);
+			block.accum1 = mulAdd(loadFloats8(source + 8), weightVector, block.accum1);
+			block.accum2 = mulAdd(loadFloats8(source + 16), weightVector, block.accum2);
+			if constexpr (BlockFloats == 32)
+				block.accum3 = mulAdd(loadFloats8(source + 24), weightVector, block.accum3);
+		}
+
+		// Writes a block's pixels at blockDest, each followed by its tail bytes
+		template <size_t Channels, size_t PixelStride>
+		IMAGE_PROCESSING_SIMD_INLINE void writeVerticalBlock(
+			uint8_t* blockDest,
+			const BlockAccums& block,
+			[[maybe_unused]] Rgb32PixelTails pixelTails,
+			[[maybe_unused]] const uint8_t* pixelTail,
+			[[maybe_unused]] size_t pixelStride) noexcept
+		{
+			if constexpr (Channels == 3 && PixelStride == 4)
+				writeEightRgb32Pixels(blockDest, block.accum0, block.accum1, block.accum2, pixelTails);
+			else if constexpr (PixelStride == Channels)
+				writeBlockBytes<Channels>(blockDest, block.accum0, block.accum1, block.accum2, block.accum3);
+			else
+			{
+				constexpr size_t pixelsPerBlock = verticalBlockPixels(Channels);
+				alignas(16) uint8_t blockBytes[pixelsPerBlock * Channels];
+				writeBlockBytes<Channels>(blockBytes, block.accum0, block.accum1, block.accum2, block.accum3);
+				for (size_t blockPixel = 0; blockPixel < pixelsPerBlock; ++blockPixel)
+				{
+					uint8_t* const destPixel = blockDest + blockPixel * pixelStride;
+					::memcpy(destPixel, blockBytes + blockPixel * Channels, Channels);
+					::memcpy(destPixel + Channels, pixelTail, pixelStride - Channels);
+				}
+			}
+		}
+
+		// Filters Blocks adjacent vertical blocks of one dest row, from dest pixel firstPixel on, and writes them.
+		// Parameters as filterVerticalDestRow's.
+		template <size_t Channels, size_t PixelStride, size_t Blocks>
+		IMAGE_PROCESSING_SIMD_INLINE void filterVerticalBlocks(
+			const std::array<TempRowSegment, 2>& segments,
+			std::span<const float> rowWeights,
+			size_t tempRowStride,
+			[[maybe_unused]] Rgb32PixelTails pixelTails,
+			[[maybe_unused]] const uint8_t* pixelTail,
+			size_t pixelStride,
+			uint8_t* destRow,
+			size_t firstPixel) noexcept
+		{
+			static_assert(Blocks == 1 || Blocks == 2);
+			constexpr size_t pixelsPerBlock = verticalBlockPixels(Channels);
+			constexpr size_t blockFloats = pixelsPerBlock * Channels;
+
+			// The blocks by name, not in an array: see RowChains
+			BlockAccums first{ zeroFloats8(), zeroFloats8(), zeroFloats8(), zeroFloats8() };
+			[[maybe_unused]] BlockAccums second{ zeroFloats8(), zeroFloats8(), zeroFloats8(), zeroFloats8() };
+
+			const float* weight = rowWeights.data();
+			for (const TempRowSegment& segment : segments)
+			{
+				const float* source = segment.firstRow + firstPixel * Channels;
+
+				// A zero tap costs a whole row sweep, and exact-ratio downscales produce them
+				// (the kernels are zero at integer offsets)
+				for (const float* segmentEnd = weight + segment.rowCount; weight != segmentEnd; ++weight)
+				{
+					if (*weight != 0.0f)
+					{
+						const Floats8 weightVector = broadcastFloats8(*weight);
+						addTapToBlock<blockFloats>(first, source, weightVector);
+						if constexpr (Blocks == 2)
+							addTapToBlock<blockFloats>(second, source + blockFloats, weightVector);
+					}
+
+					source += tempRowStride;
+				}
+			}
+
+			uint8_t* const blockDest = destRow + firstPixel * pixelStride;
+			writeVerticalBlock<Channels, PixelStride>(blockDest, first, pixelTails, pixelTail, pixelStride);
+			if constexpr (Blocks == 2)
+				writeVerticalBlock<Channels, PixelStride>(blockDest + pixelsPerBlock * pixelStride, second, pixelTails, pixelTail, pixelStride);
+		}
+
 		// Writes one destination row from its y tap window. rowWeights covers both segments in order.
 		// pixelTail: the bytes past the channels, up to pixelStride, that every dest pixel gets.
 		template <size_t Channels, size_t PixelStride>
@@ -516,61 +611,20 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		{
 			const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
 			constexpr size_t pixelsPerBlock = verticalBlockPixels(Channels);
-			constexpr size_t blockFloats = pixelsPerBlock * Channels;
-			constexpr size_t elementsPerVector = 8;
 			const size_t blockedPixelCount = destWidth & ~(pixelsPerBlock - 1);
-			[[maybe_unused]] Rgb32PixelTails pixelTails;
+			[[maybe_unused]] Rgb32PixelTails pixelTails{};
 			if constexpr (Channels == 3 && PixelStride == 4)
 				pixelTails = rgb32PixelTails(pixelTail[0]);
 
 			size_t pixel = 0;
-			for (; pixel < blockedPixelCount; pixel += pixelsPerBlock) IMAGE_PROCESSING_FORCE_INLINE_CALLS
+			if constexpr (verticalBlocksPerStep == 2)
 			{
-				Floats8 accum0 = zeroFloats8();
-				Floats8 accum1 = zeroFloats8();
-				Floats8 accum2 = zeroFloats8();
-				[[maybe_unused]] Floats8 accum3 = zeroFloats8();
-				const float* weight = rowWeights.data();
-
-				for (const TempRowSegment& segment : segments)
-				{
-					const float* source = segment.firstRow + pixel * Channels;
-
-					// A zero tap costs a whole row sweep, and exact-ratio downscales produce them
-					// (the kernels are zero at integer offsets)
-					for (const float* segmentEnd = weight + segment.rowCount; weight != segmentEnd; ++weight)
-					{
-						if (*weight != 0.0f)
-						{
-							const Floats8 weightVector = broadcastFloats8(*weight);
-							accum0 = mulAdd(loadFloats8(source), weightVector, accum0);
-							accum1 = mulAdd(loadFloats8(source + elementsPerVector), weightVector, accum1);
-							accum2 = mulAdd(loadFloats8(source + elementsPerVector * 2), weightVector, accum2);
-							if constexpr (blockFloats == 32)
-								accum3 = mulAdd(loadFloats8(source + elementsPerVector * 3), weightVector, accum3);
-						}
-
-						source += tempRowStride;
-					}
-				}
-
-				uint8_t* const blockDest = destRow + pixel * pixelStride;
-				if constexpr (Channels == 3 && PixelStride == 4)
-					writeEightRgb32Pixels(blockDest, accum0, accum1, accum2, pixelTails);
-				else if constexpr (PixelStride == Channels)
-					writeBlockBytes<Channels>(blockDest, accum0, accum1, accum2, accum3);
-				else
-				{
-					alignas(16) uint8_t blockBytes[blockFloats];
-					writeBlockBytes<Channels>(blockBytes, accum0, accum1, accum2, accum3);
-					for (size_t blockPixel = 0; blockPixel < pixelsPerBlock; ++blockPixel)
-					{
-						uint8_t* const destPixel = blockDest + blockPixel * pixelStride;
-						::memcpy(destPixel, blockBytes + blockPixel * Channels, Channels);
-						::memcpy(destPixel + Channels, pixelTail, pixelStride - Channels);
-					}
-				}
+				for (; pixel + 2 * pixelsPerBlock <= blockedPixelCount; pixel += 2 * pixelsPerBlock) IMAGE_PROCESSING_FORCE_INLINE_CALLS
+					filterVerticalBlocks<Channels, PixelStride, 2>(segments, rowWeights, tempRowStride, pixelTails, pixelTail, pixelStride, destRow, pixel);
 			}
+
+			for (; pixel < blockedPixelCount; pixel += pixelsPerBlock) IMAGE_PROCESSING_FORCE_INLINE_CALLS
+				filterVerticalBlocks<Channels, PixelStride, 1>(segments, rowWeights, tempRowStride, pixelTails, pixelTail, pixelStride, destRow, pixel);
 
 			for (; pixel < destWidth; ++pixel) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
