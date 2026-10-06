@@ -61,6 +61,7 @@ under the same section headings.
 | [PC](cpu/core-i5-12600k.md) | Core i5-12600K, P-cores | 48 KB L1D, 1.25 MB private L2 per P-core | MSVC 19.51 (toolset v145), Qt 6.11.2 |
 | [Raspberry Pi 4](cpu/raspberry-pi-4.md) | 4x Cortex-A72, 1.8 GHz | 32 KB L1D, 1 MB L2 shared by all cores | Clang 22 unless noted |
 | [Celeron N4100](cpu/celeron-n4100.md) | 4x Goldmont Plus, no AVX: SSE4.1 is its only level | 24 KB L1D, 4 MB L2 shared by all cores | MSVC 19.51, Qt 6.12.0 |
+| [Core i5-8500T](cpu/core-i5-8500t.md) | 6x Coffee Lake | 32 KB L1D, 256 KB private L2 per core, 9 MB L3 | MSVC 19.51, Qt 6.11.2; clang-cl where noted |
 | [ubuntu-24.04-arm](cpu/neoverse-n2.md) | Cobalt 100 (Neoverse N2), 4 cores | 1 MB private L2 per core | GCC and Clang jobs |
 | [ubuntu-latest, windows-latest](cpu/x64-ci-runners.md) | 2 cores, 4 threads, varying by run. Seen: AMD EPYC 9V45 (Zen 5), 9V74 (Zen 4), 7763 (Zen 3); Xeon Platinum 8573C, 8370C, Xeon 6973P-C | Private L2 per core: 1 MB on Zen 4 and 5, 512 KB on Zen 3, 2 MB on the Xeons (1.25 MB on the 8370C) | GCC and Clang; MSVC and clang-cl |
 | [macos-latest](cpu/apple-m1.md) | Apple M1 (virtual), 3 cores | 12 MB L2 | Apple Clang |
@@ -72,6 +73,9 @@ Resizer / QImage, lower is better. "T": with threads. "-": no such benchmark.
 - Pi, Clang 22, at 6b6bf7e; its Grayscale8 and RGB24 at e5ea70d.
 - Pi, GCC 14.2, at bdf65f9 (one run).
 - N4100 at a6c69e7 (minimum of three rounds).
+- 8500T (MSVC) at a6c69e7, minimum of three rounds: its [log](cpu/core-i5-8500t.md) has the table. Opaque 4-byte
+  downscales 1.6-2.0x behind Qt (4K -> 1080p RGB32 1.81, 101 MP -> 720p 1.95), every other row ahead: 4K -> 1080p RGBA32
+  1.09, 720p -> 4K RGB32 0.45, 24 MP -> 1080p with threads 0.45.
 - The PC's and the Pi's Clang columns predate the two-chain block's assigned first block and the shared weights.
 
 | Scenario | PC | PC, T | Pi, Clang | Pi, Clang, T | Pi, GCC | Pi, GCC, T | N4100 | N4100, T |
@@ -429,9 +433,8 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
    is indifferent (the section on jumps and 32-byte boundaries).
 8. **GCC's 720p -> 4K RGBA32 on Neoverse-N2 moves 10% with the binary's layout** (the call-site attribute notes): 24.1 or
    21.9 ms for the same kernel source. Code placement or the buffers' addresses, undetermined. The Pi does not react.
-9. **The PC has not run anything since 0bd90e4:** the assigned first block, the shared weights, the 8-float step for
-   4-float pixels and the row loops are measured on CI, the Pi and the N4100 only. Its MSVC upscale rows are the
-   placement-sensitive ones.
+9. **The PC's only run since 0bd90e4 is a6c69e7, in its band-count section:** no step between the two is measured
+   there on its own. Its MSVC upscale rows are the placement-sensitive ones.
 10. **The vertical pass with its taps listed once per dest row:** the nonzero taps' row pointers and broadcast weights in
     a list, the first tap assigned. N4100: upscales -5% to -8% under clang-cl; under MSVC nothing, or downscales +2% to
     +4%, in three shapes of the loop (its log). Untried under GCC and at NEON.
@@ -441,3 +444,16 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
 12. **Four chains at NEON leave GCC no spare register:** 16 accumulators, 2 weight registers and the block's 16 pixel
     vectors loaded ahead of the multiplies. On the Pi two chains gain GCC 4-6% on downscales, and cost Clang 8% on
     4K -> 64x64 and 3% on 101 MP -> 720p (its log). Not adopted. Neoverse-N2 and Apple Silicon are unmeasured.
+13. **The AVX2 kernels on the 8500T** (its log has where the time goes): byte-to-float conversion is a third of a
+    downscale, the horizontal taps 43-55%.
+    - Both passes cost the same per multiply-add, so filtering vertically first on downscales would gain nothing.
+    - 16-bit fixed-point kernels would drop the conversion, halve the temp rows' bytes and double the multiply-adds
+      per instruction.
+14. **MSVC against clang-cl at AVX2 on the 8500T:** MSVC ahead by 5-12% on the 3-channel rows, clang-cl by 3-7% on
+    Grayscale8. The listings have not been compared.
+15. **Strips narrower than a few dozen columns cost more than the ring they bound:** 4K -> 64x64 on the 8500T runs 7-9%
+    faster as one strip than as the three its 128 KB budget gives.
+16. **The cap of 4 bands leaves threads idle:** a band per thread takes 18-29% off the threaded rows on the 8500T (6
+    bands) and 21-36% on the PC (16), 4K -> 64x64 aside (their logs).
+    - A count that is not a multiple of the pool's threads loses the gain: 8 bands on 6 threads run like 4.
+    - Bands past twice the thread count cost 5-20% on the 8500T. `ParallelForFn` does not carry the thread count.
