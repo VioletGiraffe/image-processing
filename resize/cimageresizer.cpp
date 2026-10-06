@@ -320,8 +320,12 @@ namespace
 		// The vertical pass writes whole blocks, with a pixel-by-pixel tail per strip
 		const size_t widthGranule = verticalBlockPixels(channels);
 
+		// Narrower strips cost more than a ring past the budget does
+		constexpr size_t minStripWidth = 64;
+		assert(widthGranule <= minStripWidth);
+
 		const size_t width = static_cast<size_t>(destWidth);
-		const size_t maxStripWidth = std::max(widthGranule, ringBudgetBytes / (yWeights.longestRun() * channels * sizeof(float)));
+		const size_t maxStripWidth = std::max(minStripWidth, ringBudgetBytes / (yWeights.longestRun() * channels * sizeof(float)));
 		const size_t stripCount = (width + maxStripWidth - 1) / maxStripWidth;
 		// Equal widths: a narrow last strip would pay the per-strip costs for little work
 		const size_t equalWidth = (width + stripCount - 1) / stripCount;

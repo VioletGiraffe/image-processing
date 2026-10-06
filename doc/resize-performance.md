@@ -399,6 +399,12 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
 - PC, 720p -> 4K RGBA32, ms: 13.65 before strips, 19.59 with them, 13.93 with the pre-touch.
 - Pre-touching a reused destination costs nothing measurable, with or without threads.
 
+A strip is planned at least 64 columns wide, whatever the budget: a tall y window otherwise cuts a narrow destination
+into strips whose per-strip costs exceed those of the larger ring.
+- 4K -> 64x64, three strips of its 64 columns against one: 7-9% slower under MSVC on the 8500T, 6-7% under GCC on the
+  Pi, with threads too; no difference under Clang on the Pi.
+- The ring is then 64 columns times the y window: 276 KB per thread for 4K -> 64x64, against a budget of 128 KB.
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -440,9 +446,6 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
 13. **A software prefetch of the next row pair's source segment** (8500T, not committed): no consistent gain.
 14. **Three vertical blocks per step for 3-channel pixels at AVX2** (8500T, not committed): no row gains under MSVC or
     clang-cl, several lose 2-5%.
-15. **The vertical taps listed once per dest row, at every level** (not committed; open lead 10's idea in the two-block
-    step). MSVC at AVX2 on the 8500T: upscales and 4K downscales -3% to -6%, 24 MP and 101 MP +1% to +3%. MSVC at SSE4.1
-    on the N4100: every row +4% to +9%. GCC and Clang at AVX2: within 2-4%. clang-cl: no pattern.
 
 ## Open leads
 
@@ -471,9 +474,13 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
    21.9 ms for the same kernel source. Code placement or the buffers' addresses, undetermined. The Pi does not react.
 9. **The PC's only run since 0bd90e4 is a6c69e7, in its band-count section:** no step between the two is measured
    there on its own. Its MSVC upscale rows are the placement-sensitive ones.
-10. **The vertical pass with its taps listed once per dest row:** the nonzero taps' row pointers and broadcast weights in
-    a list, the first tap assigned. N4100: upscales -5% to -8% under clang-cl; under MSVC nothing, or downscales +2% to
-    +4%, in three shapes of the loop (its log). Untried under GCC and at NEON.
+10. **The vertical pass with its taps listed once per dest row:** the nonzero taps' row pointers and weights in a list,
+    so the tap loop has no zero test. Not adopted; it gains one compiler at one level so far.
+    - In the two-block step at AVX2 on the 8500T: MSVC -3% to -6% on upscales and 4K downscales, +1% to +3% on 24 MP
+      and 101 MP; GCC and Clang within 2-4%; clang-cl no pattern (its log).
+    - At SSE4.1 on the N4100: MSVC +4% to +9% on every row in that form. An earlier form with broadcast weights and the
+      first tap assigned: clang-cl upscales -5% to -8%, MSVC nothing or downscales +2% to +4% (its log).
+    - Untried at NEON. Adopting it at AVX2 alone means a second form of the tap loop.
 11. **MSVC against clang-cl on the N4100, after the one-channel fixes:** clang-cl ahead by 12% on the Grayscale8
     downscale and 5% on the RGBA32 downscale, MSVC by 4-5% on the RGB32 and RGB24 downscales. The listings of those
     kernels have not been compared.
@@ -487,10 +494,7 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
       per instruction.
 14. **MSVC against clang-cl at AVX2 on the 8500T:** MSVC ahead by 5-12% on the 3-channel rows, clang-cl by 3-7% on
     Grayscale8. The listings have not been compared.
-15. **Strips narrower than a few dozen columns cost more than the ring they bound:** 4K -> 64x64 on the 8500T runs 7-9%
-    faster as one strip than as the three its 128 KB budget gives. A floor of 64 columns on the Pi: -7% under GCC, -6%
-    with threads; nothing under Clang.
-16. **The cap of 4 bands leaves threads idle:** a band per thread takes 18-29% off the threaded rows on the 8500T (6
+15. **The cap of 4 bands leaves threads idle:** a band per thread takes 18-29% off the threaded rows on the 8500T (6
     bands) and 21-36% on the PC (16), 4K -> 64x64 aside (their logs).
     - A count that is not a multiple of the pool's threads loses the gain: 8 bands on 6 threads run like 4.
     - Bands past twice the thread count cost 5-20% on the 8500T. `ParallelForFn` does not carry the thread count.
