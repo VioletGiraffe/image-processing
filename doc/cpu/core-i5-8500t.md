@@ -60,7 +60,9 @@ pass). The parts below are differences of those. "Fixed": weight tables, allocat
 | 101 MP -> 720p | 185.2 | about 68 | about 103 | 13.5 | about 1 |
 | 720p -> 4K RGBA32 | 21.6 | 2.0 | about 6.5 | 8.3 | about 5 |
 
-- Conversion is a third of a downscale. It includes reading the source from RAM: 33 MB for 4K, 404 MB for 101 MP.
+- "Conversion" is a third of a downscale. It includes reading the source from RAM (33 MB for 4K, 404 MB for 101 MP) and
+  each run's lookup and `prepareRun` check, about 20 instructions per dest pixel; the conversion loop itself is 15
+  instructions per 4 pixels.
 - Per multiply-add the two passes cost the same on 4K -> 1080p RGB32: 5.6 ms for the vertical pass's 75 million, 11-12 ms
   for the horizontal pass's 149 million. Filtering vertically first would move work between equally priced kernels.
 - The vertical pass spends about 2 cycles per multiply-add instruction.
@@ -103,3 +105,112 @@ pool has 5 workers beside the calling thread.
 - 24, 48 and 96 were measured against 6 in a second session; the columns restate them against 4.
 - A count that is not a multiple of the thread count leaves bands for a second pass: 8 runs like 4.
 - Bands past twice the thread count cost on every row, upscales included: each band pays more than its window of rows.
+
+## Two vertical blocks per step (b8bdd30)
+
+Minimum of three alternating rounds, against the same source with one block per step.
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 720p -> 4K RGB32 | -9.7% | -14.1% |
+| 720p -> 4K RGB24 | -4.9% | -9.6% |
+| 720p -> 4K RGBA32 | -6.2% | -3.6% |
+| 720p -> 4K Grayscale8 | -2.2% | +1.3% |
+| 1080p -> 1440p | -6.5% | -13.5% |
+| 4K -> 1080p RGBA32 | -5.8% | -6.3% |
+| 4K -> 1080p RGB24 | -2.8% | -8.0% |
+| 4K -> 1080p RGB32, two benchmarks | -0.8%, -1.7% | -10.2%, -7.7% |
+| 4K -> 1080p Grayscale8 | -0.9% | -3.1% |
+| 24 MP -> 1080p | -0.9% | -0.7% |
+| 1080p -> 240p | -4.0% | +0.7% |
+| 4K -> 64x64 | -0.2% | -3.1% |
+| 101 MP -> 720p | -2.2% | -0.4% |
+
+- MSVC's tap loop for two blocks: 15 instructions with 6 multiply-adds for 3 channels, 17 with 8 for 4, no stack
+  references.
+- The two 4K -> 1080p RGB32 benchmarks of one binary read up to 5 points apart within a session.
+- A software prefetch of the next row pair's source segment, tried beside it: rows between -7% and +4%, no pattern.
+
+## WSL 2 on this machine: GCC 14.3 and Clang 22 (b8bdd30)
+
+Ubuntu 22.04. Minimum of three alternating rounds, two blocks per step against one. The SSE4.1 rows, whose code did not
+change, stay within 2.7%.
+
+| Scenario, AVX2 | GCC | Clang |
+|---|---:|---:|
+| 720p -> 4K RGB32 | -10.3% | -10.9% |
+| 720p -> 4K RGB24 | -10.6% | -18.5% |
+| 720p -> 4K RGBA32 | +3.7% | +1.2% |
+| 720p -> 4K Grayscale8 | -0.9% | -5.2% |
+| 1080p -> 1440p | -6.3% | -7.4% |
+| 4K -> 1080p RGBA32 | -5.1% | -4.7% |
+| 4K -> 1080p RGB24 | -1.2% | -3.6% |
+| 4K -> 1080p RGB32, two benchmarks | +5.5%, +4.3% | -2.2%, -2.0% |
+| 4K -> 1080p Grayscale8 | +4.1% | -1.2% |
+| 24 MP -> 1080p | -2.0% | -2.3% |
+| 101 MP -> 720p | -1.4% | -1.6% |
+
+- GCC's tap loop for two blocks: 16 instructions with 8 multiply-adds, no stack references. Its register and stack
+  assignment changed across the whole kernel, the horizontal pass included.
+- GCC's slower rows are placement: the next section.
+
+## Jumps on 32-byte boundaries under GCC
+
+This CPU has the JCC erratum: a jump that crosses or ends on a 32-byte boundary is not held in the decoded cache.
+GCC 14.3 in WSL, minimum of three rounds per session, all against the build of a6c69e7 with default flags.
+
+| Scenario | b8bdd30 | a6c69e7, branches within 32 bytes | b8bdd30, branches within 32 bytes |
+|---|---:|---:|---:|
+| 720p -> 4K RGB32 | -10.8% | -7.4% | -19.1% |
+| 720p -> 4K RGB24 | -10.9% | -6.8% | -16.3% |
+| 720p -> 4K RGBA32 | +3.1% | -4.3% | -0.1% |
+| 1080p -> 1440p | -6.8% | -10.5% | -19.8% |
+| 4K -> 1080p RGB32, two benchmarks | +6.1%, +6.9% | -1.8%, -1.8% | -5.9%, -5.9% |
+| 4K -> 1080p RGB24 | -1.0% | -2.9% | -5.8% |
+| 4K -> 1080p RGBA32 | -5.0% | -5.7% | -7.6% |
+| 4K -> 1080p Grayscale8 | +3.6% | -4.5% | -4.5% |
+| 24 MP -> 1080p, 101 MP -> 720p | within 1.5% | within 1.5% | -1.8%, -1.9% |
+
+- "Branches within 32 bytes": `-Wa,-mbranches-within-32B-boundaries` on the compile and the link.
+- Jumps of the AVX2 RGB32 kernel that cross or end on a boundary: 21 of 113 at a6c69e7 and 13 of 121 at b8bdd30,
+  1 and 3 with the option. Clang's builds: 27 of 190 and 22 of 207.
+- `-falign-loops=32 -falign-functions=64` alone moves a6c69e7's rows by up to 8%: 4K -> 1080p Grayscale8 +8.3%,
+  1080p -> 1440p +5.6%.
+- The vertical pass kept out of line alone makes a6c69e7's 4K -> 1080p RGB32 6.7-6.9% slower.
+
+## The erratum option per file, and LTO (b8bdd30)
+
+WSL, Qt 6.11.2, minimum of three rounds. The AVX2 kernel file compiled four ways, against the project's build of that
+session, whose AVX2 rows ran close to the padded builds of the session before.
+
+| | GCC | Clang |
+|---|---|---|
+| Boundary jumps in the RGB32 and RGBA32 AVX2 kernels, plain | 14, 14 | 22, 37 |
+| The option on that file, LTO kept | 14, 24 | 22, 37 |
+| The option on that file, no LTO | 3, 3 | 1, 0 |
+| No LTO only | 16, 19 | 22, 37 |
+| AVX2 rows, the option without LTO | 0% to -7.3% | +2.7% to -4.1% |
+| AVX2 rows, no LTO only | within 2.4%, Grayscale8 +4.8% and -6.4% | +4.0% to -4.6% |
+
+- Without LTO the AVX2 kernels are 0.5-2% smaller under GCC and 1-4% under Clang, and call `TempRowRing`'s constructor
+  where LTO inlines it. No other call differs.
+- The SSE4.1 rows, their code under LTO in every build, range -16% to +10% between these builds.
+
+## Three blocks per step, and the taps listed per dest row
+
+Windows, minimum of three rounds against b8bdd30.
+
+| Scenario | Three blocks for 3 channels, MSVC | Tap list, MSVC | Tap list, clang-cl |
+|---|---:|---:|---:|
+| 720p -> 4K RGBA32 | +0.1% | -6.2% | -3.3% |
+| 720p -> 4K RGB32 | +0.8% | -5.1% | -2.3% |
+| 720p -> 4K RGB24 | +1.4% | -4.6% | +6.1% |
+| 720p -> 4K Grayscale8 | +0.6% | -3.3% | -4.2% |
+| 1080p -> 1440p | -1.9% | -4.5% | +3.3% |
+| 4K -> 1080p RGB32, two benchmarks | +0.9%, +2.1% | -3.9%, -2.5% | -4.5%, +2.5% |
+| 4K -> 1080p RGB24 | +0.3% | -4.2% | -0.8% |
+| 4K -> 1080p RGBA32 | +5.4% | -0.5% | +2.8% |
+| 24 MP -> 1080p | +4.1% | +1.3% | -3.2% |
+| 101 MP -> 720p | +1.5% | +2.7% | -1.3% |
+
+- The tap list in WSL at AVX2: GCC -2.3% to +2.1% with 720p -> 4K RGB24 at -6.4%, Clang -3.5% to +3.7%.

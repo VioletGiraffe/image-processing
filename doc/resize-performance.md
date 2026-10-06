@@ -257,6 +257,24 @@ loops land within a 64-byte line, with identical instructions. Any edit that mov
   - The PC's E-cores (Gracemont): RGB32 downscales 17-35%. Cause not investigated.
   - N4100: up to 5.6%, no row gaining.
 
+### Jumps kept off 32-byte boundaries under GCC and Clang
+
+The Skylake family (through Comet Lake) has the JCC erratum: its microcode keeps a jump that crosses or ends on a 32-byte
+boundary out of the decoded cache. There the kernels' speed follows where their jumps fall, and any change to a kernel
+moves them: on the 8500T two GCC builds of one kernel differ by 5-8%, and one source change read as +6% and -6% on the
+same row at two placements.
+
+On x64 Linux the AVX2 kernel file compiles through its own rule with the assembler's `-mbranches-within-32B-boundaries`.
+- 8500T, GCC: the padded build is 2-11% faster than a plain build whose jumps fell badly, 0-7% faster than one whose
+  jumps fell well. Clang: within +3% to -4% of a plain build that fell well.
+- PC (Alder Lake, GCC in the VM, 14 rounds): the padding costs 5% on the RGB32 upscales, 2-4% on the 4K -> 1080p RGB32
+  and Grayscale8 downscales and 101 MP -> 720p, and gains 2% on the RGBA32 upscale. The older CPUs' gain was preferred.
+  AMD is unmeasured.
+- The rule drops LTO for that file: the assembler runs at the link under LTO, and a per-file option is then ignored
+  without a diagnostic. LTO's only effect on a kernel, x64 and NEON alike: `TempRowRing`'s constructor, run once per
+  band and strip, is inlined into it.
+- The SSE4.1 kernels are left alone, as under MSVC: a CPU with the erratum takes the AVX2 ones.
+
 ### One-channel upscales filter four columns at a time (0bd90e4)
 
 Where no x run exceeds 4 taps, the one-channel horizontal pass (`filterHorizontalShortRuns`) multiplies four columns' runs
@@ -316,6 +334,18 @@ The vertical pass capped its sums at 255 before converting them: `packus_epi16` 
 - N4100: upscales -6% to -8% under MSVC, -2% to -6% under clang-cl. Pi: upscales -2% to -8% under GCC and Clang.
 - Pi, GCC: 4K -> 64x64 up to 6% slower and 101 MP -> 720p 1.5%. The NEON block for two rows fills the register file,
   and without the clamp's constant GCC's allocation spills one pixel vector in the block loop (open lead 12).
+
+### Two vertical blocks per step at AVX2 (b8bdd30)
+
+A vertical block's taps accumulate in one register per 8 floats: 3-4 registers at AVX2, 6-8 at SSE4.1 and NEON. At AVX2
+the pass filters two adjacent blocks per step (`verticalBlocksPerStep`), so each tap's weight load, zero test and
+broadcast serve 16 pixels.
+
+- 8500T: upscales -5% to -10% under MSVC and up to -14% under clang-cl, downscales -1% to -6% and up to -10%. In WSL on
+  it: RGB upscales -6% to -11% under GCC, -7% to -18% under Clang.
+- SSE4.1 and NEON keep one block. Their kernels came out the same size under GCC and Clang, and within a few
+  instructions under MSVC.
+- GCC's RGBA32 upscale does not gain (the 8500T's log).
 
 ### The horizontal passes' shape is part of their tuning
 
@@ -407,6 +437,12 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
     as its memory operand: 4-byte downscales +2% to +5% under MSVC. The table is 4x the weights, and built per call.
 11. **A prefetch on each vertical tap's row** (N4100, not committed): within noise under both compilers.
 12. **One row per horizontal sweep at SSE4.1** (N4100, not committed): 9-41% slower than paired rows.
+13. **A software prefetch of the next row pair's source segment** (8500T, not committed): no consistent gain.
+14. **Three vertical blocks per step for 3-channel pixels at AVX2** (8500T, not committed): no row gains under MSVC or
+    clang-cl, several lose 2-5%.
+15. **The vertical taps listed once per dest row, at every level** (not committed; open lead 10's idea in the two-block
+    step). MSVC at AVX2 on the 8500T: upscales and 4K downscales -3% to -6%, 24 MP and 101 MP +1% to +3%. MSVC at SSE4.1
+    on the N4100: every row +4% to +9%. GCC and Clang at AVX2: within 2-4%. clang-cl: no pattern.
 
 ## Open leads
 
@@ -444,15 +480,16 @@ EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' deman
 12. **Four chains at NEON leave GCC no spare register:** 16 accumulators, 2 weight registers and the block's 16 pixel
     vectors loaded ahead of the multiplies. On the Pi two chains gain GCC 4-6% on downscales, and cost Clang 8% on
     4K -> 64x64 and 3% on 101 MP -> 720p (its log). Not adopted. Neoverse-N2 and Apple Silicon are unmeasured.
-13. **The AVX2 kernels on the 8500T** (its log has where the time goes): byte-to-float conversion is a third of a
-    downscale, the horizontal taps 43-55%.
+13. **The AVX2 kernels on the 8500T** (its log has where the time goes): the source read, its conversion and the
+    per-run bookkeeping are a third of a downscale, the horizontal taps 43-55%.
     - Both passes cost the same per multiply-add, so filtering vertically first on downscales would gain nothing.
     - 16-bit fixed-point kernels would drop the conversion, halve the temp rows' bytes and double the multiply-adds
       per instruction.
 14. **MSVC against clang-cl at AVX2 on the 8500T:** MSVC ahead by 5-12% on the 3-channel rows, clang-cl by 3-7% on
     Grayscale8. The listings have not been compared.
 15. **Strips narrower than a few dozen columns cost more than the ring they bound:** 4K -> 64x64 on the 8500T runs 7-9%
-    faster as one strip than as the three its 128 KB budget gives.
+    faster as one strip than as the three its 128 KB budget gives. A floor of 64 columns on the Pi: -7% under GCC, -6%
+    with threads; nothing under Clang.
 16. **The cap of 4 bands leaves threads idle:** a band per thread takes 18-29% off the threaded rows on the 8500T (6
     bands) and 21-36% on the PC (16), 4K -> 64x64 aside (their logs).
     - A count that is not a multiple of the pool's threads loses the gain: 8 bands on 6 threads run like 4.

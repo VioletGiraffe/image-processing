@@ -37,20 +37,30 @@ OTHER_FILES += $$PWD/cimageresizer_simd.inl
 	for(avx2Define, DEFINES): AVX2_CXXFLAGS += -D$$avx2Define
 	for(avx2IncludePath, INCLUDEPATH): AVX2_CXXFLAGS += -I$$shell_quote($$avx2IncludePath)
 
-	avx2Compiler.name = AVX2 kernels
-	avx2Compiler.input = AVX2_SOURCES
-	avx2Compiler.dependency_type = TYPE_C
 	# The VS project generator scans no includes for an extra compiler: only these reach the rule's inputs
 	avx2Compiler.depends = $$PWD/cimageresizer_simd.inl $$PWD/simd_primitives_avx2.h $$PWD/simd_support.h $$PWD/resize_internal.h $$PWD/cimageresizer.h
-	avx2Compiler.variable_out = OBJECTS
-	avx2Compiler.output = $${OBJECTS_DIR}/${QMAKE_FILE_BASE}$${first(QMAKE_EXT_OBJ)}
 	# The generator supplies /Fd to its own compile rules but not to this one, and /Zi without it writes the PDB to
 	# the build's working directory, where the linker will not find it and drops this object's symbols (LNK4099).
 	avx2Compiler.commands = $$QMAKE_CXX -c $$AVX2_CXXFLAGS -Fd$$shell_quote($${OBJECTS_DIR}/) ${QMAKE_FILE_IN} -Fo${QMAKE_FILE_OUT}
+} else:linux:contains(QT_ARCH, x86_64) {
+	# The option keeps jumps off 32-byte boundaries, as /QIntel-jcc-erratum does: on the Skylake family such a jump is not held
+	# in the decoded cache, and the kernels' speed changes by up to 20% with where their jumps fall.
+	# -fno-lto: the assembler takes the option, and with LTO it runs at the link, where a per-file option is lost.
+	contains(QMAKE_COMPILER, clang): AVX2_KERNEL_FLAGS = -mbranches-within-32B-boundaries
+	else: AVX2_KERNEL_FLAGS = -Wa,-mbranches-within-32B-boundaries
+	avx2Compiler.commands = $(CXX) -c $(CXXFLAGS) $(INCPATH) $$AVX2_KERNEL_FLAGS -fno-lto -o ${QMAKE_FILE_OUT} ${QMAKE_FILE_IN}
+}
+
+isEmpty(avx2Compiler.commands) {
+	SOURCES += $$PWD/cimageresizer_simd_avx2.cpp
+} else {
+	avx2Compiler.name = AVX2 kernels
+	avx2Compiler.input = AVX2_SOURCES
+	avx2Compiler.dependency_type = TYPE_C
+	avx2Compiler.variable_out = OBJECTS
+	avx2Compiler.output = $${OBJECTS_DIR}/${QMAKE_FILE_BASE}$${first(QMAKE_EXT_OBJ)}
 	QMAKE_EXTRA_COMPILERS += avx2Compiler
 
 	AVX2_SOURCES += $$PWD/cimageresizer_simd_avx2.cpp
 	OTHER_FILES += $$PWD/cimageresizer_simd_avx2.cpp
-} else {
-	SOURCES += $$PWD/cimageresizer_simd_avx2.cpp
 }

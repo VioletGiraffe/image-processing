@@ -239,6 +239,20 @@ GCC 14.2, 4K -> 1080p Grayscale8, one run each; the QImage control 106.8-109.5 m
 - Only 1- and 2-float pixels take that step. Clang and MSVC unrolled it.
 - The CI's GCC jobs showed the same at 93775b0: +31% on Neoverse-N2, +43% at AVX2 and +50% at SSE4.1 on the EPYC 7763.
 
+## Two vertical blocks per step at AVX2 (b8bdd30)
+
+NEON keeps one block. GCC 14.2 and Clang 22: the nine kernels' sizes unchanged, every row within 2.2% over three
+rounds, 4K -> 64x64 with threads under Clang (-6.7%) aside.
+
+## The NEON kernel file without LTO, and a floor on the strip width (b8bdd30)
+
+Three alternating rounds each.
+- Without LTO the kernels are 0.2-5% smaller under GCC and within 2% under Clang, and call `TempRowRing`'s constructor
+  where LTO inlines it. GCC's rows stay within 1.7%, 4K -> 1080p RGBA32 at +2.7%; Clang's within 3%, 4K -> 64x64 at
+  +6.1% with its QImage control 3.6% apart.
+- A floor of 64 dest columns per strip: 4K -> 64x64 -7.4% under GCC and -6.0% with threads, +0.2% and +3.7% under
+  Clang. A floor of 32 under GCC: -5.7% and -3.6%. No other benchmark has strips that narrow.
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing

@@ -113,6 +113,17 @@ Variants that lost, same method:
   and adds: the rewritten loop is no shorter under MSVC.
 - The upscale's vertical pass is not waiting on the destination's memory: streaming stores change nothing under MSVC.
 
+## Two vertical blocks per step at AVX2 (b8bdd30)
+
+SSE4.1 keeps one block. Minimum of three rounds against the build before it:
+- MSVC: within 1%, except 4K -> 1080p RGB24 +2.1% and RGB32 +0.5% to +1.4%. Its kernels differ by a few instructions.
+- clang-cl: within 1%, except 4K -> 1080p Grayscale8 +4.9%. Its kernels are identical, loop addresses included.
+
+## The vertical taps listed per dest row (not committed)
+
+MSVC, SSE4.1, minimum of three rounds against b8bdd30: every row slower. Upscales +7.3% to +9.3%, 4K -> 1080p RGB32,
+RGB24 and RGBA32 +6.4% to +9.3%, 24 MP -> 1080p +4.7%, 101 MP -> 720p +2.2%, 4K -> 1080p Grayscale8 +1.8%.
+
 ## 2026-10-04, b8892fc
 
 ### Method
