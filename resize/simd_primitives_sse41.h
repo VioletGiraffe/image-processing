@@ -39,6 +39,8 @@ namespace ImageProcessing::Detail::Sse41
 	inline constexpr size_t horizontalChainCount = 2;
 	// Blocks the vertical pass filters per step: one block already has 6-8 accumulators, two registers per Floats8
 	inline constexpr size_t verticalBlocksPerStep = 1;
+	// See the AVX2 one
+	inline constexpr bool filterAllBufferedColumns = true;
 
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 

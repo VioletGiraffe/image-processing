@@ -253,6 +253,44 @@ Three alternating rounds each.
 - A floor of 64 dest columns per strip: 4K -> 64x64 -7.4% under GCC and -6.0% with threads, +0.2% and +3.7% under
   Clang. A floor of 32 under GCC: -5.7% and -3.6%. No other benchmark has strips that narrow.
 
+## The horizontal filter's batched loop, and the destination's stores
+
+Ten alternating rounds, median of same-round ratios, against 93b1b79. NEON keeps one column per preparation
+(`filterAllBufferedColumns`): with it the committed sources are within 2.5% under GCC, 1080p -> 1440p with threads at
++3.8%, and within 1.5% under Clang.
+
+The batched loop, as AVX2 and SSE4.1 have it:
+
+| Scenario | GCC | Clang | GCC, `STNP` output stores | Clang, `STNP` output stores |
+|---|---:|---:|---:|---:|
+| 3- and 4-channel 4K downscales | -0.5% to -1.6% | -1.7% to +0.8% | -0.6% to -2.9% | -1.4% to +0.9% |
+| 720p -> 4K RGBA32 | +2.9% | -4.7% | +3.2% | -2.3% |
+| 720p -> 4K RGB32 | +4.1% | -2.8% | -1.0% | -2.5% |
+| 1080p -> 1440p RGB32 | +1.9% | -2.9% | -1.6% | -3.1% |
+| 720p -> 4K RGBA32, threads | +72% | -2.7% | +6.3% | +4.1% |
+| 1080p -> 1440p RGB32, threads | +33% | -6.5% | +1.4% | +3.5% |
+| 720p -> 4K RGB24, threads | +37% | -2.1% | +38% | -0.3% |
+
+`perf stat` over 720p -> 4K RGBA32 single-threaded under GCC, a run of 17 resizes, in million lines:
+
+| Build | L2 refills | L2 write-backs |
+|---|---:|---:|
+| One column per preparation | 17-19 | 8-9.5 |
+| Batched loop | 28-29 | 18-19 |
+| One column per preparation, no vertical pass | 17.8 | 7.6 |
+| Batched loop, no vertical pass | 18.3 | 8.9 |
+| Batched loop, `STNP` output stores | 15.7 | 6.3 |
+
+- A run writes 8.8 million destination lines. The vertical pass adds 1-2 million refills and write-backs to the first
+  build and 9-10 million to the batched one: the first build's destination stores bypass L2.
+- The two builds' vertical loops store with the same instructions, and their horizontal passes read and write the same
+  addresses in the same order.
+- With the bypass lost, the write-backs sampled inside the kernel fall on the vertical pass's temp-row loads.
+- A one-column loop that went through `filterBufferedRuns` lost the bypass as well: 1080p -> 1440p RGB32 with threads
+  +41% under GCC.
+- `STNP` here covers the 32-byte stores of RGBA32 and RGB32 only. Single-threaded 720p -> 4K RGBA32 under GCC: 106 ms
+  with it, 99 ms where the bypass engages without it.
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing

@@ -33,6 +33,8 @@ namespace ImageProcessing::Detail::Neon
 	inline constexpr size_t horizontalChainCount = 4;
 	// Blocks the vertical pass filters per step: one block already has 6-8 accumulators, two registers per Floats8
 	inline constexpr size_t verticalBlocksPerStep = 1;
+	// See the AVX2 one. false: with true, GCC's build loses the destination stores' cache bypass on Cortex-A72, threaded upscales +33-72%
+	inline constexpr bool filterAllBufferedColumns = false;
 
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 

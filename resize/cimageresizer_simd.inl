@@ -278,7 +278,158 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		// its exact single-row arithmetic. Two rows is the register budget: the spread constants plus a row pair's
 		// chains nearly fill the file, a third row would spill inside the hottest loop.
 		// Rows are passed as individual pointers: a pair of temp rows may straddle the ring's wrap.
-		// Filters dest columns [destBegin, destEnd) into the temp rows' start.
+		// Filters one dest column: the run of weights.size() pixels at runFloatOffset in each row's floats, into each temp row at tempOffset.
+		template <size_t Channels, size_t Rows>
+		IMAGE_PROCESSING_SIMD_INLINE void filterRun(
+			float* const (&sourceFloats)[Rows],
+			size_t runFloatOffset,
+			std::span<const float> weights,
+			const WeightSpreader<sourceFloatsPerPixel(Channels)>& weightSpreader,
+			float* const (&tempRows)[Rows],
+			size_t tempOffset) noexcept
+		{
+			static_assert(Rows == 1 || Rows == 2);
+
+			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
+			// Taps per block: 8 source floats per chain
+			constexpr size_t blockTaps = horizontalChainCount * 8 / floatsPerPixel;
+			const size_t tapCount = weights.size();
+
+			const float* runPixels[Rows];
+			// Lanes hold partial sums of 8 / floatsPerPixel pixels until the reductions below the blocks
+			Floats8 accumPairs[Rows];
+			for (size_t row = 0; row < Rows; ++row)
+			{
+				runPixels[row] = sourceFloats[row] + runFloatOffset;
+				accumPairs[row] = zeroFloats8();
+			}
+
+			size_t tap = 0;
+
+			// A run is consecutive pixels, so a block goes through independent chains of 8 floats;
+			// per-tap accumulation into one register would serialize on the multiply-add latency.
+			if (tapCount >= blockTaps)
+			{
+				// The rows' chains by name, not by row index: see RowChains
+				RowChains chainsA;
+				RowChains chainsB;
+				filterBlock<true, Rows>(weightSpreader, weights.data(), runPixels[0], runPixels[Rows - 1], chainsA, chainsB);
+				for (tap = blockTaps; tap + blockTaps <= tapCount; tap += blockTaps)
+					filterBlock<false, Rows>(weightSpreader, weights.data() + tap, runPixels[0] + tap * floatsPerPixel, runPixels[Rows - 1] + tap * floatsPerPixel, chainsA, chainsB);
+
+				accumPairs[0] = sumChains(chainsA);
+				if constexpr (Rows == 2)
+					accumPairs[1] = sumChains(chainsB);
+			}
+
+			// [[likely]] on the three steps below is for code placement, not a claim about the run lengths:
+			// GCC moves a step whose body is a loop over the rows out of line without it.
+
+			// 16 floats, half a four-chain block: a whole bicubic run of 4-float pixels
+			if constexpr (horizontalChainCount == 4)
+			{
+				if (tap + 16 / floatsPerPixel <= tapCount) [[likely]]
+				{
+					// A whole WeightBlock though only 4 weights may be in play: the builder pads the weights array to keep the overread
+					// in bounds. On AVX2 the natural 4-float load + castps128_ps256 compiles under MSVC to a 16-byte stack store that the
+					// 32-byte vpermps memory operand then reloads, and a load wider than the store it overlaps cannot be
+					// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
+					const float* blockWeights = weights.data() + tap;
+					const WeightBlock firstWeights = loadWeightBlock(blockWeights);
+					const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, firstWeights);
+					const Floats8 w1 = chainWeights<1>(weightSpreader, blockWeights, firstWeights);
+					for (size_t row = 0; row < Rows; ++row)
+					{
+						const float* blockPixels = runPixels[row] + tap * floatsPerPixel;
+						accumPairs[row] = mulAdd(loadFloats8(blockPixels), w0, mulAdd(loadFloats8(blockPixels + 8), w1, accumPairs[row]));
+					}
+
+					tap += 16 / floatsPerPixel;
+				}
+			}
+
+			// 8 floats: a whole bicubic run of 2-float pixels
+			if (tap + 8 / floatsPerPixel <= tapCount) [[likely]]
+			{
+				const float* blockWeights = weights.data() + tap;
+				const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, loadWeightBlock(blockWeights));
+				for (size_t row = 0; row < Rows; ++row)
+					accumPairs[row] = mulAdd(loadFloats8(runPixels[row] + tap * floatsPerPixel), w0, accumPairs[row]);
+
+				tap += 8 / floatsPerPixel;
+			}
+
+			Floats4 accum[Rows];
+			for (size_t row = 0; row < Rows; ++row)
+				accum[row] = sumHalves(accumPairs[row]);
+
+			// 4 taps of 1-float pixels
+			if constexpr (floatsPerPixel == 1)
+			{
+				if (tap + 4 <= tapCount) [[likely]]
+				{
+					const Floats4 w = loadFloats4(weights.data() + tap);
+					for (size_t row = 0; row < Rows; ++row)
+						accum[row] = mulAdd(loadFloats4(runPixels[row] + tap), w, accum[row]);
+
+					tap += 4;
+				}
+			}
+
+			if constexpr (floatsPerPixel == 4)
+			{
+				for (; tap < tapCount; ++tap)
+				{
+					const Floats4 weight = broadcastFloats4(weights[tap]);
+					for (size_t row = 0; row < Rows; ++row)
+						accum[row] = mulAdd(loadFloats4(runPixels[row] + tap * 4), weight, accum[row]);
+				}
+
+				for (size_t row = 0; row < Rows; ++row)
+					storeTempPixel<Channels>(tempRows[row] + tempOffset, accum[row]);
+			}
+			else
+			{
+				const size_t remainingTaps = tapCount - tap;
+				// Not a loop over the rows: its body holds a loop, and GCC leaves such an outer loop rolled, with the rows' state in memory
+				storeTempPixelWithTaps<floatsPerPixel>(tempRows[0] + tempOffset, accum[0], runPixels[0] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
+				if constexpr (Rows == 2)
+					storeTempPixelWithTaps<floatsPerPixel>(tempRows[1] + tempOffset, accum[1], runPixels[1] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
+			}
+		}
+
+		// Filters dest columns from firstColumn on, into the temp rows at their offset from destBegin, while their runs lie within
+		// source pixels [bufferBegin, bufferEnd). Returns the first column not filtered.
+		// sourceFloats[row]: the row's floats from pixel bufferBegin on.
+		// The pixel range by value: a constant of this loop, where the members of SlidingSourceFloats are not.
+		template <size_t Channels, size_t Rows>
+		IMAGE_PROCESSING_SIMD_INLINE size_t filterBufferedRuns(
+			float* const (&sourceFloats)[Rows],
+			size_t bufferBegin,
+			size_t bufferEnd,
+			float* const (&tempRows)[Rows],
+			size_t destBegin,
+			size_t firstColumn,
+			size_t destEnd,
+			AxisWeights::RunLookup xRunLookup) noexcept
+		{
+			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
+			const WeightSpreader<floatsPerPixel> weightSpreader{};
+
+			size_t dx = firstColumn;
+			for (; dx < destEnd; ++dx) IMAGE_PROCESSING_FORCE_INLINE_CALLS
+			{
+				const auto [firstPixel, weights] = xRunLookup.runFor(dx);
+				if (firstPixel < bufferBegin || firstPixel + weights.size() > bufferEnd)
+					break;
+
+				filterRun<Channels>(sourceFloats, (firstPixel - bufferBegin) * floatsPerPixel, weights, weightSpreader, tempRows, (dx - destBegin) * Channels);
+			}
+
+			return dx;
+		}
+
+		// Filters dest columns [destBegin, destEnd) into the temp rows' start
 		template <size_t Channels, size_t PixelStride, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalRowGroup(
 			SlidingSourceFloats<Channels, PixelStride, Rows>& source,
@@ -287,119 +438,26 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			size_t destEnd,
 			const AxisWeights& xWeights) noexcept
 		{
-			static_assert(Rows == 1 || Rows == 2);
-
-			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
-			// Taps per block: 8 source floats per chain
-			constexpr size_t blockTaps = horizontalChainCount * 8 / floatsPerPixel;
-			const WeightSpreader<floatsPerPixel> weightSpreader{};
 			const AxisWeights::RunLookup xRunLookup = xWeights.runLookup();
 
-			for (size_t dx = destBegin; dx < destEnd; ++dx) IMAGE_PROCESSING_FORCE_INLINE_CALLS
+			if constexpr (filterAllBufferedColumns)
 			{
-				const auto [firstPixel, weights] = xRunLookup.runFor(dx);
-				const size_t tapCount = weights.size();
-				const size_t runFloatOffset = source.prepareRun(firstPixel, tapCount);
-				const float* runPixels[Rows];
-				// Lanes hold partial sums of 8 / floatsPerPixel pixels until the reductions below the blocks
-				Floats8 accumPairs[Rows];
-				for (size_t row = 0; row < Rows; ++row)
+				for (size_t dx = destBegin; dx < destEnd;) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 				{
-					runPixels[row] = source.floats[row] + runFloatOffset;
-					accumPairs[row] = zeroFloats8();
+					// The column's run is in the buffers after this, so each pass filters at least that column
+					const auto [firstPixel, weights] = xRunLookup.runFor(dx);
+					source.prepareRun(firstPixel, weights.size());
+					dx = filterBufferedRuns<Channels>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRunLookup);
 				}
-
-				size_t tap = 0;
-
-				// A run is consecutive pixels, so a block goes through independent chains of 8 floats;
-				// per-tap accumulation into one register would serialize on the multiply-add latency.
-				if (tapCount >= blockTaps)
+			}
+			else
+			{
+				const WeightSpreader<sourceFloatsPerPixel(Channels)> weightSpreader{};
+				for (size_t dx = destBegin; dx < destEnd; ++dx) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 				{
-					// The rows' chains by name, not by row index: see RowChains
-					RowChains chainsA;
-					RowChains chainsB;
-					filterBlock<true, Rows>(weightSpreader, weights.data(), runPixels[0], runPixels[Rows - 1], chainsA, chainsB);
-					for (tap = blockTaps; tap + blockTaps <= tapCount; tap += blockTaps)
-						filterBlock<false, Rows>(weightSpreader, weights.data() + tap, runPixels[0] + tap * floatsPerPixel, runPixels[Rows - 1] + tap * floatsPerPixel, chainsA, chainsB);
-
-					accumPairs[0] = sumChains(chainsA);
-					if constexpr (Rows == 2)
-						accumPairs[1] = sumChains(chainsB);
-				}
-
-				// [[likely]] on the three steps below is for code placement, not a claim about the run lengths:
-				// GCC moves a step whose body is a loop over the rows out of line without it.
-
-				// 16 floats, half a four-chain block: a whole bicubic run of 4-float pixels
-				if constexpr (horizontalChainCount == 4)
-				{
-					if (tap + 16 / floatsPerPixel <= tapCount) [[likely]]
-					{
-						// A whole WeightBlock though only 4 weights may be in play: the builder pads the weights array to keep the overread
-						// in bounds. On AVX2 the natural 4-float load + castps128_ps256 compiles under MSVC to a 16-byte stack store that the
-						// 32-byte vpermps memory operand then reloads, and a load wider than the store it overlaps cannot be
-						// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
-						const float* blockWeights = weights.data() + tap;
-						const WeightBlock firstWeights = loadWeightBlock(blockWeights);
-						const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, firstWeights);
-						const Floats8 w1 = chainWeights<1>(weightSpreader, blockWeights, firstWeights);
-						for (size_t row = 0; row < Rows; ++row)
-						{
-							const float* blockPixels = runPixels[row] + tap * floatsPerPixel;
-							accumPairs[row] = mulAdd(loadFloats8(blockPixels), w0, mulAdd(loadFloats8(blockPixels + 8), w1, accumPairs[row]));
-						}
-
-						tap += 16 / floatsPerPixel;
-					}
-				}
-
-				// 8 floats: a whole bicubic run of 2-float pixels
-				if (tap + 8 / floatsPerPixel <= tapCount) [[likely]]
-				{
-					const float* blockWeights = weights.data() + tap;
-					const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, loadWeightBlock(blockWeights));
-					for (size_t row = 0; row < Rows; ++row)
-						accumPairs[row] = mulAdd(loadFloats8(runPixels[row] + tap * floatsPerPixel), w0, accumPairs[row]);
-
-					tap += 8 / floatsPerPixel;
-				}
-
-				Floats4 accum[Rows];
-				for (size_t row = 0; row < Rows; ++row)
-					accum[row] = sumHalves(accumPairs[row]);
-
-				// 4 taps of 1-float pixels
-				if constexpr (floatsPerPixel == 1)
-				{
-					if (tap + 4 <= tapCount) [[likely]]
-					{
-						const Floats4 w = loadFloats4(weights.data() + tap);
-						for (size_t row = 0; row < Rows; ++row)
-							accum[row] = mulAdd(loadFloats4(runPixels[row] + tap), w, accum[row]);
-
-						tap += 4;
-					}
-				}
-
-				if constexpr (floatsPerPixel == 4)
-				{
-					for (; tap < tapCount; ++tap)
-					{
-						const Floats4 weight = broadcastFloats4(weights[tap]);
-						for (size_t row = 0; row < Rows; ++row)
-							accum[row] = mulAdd(loadFloats4(runPixels[row] + tap * 4), weight, accum[row]);
-					}
-
-					for (size_t row = 0; row < Rows; ++row)
-						storeTempPixel<Channels>(tempRows[row] + (dx - destBegin) * Channels, accum[row]);
-				}
-				else
-				{
-					const size_t remainingTaps = tapCount - tap;
-					// Not a loop over the rows: its body holds a loop, and GCC leaves such an outer loop rolled, with the rows' state in memory
-					storeTempPixelWithTaps<floatsPerPixel>(tempRows[0] + (dx - destBegin) * Channels, accum[0], runPixels[0] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
-					if constexpr (Rows == 2)
-						storeTempPixelWithTaps<floatsPerPixel>(tempRows[1] + (dx - destBegin) * Channels, accum[1], runPixels[1] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
+					const auto [firstPixel, weights] = xRunLookup.runFor(dx);
+					const size_t runFloatOffset = source.prepareRun(firstPixel, weights.size());
+					filterRun<Channels>(source.floats, runFloatOffset, weights, weightSpreader, tempRows, (dx - destBegin) * Channels);
 				}
 			}
 		}

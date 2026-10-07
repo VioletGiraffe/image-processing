@@ -214,3 +214,75 @@ Windows, minimum of three rounds against b8bdd30.
 | 101 MP -> 720p | +1.5% | +2.7% | -1.3% |
 
 - The tap list in WSL at AVX2: GCC -2.3% to +2.1% with 720p -> 4K RGB24 at -6.4%, Clang -3.5% to +3.7%.
+
+## MSVC against clang-cl by parts (8d72f9b)
+
+Windows, minimum ms of two rounds, MSVC / clang-cl. The parts as in "Where the time goes at AVX2"; the build without
+the vertical pass lets the temp rows' addresses escape, or clang-cl removes the horizontal filter with it.
+
+| Scenario | Whole | Conversion-only build | Horizontal | Vertical |
+|---|---|---|---|---|
+| 4K -> 1080p RGB32 | 24.7 / 28.3 | 10.7 / 11.7 | 10.9 / 12.9 | 3.1 / 3.7 |
+| 4K -> 1080p RGB24 | 25.9 / 28.6 | 10.9 / 8.1 | 11.3 / 16.1 | 3.7 / 4.4 |
+| 4K -> 1080p RGBA32 | 28.4 / 30.2 | 13.3 / 10.8 | 10.6 / 13.9 | 4.4 / 5.5 |
+| 4K -> 1080p Grayscale8 | 15.7 / 14.8 | 5.0 / 4.3 | 9.2 / 8.6 | 1.5 / 1.9 |
+| 24 MP -> 1080p | 55.4 / 63.9 | 22.1 / 24.9 | 28.0 / 30.5 | 5.3 / 8.4 |
+| 101 MP -> 720p | 181.7 / 204.5 | 70.6 / 85.2 | 105.3 / 101.1 | 5.8 / 18.2 |
+| 720p -> 4K RGBA32 | 20.9 / 22.3 | 9.1 / 7.8 | 3.0 / 6.1 | 8.8 / 8.3 |
+| 720p -> 4K RGB32 | 18.9 / 19.2 | 8.5 / 8.6 | 3.8 / 4.8 | 6.6 / 5.9 |
+
+- The conversion-only build and the horizontal part do not separate cleanly: their sums differ by 0.8-2.5 ms on the
+  4K -> 1080p rows, clang-cl the slower.
+- The conversion-only column does not compare the conversion loops. The RGB24 loop is the same 4 shuffles and widenings
+  per 4 pixels under both compilers; clang-cl's RGB32 and RGBA32 loops have one fewer than MSVC's.
+- Fewer shuffles in MSVC's conversion loops, confirmed in its listings, gained nothing measurable (experiment 15 in the main doc).
+
+The conversion-only build by parts, minimum ms of three rounds, MSVC / clang-cl. Fetch: one byte read per cache line of
+the source. Convert: the strip's pixels converted in 128-pixel chunks to one place, less the fetch. Stepping: the build's
+loop over dest pixels with `prepareRun`, less the chunked conversion. clang-cl removes the fetch loop, its results unused.
+
+| Scenario | Whole resize | Fetch | Convert | Stepping |
+|---|---|---|---|---|
+| 4K -> 1080p RGB32 | 24.7 / 28.3 | 1.8 / - | 1.7 / 4.2 with the fetch | 5.0 / 6.3 |
+| 4K -> 1080p RGB24 | 25.9 / 28.6 | 1.4 / - | 2.6 / 4.9 | 5.1 / 2.4 |
+| 4K -> 1080p RGBA32 | 28.4 / 30.2 | 1.8 / - | 3.6 / 5.5 | 5.3 / 4.0 |
+| 4K -> 1080p Grayscale8 | 15.7 / 14.8 | 0.3 / - | 0.4 / 0.8 | 4.0 / 3.5 |
+| 24 MP -> 1080p | 55.4 / 63.9 | 5.7 / - | 5.4 / 12.0 | 8.4 / 11.8 |
+| 101 MP -> 720p | 181.7 / 204.5 | 26.3 / - | 24.0 / 53.9 | 16.9 / 28.9 |
+
+- The fetch and the conversion together are 14-19% of a 3- or 4-channel 4K downscale under MSVC and 28% of 101 MP -> 720p.
+- The stepping figure is 1.2-3 ns per dest pixel for one source logic, by layout and compiler: it measures that loop's
+  code, and bounds the stepping's cost inside the filter loop from above only.
+
+## The source buffers' range by value in the horizontal filter
+
+Median of same-round ratios over twenty alternating rounds (sixteen in WSL), against 93b1b79 with the same benchmark
+file. The Qt and SSE4.1 rows were switched off in these builds, which takes a run from 65 s to 27 s.
+
+| Scenario | MSVC | clang-cl | GCC (WSL) | Clang (WSL) |
+|---|---:|---:|---:|---:|
+| 4K -> 1080p RGB32 | -8.4%, -7.9% | -5.2%, -6.4% | -0.4%, 0.0% | -6.5%, -6.8% |
+| 4K -> 1080p RGB24 | -6.5% | -7.3% | -1.0% | -7.9% |
+| 4K -> 1080p RGBA32 | -5.7% | -5.6% | -2.8% | -8.5% |
+| 4K -> 1080p Grayscale8 | -9.2% | -8.9% | -4.6% | -11.5% |
+| 24 MP -> 1080p | -5.3% | -6.7% | -2.9% | -5.5% |
+| 101 MP -> 720p | -3.4% | -3.4% | -3.9% | -2.7% |
+| 720p -> 4K RGBA32 | -2.1% | -7.2% | -4.4% | -8.7% |
+| 720p -> 4K RGB32 | -3.4% | -6.2% | -3.1% | -6.6% |
+| 720p -> 4K RGB24 | -5.9% | -3.0% | -2.2% | -6.9% |
+| 1080p -> 1440p RGB32 | -5.1% | -6.9% | -2.0% | -6.8% |
+| 4K -> 64x64 | +0.3% | +1.0% | -3.1% | 0.0% |
+| 720p -> 4K Grayscale8 | +0.2% | +0.1% | +0.1% | -0.3% |
+
+- With threads: -2.5% to -6.3% under MSVC, 0% to -7.5% under clang-cl, 0% to -4% under GCC, -3% to -10% under Clang.
+- The Windows columns are the committed sources. The WSL columns are the same loop before `filterRun` was split from
+  it; under MSVC and clang-cl the two forms measured alike in one run.
+- The loop without a check, its batch end found by a scan: MSVC -3% to -6% on the 4K downscales; clang-cl +7.1% on
+  4K -> 1080p Grayscale8, +4.4% on 1080p -> 1440p, +2% to +3% on 720p -> 4K RGB32 and RGB24; GCC within 2-4% either way.
+
+### Rounds on this machine
+
+- One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP
+  range 5%. Qt's rows range as much: the spread is the process's, not the kernel's.
+- Six rounds of ten samples gave -0.6% and -6.1% for one pair of binaries on 4K -> 1080p RGB24, an hour apart.
+- 8K -> 4K, four times the pixels of 4K -> 1080p, ranges 10-21%: a longer job does not average it out.

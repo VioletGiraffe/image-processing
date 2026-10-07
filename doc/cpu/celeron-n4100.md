@@ -124,6 +124,23 @@ SSE4.1 keeps one block. Minimum of three rounds against the build before it:
 MSVC, SSE4.1, minimum of three rounds against b8bdd30: every row slower. Upscales +7.3% to +9.3%, 4K -> 1080p RGB32,
 RGB24 and RGBA32 +6.4% to +9.3%, 24 MP -> 1080p +4.7%, 101 MP -> 720p +2.2%, 4K -> 1080p Grayscale8 +1.8%.
 
+## The source buffers' range by value in the horizontal filter
+
+SSE4.1, ten alternating rounds, median of same-round ratios, against 93b1b79.
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 4K -> 1080p RGB32 | -3.8%, -3.9% | -7.1%, -7.6% |
+| 4K -> 1080p RGB24 | -3.5% | -7.2% |
+| 4K -> 1080p RGBA32 | -5.2% | -1.7% |
+| 4K -> 1080p Grayscale8 | -6.6% | -4.6% |
+| 24 MP -> 1080p | -2.7% | -5.1% |
+| 720p -> 4K RGBA32, RGB32, RGB24 | -5.4%, -4.2%, -4.6% | -5.6%, -5.2%, -4.9% |
+| 1080p -> 1440p RGB32 | -4.8% | -6.0% |
+| 101 MP -> 720p, 4K -> 64x64 | -0.4%, -0.1% | -1.5%, -0.4% |
+
+With threads: -2% to -8%. Measured on the loop before `filterRun` was split from it.
+
 ## 2026-10-04, b8892fc
 
 ### Method

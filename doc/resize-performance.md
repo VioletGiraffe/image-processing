@@ -21,6 +21,8 @@ under the same section headings.
   - macos-latest runner: up to 2x, too noisy to read per scenario.
   - A real M1, same-session A/B: about 1%.
   - Celeron N4100: 0.5-1%.
+  - Core i5-8500T: 5-8% between processes on the 4K -> 1080p rows. Twenty alternating rounds resolve about 2%; six do
+    not resolve 5% (its log).
   - An Ubuntu VM on the PC: 10-20% between runs of one binary, whole runs drifting together. Fifteen alternating rounds,
     read by each build's minimum and by the median of back-to-back pairs, resolve about 3%.
 - A CI comparison needs several samples per side: re-running the old commit's run alongside the new one gives same-time
@@ -347,6 +349,30 @@ broadcast serve 16 pixels.
   instructions under MSVC.
 - GCC's RGBA32 upscale does not gain (the 8500T's log).
 
+### The horizontal filter takes the source buffers' range by value
+
+`filterHorizontalRowGroup` prepares the source buffers for one column, then `filterBufferedRuns` filters every following
+column whose run lies in them. The buffers' pixel range reaches that loop as arguments: read through
+`SlidingSourceFloats` in a loop that also slides and converts, it was live state at every column. The same reason as for
+the run lookup's pointers above.
+
+| Machine, level | Compiler | 3- and 4-channel 4K downscales | Upscales |
+|---|---|---|---|
+| 8500T, AVX2 | MSVC | -6% to -9% | -2% to -6% |
+| 8500T, AVX2 | clang-cl | -5% to -7% | -3% to -7% |
+| 8500T, AVX2 (WSL) | Clang | -6% to -9% | -7% to -9% |
+| 8500T, AVX2 (WSL) | GCC | 0% to -3% | -2% to -4% |
+| PC, AVX2 | MSVC | -3% to +2% | -2% to -6% |
+| N4100, SSE4.1 | MSVC | -4% to -5% | -4% to -5% |
+| N4100, SSE4.1 | clang-cl | -2% to -8% | -5% to -6% |
+
+- 4K -> 1080p Grayscale8: -5% to -12% on every row above.
+- Unchanged: 4K -> 64x64, and Grayscale8 upscales, which take `filterHorizontalShortRuns`.
+- The range in registers is the gain, not fewer checks: the loop still compares each run against it. A form that
+  found each batch's end ahead and looped with no check gained half as much and cost clang-cl 4-7% on some rows.
+- NEON keeps one column per preparation (`filterAllBufferedColumns`). GCC's build of the batched loop on Cortex-A72
+  stops the destination's stores from bypassing the cache: threaded upscales +33% to +72% (the Pi's log, open lead 17).
+
 ### The horizontal passes' shape is part of their tuning
 
 `filterHorizontalRowGroup` writes each step once, in a loop over the rows, with three exceptions; two of its neighbours
@@ -446,6 +472,18 @@ into strips whose per-strip costs exceed those of the larger ring.
 13. **A software prefetch of the next row pair's source segment** (8500T, not committed): no consistent gain.
 14. **Three vertical blocks per step for 3-channel pixels at AVX2** (8500T, not committed): no row gains under MSVC or
     clang-cl, several lose 2-5%.
+15. **The AVX2 conversion with fewer shuffles** (8500T, not committed).
+    - RGB pixels widened by one 256-bit byte shuffle per pixel pair, 2 shuffles per 4 pixels in place of 4: 4K -> 1080p RGB24
+      +6% under MSVC, +3% under clang-cl, three rounds, where the same row varies by 5% between two runs of one binary.
+    - Each 8-byte widening loading its own bytes, as at SSE4.1: -1% to -3% under MSVC over six rounds, and the RGB24
+      rows, whose conversion it does not touch, moved as much.
+    - The conversion loop's shuffle count does not limit a resize: halving it changed nothing measurable.
+16. **The horizontal filter's batch end found ahead** (8500T and the Pi, not committed): a scan over the runs for the
+    last column the buffers cover, then a loop with no check. MSVC -3% to -6% on 4K downscales, clang-cl +4% to +7% on
+    Grayscale8 downscales and RGB upscales, GCC within 2%. The check against a range held by value gains about twice as much.
+17. **The destination's blocks zeroed ahead with `DC ZVA`** (Pi, GCC, not committed): 720p -> 4K RGBA32 +12% single-threaded
+    and +10% with threads against the batched loop it was meant to mend. The zeroed lines pass through L2 as the stored
+    ones do. A prefetch 2 lines ahead of the temp rows' stores, for writing or for reading: no change.
 
 ## Open leads
 
@@ -464,7 +502,8 @@ into strips whose per-strip costs exceed those of the larger ring.
      at this level would halve the loads and multiplies per tap and drop the float conversion.
    - A ring small enough for L1 gains upscales 3-7% and costs downscales up to 25%.
 5. **Strips cost where the L2 is large:** 1-5% on Neoverse-N2's SIMD rows, 3-8% on the PC's downscales (the column strips
-   section). A budget from the runtime L2 share would skip strips there.
+   section). The budget is already the runtime L2 share, taken for the worst case: the smallest share, every logical
+   processor busy. A budget by the threads in use, or by the core a band runs on, is untried.
 6. **Placement still moves MSVC's AVX2 upscale rows about 5%** with `/QIntel-jcc-erratum`, and the SSE4.1 ones, built
    without it, up to 12-14%. Which loop of the upscale path reacts is unidentified: padding at the kernel's start shifts
    them all together. MSVC has no loop alignment control; clang-cl's code for the reduced loop does not react.
@@ -492,9 +531,22 @@ into strips whose per-strip costs exceed those of the larger ring.
     - Both passes cost the same per multiply-add, so filtering vertically first on downscales would gain nothing.
     - 16-bit fixed-point kernels would drop the conversion, halve the temp rows' bytes and double the multiply-adds
       per instruction.
-14. **MSVC against clang-cl at AVX2 on the 8500T:** MSVC ahead by 5-12% on the 3-channel rows, clang-cl by 3-7% on
-    Grayscale8. The listings have not been compared.
+14. **MSVC against clang-cl at AVX2 on the 8500T:** MSVC ahead by 5-15% on the 3-channel downscales, clang-cl by 3-7% on
+    Grayscale8. By parts (its log), clang-cl loses in the horizontal pass, 10-40% on 3- and 4-channel rows: it spreads a
+    block's weights with two shuffles per chain where MSVC emits one permute. No source form found that changes it.
 15. **The cap of 4 bands leaves threads idle:** a band per thread takes 18-29% off the threaded rows on the 8500T (6
     bands) and 21-36% on the PC (16), 4K -> 64x64 aside (their logs).
     - A count that is not a multiple of the pool's threads loses the gain: 8 bands on 6 threads run like 4.
     - Bands past twice the thread count cost 5-20% on the 8500T. `ParallelForFn` does not carry the thread count.
+16. **Streaming stores to the destination at AVX2 are untried:** experiment 9 is the N4100's SSE4.1 only. The 8500T has
+    a 256 KB L2 per core, a sixteenth of the N4100's per-cluster 4 MB. Its RGB24 loss came from unaligned blocks: streaming
+    the aligned middle of a row avoids it.
+17. **NEON keeps the horizontal filter's per-column preparation:** on Cortex-A72 the destination's stores bypass L2 in
+    some builds and not in others, with the same store instructions (the Pi's log). GCC's builds of the batched loop,
+    and of a one-column loop through `filterBufferedRuns`, lose the bypass on upscales.
+    - `STNP` for the 32-byte output stores restores it under GCC: threaded 720p -> 4K RGBA32 +72% -> +6%. Under Clang,
+      whose builds keep the bypass, it costs threaded upscales 3-7%.
+    - Not covered: RGB24's 24-byte and the one-channel output stores. Not measured: Apple Silicon, Neoverse.
+    - Lead 8 may be the same effect.
+18. **State read through a structure inside a hot loop:** the gain of the by-value range came from nowhere in the
+    arithmetic. `filterHorizontalShortRuns` still prepares per column, and the vertical pass is unexamined for the same.
