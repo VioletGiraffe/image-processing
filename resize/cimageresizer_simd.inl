@@ -449,27 +449,92 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
-		// One dest column of a short-run group: each row's run at runFloatOffset times its weights, lane by lane.
-		// 4 floats are loaded whatever the run's length.
+		// The passes below require AxisWeights::everyRunHasFourTaps: a run is 4 source pixels and 4 weights, with no count to branch on.
+
+		// One row's run of four 4-float pixels at runPixels, times its weights spread per pixel pair, into one temp pixel
+		template <size_t Channels>
+		IMAGE_PROCESSING_SIMD_INLINE void filterFourTapRun(const float* runPixels, Floats8 w0, Floats8 w1, float* outPixel) noexcept
+		{
+			const Floats8 pixelPairSums = mulAdd(loadFloats8(runPixels), w0, mul(loadFloats8(runPixels + 8), w1));
+			storeTempPixel<Channels>(outPixel, sumHalves(pixelPairSums));
+		}
+
+		// Filters dest columns of 4-float pixels from firstColumn on, into the temp rows at their offset from destBegin, while
+		// their runs lie within source pixels [bufferBegin, bufferEnd). Returns the first column not filtered.
+		// sourceFloats, and the range by value: see filterBufferedRuns.
+		template <size_t Channels, size_t Rows>
+		IMAGE_PROCESSING_SIMD_INLINE size_t filterBufferedFourTapRuns(
+			float* const (&sourceFloats)[Rows], size_t bufferBegin, size_t bufferEnd,
+			float* const (&tempRows)[Rows], size_t destBegin, size_t firstColumn, size_t destEnd,
+			AxisWeights::RunLookup xRunLookup) noexcept
+		{
+			static_assert(sourceFloatsPerPixel(Channels) == 4);
+			if (bufferEnd < bufferBegin + 4)
+				return firstColumn;
+
+			const WeightSpreader<4> weightSpreader{};
+			const size_t lastOffset = bufferEnd - bufferBegin - 4;
+			size_t dx = firstColumn;
+			for (; dx < destEnd; ++dx) IMAGE_PROCESSING_FORCE_INLINE_CALLS
+			{
+				const auto [firstPixel, weights] = xRunLookup.runFor(dx);
+				assert(weights.size() == 4);
+				// Unsigned: a run before bufferBegin wraps past lastOffset
+				const size_t runOffset = firstPixel - bufferBegin;
+				if (runOffset > lastOffset)
+					break;
+
+				// A whole WeightBlock for the run's 4 weights: the builder's slack keeps the load in bounds
+				const WeightBlock runWeights = loadWeightBlock(weights.data());
+				const Floats8 w0 = weightSpreader.template spread<0>(runWeights);
+				const Floats8 w1 = weightSpreader.template spread<1>(runWeights);
+				// The rows by name, not in a loop: GCC leaves that loop rolled at NEON, with the row pointers reloaded per row
+				const size_t tempOffset = (dx - destBegin) * Channels;
+				filterFourTapRun<Channels>(sourceFloats[0] + runOffset * 4, w0, w1, tempRows[0] + tempOffset);
+				if constexpr (Rows == 2)
+					filterFourTapRun<Channels>(sourceFloats[1] + runOffset * 4, w0, w1, tempRows[1] + tempOffset);
+			}
+
+			return dx;
+		}
+
+		// filterHorizontalRowGroup for 4-float pixels
+		template <size_t Channels, size_t PixelStride, size_t Rows>
+		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalFourTapRuns(
+			SlidingSourceFloats<Channels, PixelStride, Rows>& source,
+			float* const (&tempRows)[Rows],
+			size_t destBegin,
+			size_t destEnd,
+			const AxisWeights& xWeights) noexcept
+		{
+			const AxisWeights::RunLookup xRunLookup = xWeights.runLookup();
+			for (size_t dx = destBegin; dx < destEnd;) IMAGE_PROCESSING_FORCE_INLINE_CALLS
+			{
+				// The column's run is in the buffers after this, so each pass filters at least that column
+				source.prepareRun(xRunLookup.runFor(dx).firstSource, 4);
+				dx = filterBufferedFourTapRuns<Channels>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRunLookup);
+			}
+		}
+
+		// One dest column of a group of 1-float pixels: each row's run at runFloatOffset times its weights, lane by lane
 		template <size_t Rows>
-		IMAGE_PROCESSING_SIMD_INLINE void multiplyShortRun(
+		IMAGE_PROCESSING_SIMD_INLINE void multiplyFourTapRun(
 			float* const (&sourceFloats)[Rows],
 			size_t runFloatOffset,
 			std::span<const float> weights,
 			Floats4& productsA,
 			[[maybe_unused]] Floats4& productsB) noexcept
 		{
-			const size_t tapCount = weights.size();
-			assert(tapCount <= 4);
+			assert(weights.size() == 4);
 			const Floats4 runWeights = loadFloats4(weights.data());
-			productsA = mul(keepFirstLanes(loadFloats4(sourceFloats[0] + runFloatOffset), tapCount), runWeights);
+			productsA = mul(loadFloats4(sourceFloats[0] + runFloatOffset), runWeights);
 			if constexpr (Rows == 2)
-				productsB = mul(keepFirstLanes(loadFloats4(sourceFloats[1] + runFloatOffset), tapCount), runWeights);
+				productsB = mul(loadFloats4(sourceFloats[1] + runFloatOffset), runWeights);
 		}
 
-		// multiplyShortRun for dest column dx, its run prepared first
+		// multiplyFourTapRun for dest column dx, its run prepared first
 		template <size_t PixelStride, size_t Rows>
-		IMAGE_PROCESSING_SIMD_INLINE void prepareAndMultiplyShortRun(
+		IMAGE_PROCESSING_SIMD_INLINE void prepareAndMultiplyFourTapRun(
 			SlidingSourceFloats<1, PixelStride, Rows>& source,
 			AxisWeights::RunLookup xRunLookup,
 			size_t dx,
@@ -477,16 +542,15 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			Floats4& productsB) noexcept
 		{
 			const auto [firstPixel, weights] = xRunLookup.runFor(dx);
-			// The floats past the run may be unconverted
 			const size_t runFloatOffset = source.prepareRun(firstPixel, 4);
-			multiplyShortRun<Rows>(source.floats, runFloatOffset, weights, productsA, productsB);
+			multiplyFourTapRun<Rows>(source.floats, runFloatOffset, weights, productsA, productsB);
 		}
 
-		// Filters whole groups of four dest columns from firstGroup on, into the temp rows at their offset from destBegin,
-		// while every column's 4 floats lie within source pixels [bufferBegin, bufferEnd). Returns the first group not filtered.
+		// Filters whole groups of four dest columns of 1-float pixels from firstGroup on, into the temp rows at their offset from
+		// destBegin, while every column's run lies within source pixels [bufferBegin, bufferEnd). Returns the first group not filtered.
 		// sourceFloats, and the range by value: see filterBufferedRuns.
 		template <size_t Rows>
-		IMAGE_PROCESSING_SIMD_INLINE size_t filterBufferedShortRunGroups(
+		IMAGE_PROCESSING_SIMD_INLINE size_t filterBufferedFourTapRunGroups(
 			float* const (&sourceFloats)[Rows], size_t bufferBegin, size_t bufferEnd,
 			float* const (&tempRows)[Rows], size_t destBegin, size_t firstGroup, size_t destEnd,
 			AxisWeights::RunLookup xRunLookup) noexcept
@@ -510,10 +574,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 				Floats4 productsA0, productsA1, productsA2, productsA3;
 				[[maybe_unused]] Floats4 productsB0, productsB1, productsB2, productsB3;
-				multiplyShortRun<Rows>(sourceFloats, offset0, weights0, productsA0, productsB0);
-				multiplyShortRun<Rows>(sourceFloats, offset1, weights1, productsA1, productsB1);
-				multiplyShortRun<Rows>(sourceFloats, offset2, weights2, productsA2, productsB2);
-				multiplyShortRun<Rows>(sourceFloats, offset3, weights3, productsA3, productsB3);
+				multiplyFourTapRun<Rows>(sourceFloats, offset0, weights0, productsA0, productsB0);
+				multiplyFourTapRun<Rows>(sourceFloats, offset1, weights1, productsA1, productsB1);
+				multiplyFourTapRun<Rows>(sourceFloats, offset2, weights2, productsA2, productsB2);
+				multiplyFourTapRun<Rows>(sourceFloats, offset3, weights3, productsA3, productsB3);
 
 				storeFloats4(tempRows[0] + (groupBegin - destBegin), sumEachOfFour(productsA0, productsA1, productsA2, productsA3));
 				if constexpr (Rows == 2)
@@ -523,10 +587,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			return groupBegin;
 		}
 
-		// filterHorizontalRowGroup for 1-float pixels where no run exceeds 4 taps: four dest columns share one reduction and one store.
-		// Requires xWeights.longestRun() <= 4.
+		// filterHorizontalRowGroup for 1-float pixels: four dest columns share one reduction and one store
 		template <size_t PixelStride, size_t Rows>
-		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalShortRuns(
+		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalFourTapRunGroups(
 			SlidingSourceFloats<1, PixelStride, Rows>& source,
 			float* const (&tempRows)[Rows],
 			size_t destBegin,
@@ -537,7 +600,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 			for (size_t groupBegin = destBegin; groupBegin < destEnd; groupBegin += 4) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
-				groupBegin = filterBufferedShortRunGroups<Rows>(source.floats, source.base, source.converted, tempRows, destBegin, groupBegin, destEnd, xRunLookup);
+				groupBegin = filterBufferedFourTapRunGroups<Rows>(source.floats, source.base, source.converted, tempRows, destBegin, groupBegin, destEnd, xRunLookup);
 				if (groupBegin >= destEnd)
 					break;
 
@@ -547,10 +610,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				const size_t lastColumn = destEnd - 1;
 				Floats4 productsA0, productsA1, productsA2, productsA3;
 				[[maybe_unused]] Floats4 productsB0, productsB1, productsB2, productsB3;
-				prepareAndMultiplyShortRun(source, xRunLookup, std::min(groupBegin, lastColumn), productsA0, productsB0);
-				prepareAndMultiplyShortRun(source, xRunLookup, std::min(groupBegin + 1, lastColumn), productsA1, productsB1);
-				prepareAndMultiplyShortRun(source, xRunLookup, std::min(groupBegin + 2, lastColumn), productsA2, productsB2);
-				prepareAndMultiplyShortRun(source, xRunLookup, std::min(groupBegin + 3, lastColumn), productsA3, productsB3);
+				prepareAndMultiplyFourTapRun(source, xRunLookup, std::min(groupBegin, lastColumn), productsA0, productsB0);
+				prepareAndMultiplyFourTapRun(source, xRunLookup, std::min(groupBegin + 1, lastColumn), productsA1, productsB1);
+				prepareAndMultiplyFourTapRun(source, xRunLookup, std::min(groupBegin + 2, lastColumn), productsA2, productsB2);
+				prepareAndMultiplyFourTapRun(source, xRunLookup, std::min(groupBegin + 3, lastColumn), productsA3, productsB3);
 
 				const size_t columnCount = std::min<size_t>(4, destEnd - groupBegin);
 				Floats4 sums[Rows] = { sumEachOfFour(productsA0, productsA1, productsA2, productsA3) };
@@ -572,26 +635,21 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
-		// shortRuns: no x run exceeds 4 taps
-		template <size_t Channels, size_t PixelStride, size_t Rows>
+		// FourTapRuns: xWeights.everyRunHasFourTaps
+		template <bool FourTapRuns, size_t Channels, size_t PixelStride, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontal(
 			SlidingSourceFloats<Channels, PixelStride, Rows>& source,
 			float* const (&tempRows)[Rows],
 			size_t destBegin,
 			size_t destEnd,
-			const AxisWeights& xWeights,
-			[[maybe_unused]] bool shortRuns) noexcept
+			const AxisWeights& xWeights) noexcept
 		{
-			if constexpr (Channels == 1)
-			{
-				if (shortRuns)
-				{
-					filterHorizontalShortRuns(source, tempRows, destBegin, destEnd, xWeights);
-					return;
-				}
-			}
-
-			filterHorizontalRowGroup(source, tempRows, destBegin, destEnd, xWeights);
+			if constexpr (!FourTapRuns)
+				filterHorizontalRowGroup(source, tempRows, destBegin, destEnd, xWeights);
+			else if constexpr (Channels == 1)
+				filterHorizontalFourTapRunGroups(source, tempRows, destBegin, destEnd, xWeights);
+			else
+				filterHorizontalFourTapRuns(source, tempRows, destBegin, destEnd, xWeights);
 		}
 
 		// A block's pixels, color capped at alpha, as bytes packed Channels per pixel
@@ -762,8 +820,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 	// The ring is also what lets the pair write two store streams safely: into cold full-size temp, the interleaved streams
 	// defeat the prefetch that hides each line's ownership read (measured ~1.2 cycles per temp byte, and software prefetch
 	// does not recover it) - the ring is rewritten every few rows and stays cache-owned.
-	template <size_t Channels, size_t PixelStride>
-	IMAGE_PROCESSING_FLATTEN IMAGE_PROCESSING_SIMD_TARGET void resizeRows(
+	// FourTapXRuns: xWeights.everyRunHasFourTaps. A template parameter, not a flag: held through the loops, the flag cost
+	// MSVC a stack reload per column in the general horizontal pass.
+	template <size_t Channels, size_t PixelStride, bool FourTapXRuns>
+	IMAGE_PROCESSING_FLATTEN IMAGE_PROCESSING_SIMD_TARGET void resizeRowsWith(
 		const ImageView<true>& source,
 		Rect srcRect,
 		ImageView<false>& dest,
@@ -787,9 +847,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2 };
 
-		const size_t longestXRun = xWeights.longestRun();
-		const bool shortXRuns = longestXRun <= 4;
-		const size_t sourceFloatsCapacity = SourceRowPair::capacityFor(longestXRun);
+		assert(FourTapXRuns == (xWeights.everyRunHasFourTaps && Channels != 2));
+		const size_t sourceFloatsCapacity = SourceRowPair::capacityFor(xWeights.longestRun());
 		const auto sourceFloats = std::make_unique_for_overwrite<float[]>(2 * sourceFloatsCapacity * floatsPerPixel);
 		float* const sourceFloatsA = sourceFloats.get();
 		float* const sourceFloatsB = sourceFloatsA + sourceFloatsCapacity * floatsPerPixel;
@@ -821,14 +880,14 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					{
 						SourceRowPair sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, spanEnd, pixelStride, premultiplyAlpha };
 						float* const tempRows[2] = { ring.row(produced), ring.row(produced + 1) };
-						filterHorizontal(sourceRows, tempRows, stripBegin, stripEnd, xWeights, shortXRuns);
+						filterHorizontal<FourTapXRuns>(sourceRows, tempRows, stripBegin, stripEnd, xWeights);
 						produced += 2;
 					}
 					else
 					{
 						SourceRow sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, spanEnd, pixelStride, premultiplyAlpha };
 						float* const tempRows[1] = { ring.row(produced) };
-						filterHorizontal(sourceRow, tempRows, stripBegin, stripEnd, xWeights, shortXRuns);
+						filterHorizontal<FourTapXRuns>(sourceRow, tempRows, stripBegin, stripEnd, xWeights);
 						++produced;
 					}
 				}
@@ -840,6 +899,30 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		}
 
 		leaveKernel();
+	}
+
+	template <size_t Channels, size_t PixelStride>
+	IMAGE_PROCESSING_SIMD_TARGET void resizeRows(
+		const ImageView<true>& source,
+		Rect srcRect,
+		ImageView<false>& dest,
+		const AxisWeights& xWeights,
+		const AxisWeights& yWeights,
+		size_t stripWidth,
+		uint64_t destRowBegin,
+		uint64_t destRowEnd)
+	{
+		// 2-float pixels have no four-tap pass
+		if constexpr (Channels != 2)
+		{
+			if (xWeights.everyRunHasFourTaps)
+			{
+				resizeRowsWith<Channels, PixelStride, true>(source, srcRect, dest, xWeights, yWeights, stripWidth, destRowBegin, destRowEnd);
+				return;
+			}
+		}
+
+		resizeRowsWith<Channels, PixelStride, false>(source, srcRect, dest, xWeights, yWeights, stripWidth, destRowBegin, destRowEnd);
 	}
 
 #define IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(Channels, PixelStride) \

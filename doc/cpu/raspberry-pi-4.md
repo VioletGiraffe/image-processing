@@ -331,6 +331,39 @@ Both with the batched loop; the second pair of columns from a second run of eigh
 - The committed form was not timed: it differs from "both" with "24" in the odd-stride path's plain stores, which no
   benchmark row takes.
 
+## Short x runs padded to 4 taps, and their passes
+
+Eight alternating rounds against eeb1af6. "Loop": the 4-float pass with its row pair in a loop. "Named": the committed
+sources, the rows by name.
+
+| Scenario | GCC, loop | GCC, named | Clang, loop | Clang, named |
+|---|---:|---:|---:|---:|
+| 720p -> 4K RGBA32 | -2.4% | -1.9% | -5.6% | -7.7% |
+| 720p -> 4K RGB32 | +6.4% | -6.3% | -6.3% | -5.6% |
+| 720p -> 4K RGB24 | +6.7% | -7.1% | -6.7% | -7.9% |
+| 1080p -> 1440p RGB32 | +6.1% | -9.4% | -10.1% | -11.3% |
+| 720p -> 4K Grayscale8 | +0.3% | -9.4% | -0.3% | -10.0% |
+| 720p -> 4K RGBA32, threads | -0.7% | +1.4% | +3.2% | -1.4% |
+| 720p -> 4K RGB24, threads | +9.2% | -2.3% | -3.6% | -4.9% |
+| 1080p -> 1440p RGB32, threads | +1.2% | -10.0% | -4.6% | -4.5% |
+| Downscale rows | -4.5% to +0.4% | -0.8% to +1.3% | -5.3% to +3.3% | -5.5% to +2.3% |
+
+- "Loop" kept the one-channel pass's masking and padded every x run to a multiple of 4.
+- GCC's loop over the row pair stays rolled: both row pointers and both temp pointers reloaded from the stack per row.
+- Either way a 3-float temp pixel goes through the stack: a 16-byte store, then 8 and 4 bytes loaded and stored.
+
+The committed sources, the kernel compiled once per kind of x run, in a second run of eight rounds beside "named":
+
+| Scenario | GCC, named | GCC, committed | Clang, named | Clang, committed |
+|---|---:|---:|---:|---:|
+| 720p -> 4K RGBA32, RGB32, RGB24 | -2.8%, -6.2%, -6.8% | -2.8%, -6.0%, -7.0% | -7.3%, -5.7%, -7.7% | -7.2%, -5.7%, -6.0% |
+| 1080p -> 1440p RGB32 | -9.8% | -10.0% | -10.6% | -11.1% |
+| 720p -> 4K Grayscale8 | -8.9% | -8.3% | -11.5% | -11.3% |
+| 720p -> 4K RGBA32, RGB24, 1080p -> 1440p with threads | +8.9%, -4.2%, -0.2% | +6.9%, -4.0%, -4.5% | -4.2%, -5.2%, -6.4% | -5.2%, -5.2%, -7.4% |
+| Downscale rows | -0.6% to +4.1% | -2.3% to +2.9% | -4.3% to +1.7% | -4.5% to +2.4% |
+
+GCC's threaded 720p -> 4K RGBA32 read +1.4% for "named" in the first run and +8.9% in this one.
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing

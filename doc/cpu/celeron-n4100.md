@@ -149,6 +149,20 @@ The short-run pass's groups filtered the same way, ten rounds of the pixel-layou
 | 4K -> 1080p Grayscale8 | -10.5% (minimum to minimum -1.9%) | +4.5% |
 | 3- and 4-channel rows | within 1.4% | within 1.2% |
 
+Short x runs padded to 4 taps, and their passes: ten rounds against eeb1af6, on the flag form (the 8500T's log), each
+build's minimum. In this session single rows of a round came out 1.3x to 1.7x slow in either build, the System process
+taking 2-4 s of a 22 s run; the medians of same-round ratios are not usable.
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 720p -> 4K RGBA32, RGB32, RGB24 | -3.5%, -5.0%, -5.4% | -6.0%, -7.3%, -7.6% |
+| 1080p -> 1440p RGB32 | -7.9% | -10.3% |
+| 720p -> 4K Grayscale8 | -6.1% | -5.0% |
+| Downscale rows | -3.9% to +0.4% | -2.3% to +0.3% |
+
+An earlier run of this comparison, started after half an hour of builds and tests, had most samples 4x slow in both
+builds, with other processes idle: unexplained.
+
 ## 2026-10-04, b8892fc
 
 ### Method

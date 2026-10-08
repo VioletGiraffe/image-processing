@@ -84,13 +84,6 @@ namespace ImageProcessing::Detail::Avx2
 			return _mm_add_ss(pairSums, _mm_shuffle_ps(pairSums, pairSums, _MM_SHUFFLE(1, 1, 1, 1)));
 	}
 
-	// The first count lanes, the others 0
-	IMAGE_PROCESSING_SIMD_INLINE Floats4 keepFirstLanes(Floats4 values, size_t count) noexcept
-	{
-		alignas(16) static constexpr uint32_t laneMasks[5][4] = { { 0, 0, 0, 0 }, { ~0u, 0, 0, 0 }, { ~0u, ~0u, 0, 0 }, { ~0u, ~0u, ~0u, 0 }, { ~0u, ~0u, ~0u, ~0u } };
-		return _mm_and_ps(values, _mm_castsi128_ps(_mm_load_si128(reinterpret_cast<const __m128i*>(laneMasks[count]))));
-	}
-
 	// Lane i: the sum of argument i's four lanes
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 sumEachOfFour(Floats4 values0, Floats4 values1, Floats4 values2, Floats4 values3) noexcept
 	{

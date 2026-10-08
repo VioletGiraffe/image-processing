@@ -292,22 +292,56 @@ On x64 Linux the AVX2 kernel file compiles through its own rule with the assembl
 
 ### One-channel upscales filter four columns at a time (0bd90e4)
 
-Where no x run exceeds 4 taps, the one-channel horizontal pass (`filterHorizontalShortRuns`) multiplies four columns' runs
-and reduces them together: one reduction and one store per four columns, no branch on the run's length. The general
-pass reduces and stores each column on its own.
+Where every x run has 4 taps (the next section), the one-channel horizontal pass (`filterHorizontalFourTapRunGroups`)
+multiplies four columns' runs and reduces them together: one reduction and one store per four columns, no branch on the
+run's length. The general pass reduces and stores each column on its own.
 
-- Each run loads 4 source floats and 4 weights whatever its length: the lanes past the run are masked out of the source,
-  and the weights array's slack keeps the load in bounds.
 - 720p -> 4K Grayscale8: PC, MSVC, AVX2 7.13 -> 5.45 ms, SSE4.1 8.34 -> 6.12. MSVC and Clang on the EPYC 7763 -27% to -30%.
   N4100 -20%. Clang on Neoverse-N2 -14%.
 - GCC gains a third or less of what the others do, on both architectures: -8% to -10% on the EPYC 7763, -2% on
   Neoverse-N2. Not investigated.
 - Two-channel pixels still take the general pass.
 - Whole groups whose columns lie in the source buffers are filtered from the buffers' range held by value
-  (`filterBufferedShortRunGroups`), as in the general pass below. 720p -> 4K Grayscale8: 8500T, AVX2 -17% under MSVC,
+  (`filterBufferedFourTapRunGroups`), as in the general pass below. 720p -> 4K Grayscale8: 8500T, AVX2 -17% under MSVC,
   -20% under clang-cl; N4100, SSE4.1 -19% and -17%; Pi, NEON -9% under GCC, -12% under Clang.
 - With that, clang-cl's 4K -> 1080p Grayscale8 is 3-4% slower on both machines; MSVC +2% on the 8500T. The row does not run
   the changed loop, and its own loops are the same size in the listing: open lead 18.
+
+### Short x runs are exactly 4 taps, and have their own passes
+
+In an upscale no x run exceeds 4 taps, and the general pass spends about 60 instructions per column pair on 10 of
+arithmetic: zeroed accumulators, the 8-, 4-, 2- and 1-tap steps' checks, the reduction. VTune on the 8500T, MSVC,
+720p -> 4K RGBA32: the horizontal filter loop was 38% of the kernel, the conversion 5%, the vertical taps 25%, the
+vertical output 27%.
+
+- `padShortRunsToFourTaps` gives every x run exactly 4 taps where none exceeds 4: zero weights after the run, or before
+  it where it would pass the source's end, so that all 4 source pixels exist. A 3x upscale's runs alternate 4 and 1
+  taps before it. The y axis is not padded: a zero tap there costs a row sweep.
+- `filterBufferedFourTapRuns` filters 4-float pixels with no count to branch on: a weight load, two spreads, and per row
+  a multiply, a multiply-add, the reduction and the store.
+- The one-channel pass needs no masking of the lanes past a run.
+- 2-float pixels take the general pass, their runs padded as well.
+- The kernel is compiled twice per pixel layout, `resizeRowsWith` with and without four-tap x runs, and `resizeRows`
+  picks one per call. As a flag carried through the kernel it cost MSVC a stack reload per column in the general
+  pass: 4K -> 1080p Grayscale8 +3% to +6%, 8K -> 4K and 4K -> 1080p RGB32 +2% to +4%, at any placement (the 8500T's log).
+  The two variants add 63 KB to MSVC's test executable and 115 KB to clang-cl's.
+- Output bytes can differ from the unpadded runs' in the last bit: a tap lands in another accumulation chain.
+
+| Machine, level | Compiler | Colour upscales | 720p -> 4K Grayscale8 |
+|---|---|---:|---:|
+| 8500T, AVX2 | MSVC | -7% to -12% | -10% |
+| 8500T, AVX2 | clang-cl | -8% to -14% | -10% |
+| N4100, SSE4.1 | MSVC | -4% to -8% | -6% |
+| N4100, SSE4.1 | clang-cl | -6% to -10% | -5% |
+| Pi, NEON | GCC | -3% to -10% | -8% |
+| Pi, NEON | Clang | -6% to -11% | -11% |
+
+- With threads: -6% to -9% under MSVC, -6% to -11% under clang-cl; on the Pi -4% to +7% under GCC, -5% to -7% under Clang.
+- The N4100's rows are the flag form's.
+- Padding every x run to a multiple of 4 taps, downscales included, gains nothing and costs the thumbnail 3-5%
+  (experiment 22).
+- The rows of a pair by name, not in a loop: GCC left that loop rolled at NEON, the row pointers reloaded from the stack
+  per row, and its 3-channel upscales lost 6-7% where Clang's gained.
 
 ### Two chains at SSE4.1, and a first block that assigns
 
@@ -385,7 +419,7 @@ the run lookup's pointers above.
 | N4100, SSE4.1 | clang-cl | -2% to -8% | -5% to -6% |
 
 - 4K -> 1080p Grayscale8: -5% to -12% on every row above.
-- Unchanged: 4K -> 64x64, and Grayscale8 upscales, which take `filterHorizontalShortRuns` (see its section).
+- Unchanged: 4K -> 64x64, and Grayscale8 upscales, which take `filterHorizontalFourTapRunGroups` (see its section).
 - The range in registers is the gain, not fewer checks: the loop still compares each run against it. A form that
   found each batch's end ahead and looped with no check gained half as much and cost clang-cl 4-7% on some rows.
 - NEON: 0% to -4% on single-threaded downscales, and only with the output blocks stored by `STNP` (next section).
@@ -417,7 +451,7 @@ carry one more each. Each answers one compiler, and each is commented where it s
 | GCC | Leaves a loop over the rows rolled when its body holds a loop, with the rows' state in memory | `storeTempPixelWithTaps` called per row | 4K -> 1080p Grayscale8 +31% to +50% on the Pi, Neoverse-N2 and the EPYC 7763 |
 | GCC | Places a step whose body is a loop over the rows out of line | `[[likely]]` on the three leftover-tap steps | 4K -> 1080p Grayscale8 +20% to +26% at AVX2 on the EPYC 7763 and 9V45; nothing on Golden Cove |
 | MSVC | Takes a small array of sums through the stack: stored as a vector, reloaded as a scalar, reloaded again to copy out | `storeTempPixelWithTaps` holds the sums as scalars taken out of the vector | 4K -> 1080p Grayscale8 +11% on the N4100 |
-| MSVC | Leaves a four-iteration loop with a large body rolled, its results in stack arrays | `filterHorizontalShortRuns` calls `multiplyShortRun` once per column, into named products | 720p -> 4K Grayscale8 +7% on the N4100; clang-cl +4%; GCC on the Pi up to +27% |
+| MSVC | Leaves a four-iteration loop with a large body rolled, its results in stack arrays | `filterHorizontalFourTapRunGroups` multiplies each column by name, into named products | 720p -> 4K Grayscale8 +7% on the N4100; clang-cl +4%; GCC on the Pi up to +27% |
 
 - The last two were found by reading MSVC's listing of the one-channel kernels beside clang-cl's.
 - SSE4.1 conversion: each widening loads its own 4 bytes. MSVC otherwise copied and shifted one 16-byte load three times:
@@ -526,6 +560,13 @@ into strips whose per-strip costs exceed those of the larger ring.
 21. **Streaming stores for the 32-byte output blocks at AVX2** (8500T, not committed): `_mm_stream_si128` where the
     block is 16-byte aligned, which VTune shows is every block of 720p -> 4K RGBA32. Upscales within 2% under MSVC and
     clang-cl; MSVC's 4K -> 1080p RGB32 +4% to +6% and 8K -> 4K +4%. RGB24's 24-byte blocks were left on plain stores.
+22. **The x runs padded to a multiple of 4 taps** (8500T, not committed): zero weights after each run, before it where it
+    would pass the source's end, so that runs of 18 to 20 taps all take the same steps and the 2- and 1-tap steps never
+    run. MSVC within 2%, clang-cl within 3.5%, the non-integer downscales included; the thumbnail +2% to +4%. The
+    tap-count branches are not mispredicted to begin with. The tests pass with it.
+23. **Running offsets in the batched horizontal loop** (8500T, not committed): the temp offset advanced per column and
+    the run's buffer offset computed once for the range check and the load. MSVC -1% to -3% on upscales and +4.5% on
+    4K -> 1080p RGBA32; clang-cl +7% to +10% on the RGB24 rows.
 
 ## Open leads
 
@@ -590,6 +631,11 @@ into strips whose per-strip costs exceed those of the larger ring.
     - It retires about 3.3 instructions per cycle: instruction count limits it, not stalls or the shuffle port.
     - About 78 instructions per column pair for about 28 of arithmetic: run lookup, range check, offsets, tap-count
       branches, four permutation constants reloaded, four stack reloads.
+    - Experiments 18 to 20, 22 and 23 each took a few of those instructions out or moved them: none gained.
     - The vertical pass reads no state through a structure in its tap loop: nothing to take by value there.
+    - In an upscale the vertical pass's output, its rounding, packing, alpha cap and stores, costs as much as its
+      taps (27% and 25% of the kernel): untried.
+    - NEON stores a 3-float temp pixel through the stack, a 16-byte store then 8 and 4 bytes copied out (GCC's listing
+      on the Pi): untried.
     - clang-cl's 4K -> 1080p Grayscale8 moves with code that it does not run: +3-4% when the short-run pass changed
       beside it, -10% to -12% in both builds of experiments 19 and 20. Placement, mechanism not found.

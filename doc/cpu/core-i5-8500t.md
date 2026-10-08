@@ -321,6 +321,47 @@ Twenty alternating rounds against 1ed9965.
 
 clang-cl's Grayscale8 row gains in both builds, neither of which changes what it runs.
 
+### Where an upscale's time goes (eeb1af6, VTune, MSVC, 720p -> 4K RGBA32)
+
+| Part of `resizeRows<4, 4>` | Share |
+|---|---:|
+| Per-column filter loop, row pair | 38.0% |
+| Conversion to floats | 4.9% |
+| Vertical taps | 25.5% |
+| Vertical output | 26.9% |
+| Vertical step setup | 3.6% |
+
+- The whole run: the kernel 6.5 s, `touchDestPagesInOrder` 0.8 s, ntoskrnl 1.5 s.
+- A 3x bicubic upscale's runs alternate 4 taps and 1: at the phase where the kernel's zeros fall on pixels only the centre
+  tap is left after trimming.
+
+### Short x runs padded to 4 taps, and their passes
+
+Twenty alternating rounds against eeb1af6. "Flag": the choice of pass carried through the kernel as a `bool`. "Variants":
+the committed sources, the kernel compiled once per choice.
+
+| Scenario | MSVC, flag | MSVC, variants | clang-cl, flag | clang-cl, variants |
+|---|---:|---:|---:|---:|
+| 720p -> 4K RGBA32 | -10.3% | -7.7% | -11.2% | -8.2% |
+| 720p -> 4K RGB32 | -7.0% | -6.9% | -9.9% | -7.5% |
+| 720p -> 4K RGB24 | -8.8% | -7.6% | -14.3% | -13.8% |
+| 1080p -> 1440p RGB32 | -12.8% | -11.7% | -14.9% | -12.8% |
+| 720p -> 4K Grayscale8 | -11.9% | -10.0% | -11.3% | -10.1% |
+| 720p -> 4K RGBA32, RGB24, 1080p -> 1440p with threads | -7.8%, -5.1%, -8.0% | -8.8%, -5.6%, -8.4% | -7.7%, -8.5%, -10.4% | -5.7%, -9.8%, -11.2% |
+| 4K -> 1080p Grayscale8 | +6.1% | -0.1% | -11.9% | -8.3% |
+| 4K -> 1080p RGB32 (two rows) | +3.6%, +3.3% | +2.9%, +0.5% | -1.5%, -1.2% | +0.5%, +1.0% |
+| 4K -> 1080p RGBA32 | +2.9% | +0.9% | -1.5% | -0.4% |
+| 8K -> 4K RGB32 | +1.7% | +0.8% | -1.0% | -0.5% |
+| 24 MP -> 1080p | +2.0% | +0.2% | -0.7% | +0.1% |
+
+- Placement control for the flag form's downscale cost under MSVC: eeb1af6 with 16, 32 and 48 bytes of `__nop()` at each
+  kernel's start stays within 1.8% on these rows; the flag form with 32 bytes reads +3.4% on 4K -> 1080p Grayscale8 and
+  +3.6% on 8K -> 4K.
+- The flag form's general pass in the listing: the RGB32 pair loop 141 -> 142 instructions and 5 -> 6 stack accesses,
+  the one-channel one 152 -> 155 and 7 -> 8.
+- The flag read from `AxisWeights` in `filterHorizontal`, not passed in: MSVC's 4K -> 1080p RGB32 +3% to +7%.
+- Every x run padded to a multiple of 4 taps, with the 4-float pass alone: the thumbnail +3% to +5%.
+
 ### Rounds on this machine
 
 - One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP

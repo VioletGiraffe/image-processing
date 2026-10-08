@@ -88,6 +88,8 @@ namespace ImageProcessing::Detail
 
 		std::vector<float> weights;
 		std::vector<TapRun> runs;
+		// Set by padShortRunsToFourTaps: the horizontal passes for such runs load 4 source pixels per run unconditionally
+		bool everyRunHasFourTaps = false;
 	};
 
 	// A tap window's temp rows as they sit in a TempRowRing

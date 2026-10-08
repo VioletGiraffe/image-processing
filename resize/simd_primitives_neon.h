@@ -88,13 +88,6 @@ namespace ImageProcessing::Detail::Neon
 			return vdupq_n_f32(vget_lane_f32(vpadd_f32(pairSums, pairSums), 0));
 	}
 
-	// The first count lanes, the others 0
-	IMAGE_PROCESSING_SIMD_INLINE Floats4 keepFirstLanes(Floats4 values, size_t count) noexcept
-	{
-		static constexpr uint32_t laneMasks[5][4] = { { 0, 0, 0, 0 }, { ~0u, 0, 0, 0 }, { ~0u, ~0u, 0, 0 }, { ~0u, ~0u, ~0u, 0 }, { ~0u, ~0u, ~0u, ~0u } };
-		return vreinterpretq_f32_u32(vandq_u32(vreinterpretq_u32_f32(values), vld1q_u32(laneMasks[count])));
-	}
-
 	// Lane i: the sum of argument i's four lanes
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 sumEachOfFour(Floats4 values0, Floats4 values1, Floats4 values2, Floats4 values3) noexcept
 	{

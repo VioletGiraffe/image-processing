@@ -275,6 +275,45 @@ namespace
 		return result;
 	}
 
+	// Where no run exceeds 4 taps, pads every run to exactly 4 with zero weights: after the run, or before it where it would pass the source's end.
+	// Does nothing to a source narrower than 4.
+	inline void padShortRunsToFourTaps(AxisWeights& axis, size_t srcSize)
+	{
+		constexpr size_t paddedCount = 4;
+		if (srcSize < paddedCount || axis.longestRun() > paddedCount)
+			return;
+
+		std::vector<float> paddedWeights;
+		paddedWeights.reserve(axis.weights.size() * paddedCount);
+		// Runs that shared their weights still do: indexed by a run's old first weight, for runs with no leading zeros
+		constexpr size_t notPlaced = SIZE_MAX;
+		std::vector<size_t> paddedFirstWeight(axis.weights.size(), notPlaced);
+
+		for (TapRun& run : axis.runs)
+		{
+			const size_t runEnd = run.firstSource + paddedCount;
+			const size_t leadingZeros = runEnd > srcSize ? runEnd - srcSize : 0;
+			size_t firstWeight = leadingZeros == 0 ? paddedFirstWeight[run.firstWeight] : notPlaced;
+			if (firstWeight == notPlaced)
+			{
+				firstWeight = paddedWeights.size();
+				const auto runWeights = axis.weights.begin() + static_cast<ptrdiff_t>(run.firstWeight);
+				paddedWeights.insert(paddedWeights.end(), leadingZeros, 0.0f);
+				paddedWeights.insert(paddedWeights.end(), runWeights, runWeights + static_cast<ptrdiff_t>(run.weightCount));
+				paddedWeights.insert(paddedWeights.end(), paddedCount - run.weightCount - leadingZeros, 0.0f);
+				if (leadingZeros == 0)
+					paddedFirstWeight[run.firstWeight] = firstWeight;
+			}
+
+			run = TapRun{ run.firstSource - leadingZeros, firstWeight, paddedCount };
+		}
+
+		// The horizontal kernels load 8 weights for a run's 4
+		paddedWeights.resize(paddedWeights.size() + paddedCount);
+		axis.weights = std::move(paddedWeights);
+		axis.everyRunHasFourTaps = true;
+	}
+
 	[[nodiscard]] inline AxisWeights buildAxisWeightsForKernel(ResizeKernel kernel, uint64_t srcSize, uint64_t dstSize)
 	{
 		if (kernel == ResizeKernel::Auto)
@@ -385,7 +424,8 @@ namespace
 			return;
 		}
 
-		const auto xWeights = buildAxisWeightsForKernel(kernel, srcRect.w, dest.width);
+		auto xWeights = buildAxisWeightsForKernel(kernel, srcRect.w, dest.width);
+		padShortRunsToFourTaps(xWeights, static_cast<size_t>(srcRect.w));
 		const auto yWeights = buildAxisWeightsForKernel(kernel, srcRect.h, dest.height);
 
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * Channels;
