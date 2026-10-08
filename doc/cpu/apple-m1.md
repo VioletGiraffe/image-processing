@@ -23,3 +23,11 @@ macos-latest, resizer / QImage single-threaded, f435b80 -> d436d41:
 | 24 MP -> 1080p | 4K -> 1080p | 4K -> 64x64 | 101 MP -> 720p |
 |---|---|---|---|
 | 3.91 -> 2.50 | 3.72 -> 2.90 | 3.87 -> 1.61 | 6.14 -> 1.86 |
+
+## CI, 8c9e194 to eeb1af6 (2026-10-05 to 2026-10-08)
+
+Three attempts per commit, two of 8c9e194's and 680a5e5's on an M2 Pro. No step is readable: one commit's three samples
+of a row span up to 2x (720p -> 4K RGBA32 with threads at eeb1af6: 6.75, 10.79, 17.37 ms), and the resizer / QImage
+ratios move 20-40% between adjacent commits in both directions.
+
+`STNP` (eeb1af6) shows no collapse: each row's best sample is at or below 1ed9965's on the upscales, threaded or not.

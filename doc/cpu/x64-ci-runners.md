@@ -245,3 +245,30 @@ MSVC 19.51, SSE4.1:
 - MSVC's 720p -> 4K RGB24 at SSE4.1 reads +17% at 1eb77df and -8% at 8c9e194 against the baseline, with that level's
   kernels unchanged by either commit: code placement.
 - Clang had no run of 8c9e194 on this CPU.
+
+## CI, 8c9e194 to eeb1af6 (2026-10-05 to 2026-10-08)
+
+Three attempts of each commit's run; a label's CPU varied between attempts, so the EPYC 7763 has 1-3 samples per commit
+and no step between adjacent commits is resolved. eeb1af6's median against 8c9e194's (Clang: against 680a5e5's), which
+spans the no-clamp pack, the one-channel changes of a6c69e7, two vertical blocks per step, the jump alignment under
+GCC and Clang, the strip floor, and the range by value in both horizontal passes.
+
+| Scenario | MSVC | clang-cl | GCC | Clang |
+|---|---:|---:|---:|---:|
+| 4K -> 1080p RGB32 | -11.8% | -10.9% | -6.4% | -7.2% |
+| 4K -> 1080p RGB24 | -10.1% | -13.3% | -4.4% | -5.6% |
+| 4K -> 1080p RGBA32 | -8.3% | -4.4% | -4.0% | -4.1% |
+| 4K -> 1080p Grayscale8 | -18.4% | -14.2% | -2.4% | -19.3% |
+| 720p -> 4K RGBA32 | -13.0% | -13.7% | -10.5% | -11.2% |
+| 720p -> 4K RGB32 | -11.4% | -14.1% | -12.9% | -15.7% |
+| 720p -> 4K RGB24 | -9.8% | -15.6% | -14.2% | -19.7% |
+| 720p -> 4K Grayscale8 | -27.7% | -45.1% | -41.5% | -39.8% |
+| 4K -> 1080p RGB24, threads | -4.5% | -13.8% | -7.3% | -5.7% |
+| 720p -> 4K RGBA32, threads | +0.3% | -12.6% | -12.6% | -15.3% |
+| 720p -> 4K RGB24, threads | -0.9% | -28.7% | -14.7% | -27.1% |
+| 1080p -> 1440p RGB32, threads | +3.9% | -23.7% | -10.6% | -21.7% |
+
+- Samples: MSVC 3 and 2, clang-cl 2 and 3, GCC 2 and 1, Clang 3 and 2.
+- MSVC's threaded upscales read -8% to -19% at 1917611 and 1ed9965 and back near 0% at eeb1af6, which changes no x64
+  instruction: two samples, not resolved.
+- CPUs seen on these labels in these runs: EPYC 7763, 9V74, 9V45; Xeon Platinum 8573C, 8370C; Xeon 6973P-C.

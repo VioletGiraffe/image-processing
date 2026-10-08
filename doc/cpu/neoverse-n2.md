@@ -149,6 +149,35 @@ Clang 18.1.3:
 - Clang's 720p -> 4K Grayscale8 is 5% slower at 84bbe28 and 2.5% after it; that commit does not touch the short-run pass.
   Unexplained.
 
+## CI, 680a5e5 to eeb1af6 (2026-10-05 to 2026-10-08)
+
+Three attempts of each commit's run, every one on this CPU. Each commit's median against the commit before it in the
+list; b8bdd30, 93b1b79 and 8d72f9b change nothing here and stay within 2%, a few-ms row aside.
+- 680a5e5: the output packed without the clamp.
+- a6c69e7: scalar sums in `storeTempPixelWithTaps`, the short-run pass's columns by name.
+- 1917611: the range by value at AVX2 and SSE4.1; NEON's loop split in two functions, one column per preparation.
+- 1ed9965: the short-run pass takes the range by value.
+- eeb1af6: `STNP` for the output blocks, and the batched loop.
+
+| Scenario | 680a5e5 GCC, Clang | a6c69e7 | 1917611 | 1ed9965 | eeb1af6 |
+|---|---:|---:|---:|---:|---:|
+| 4K -> 1080p RGB32 | -2.0%, -1.7% | -0.1%, -0.1% | +1.3%, +0.4% | -0.3%, +0.2% | -0.1%, -0.4% |
+| 4K -> 1080p RGBA32 | -0.4%, -1.6% | +0.3%, +0.3% | +0.3%, +0.7% | +0.2%, 0.0% | 0.0%, -1.7% |
+| 4K -> 1080p RGB24 | +0.5%, -0.5% | -0.1%, 0.0% | +0.1%, +0.3% | -0.5%, -0.2% | +0.4%, -0.9% |
+| 4K -> 1080p Grayscale8 | -0.6%, -1.4% | -1.0%, -7.8% | +0.5%, +0.5% | -3.0%, +5.2% | -3.9%, -5.8% |
+| 720p -> 4K RGBA32 | -4.8%, -6.7% | +0.2%, +0.1% | -0.1%, +14.6% | +0.4%, -12.2% | +0.4%, -3.4% |
+| 720p -> 4K RGB32 | -5.5%, -6.3% | +0.2%, -0.4% | +0.9%, +1.2% | 0.0%, -0.2% | +0.4%, -1.4% |
+| 720p -> 4K RGB24 | -4.4%, -6.4% | -0.2%, -0.3% | +0.3%, +1.2% | +0.3%, -1.1% | +2.1%, -0.4% |
+| 720p -> 4K Grayscale8 | -4.2%, -5.0% | -20.9%, -18.1% | +1.7%, -0.4% | -14.7%, -11.1% | -0.7%, +2.9% |
+| 101 MP -> 720p | +3.2%, -0.6% | -0.3%, -0.2% | -0.8%, +4.5% | -0.2%, -1.9% | +1.0%, -3.2% |
+| 720p -> 4K RGBA32, threads | -4.6%, -8.8% | -1.5%, -0.1% | +2.1%, +13.7% | -3.5%, -12.0% | -0.2%, -2.3% |
+| 720p -> 4K RGB24, threads | -4.1%, -6.4% | +0.4%, +0.6% | +3.0%, -0.1% | -1.4%, -0.3% | +2.0%, +0.5% |
+| 1080p -> 1440p RGB32, threads | -0.9%, -6.0% | -0.8%, +1.8% | +4.9%, +1.0% | -0.5%, -0.6% | -1.7%, 0.0% |
+
+- `STNP` with the batched loop costs this core nothing: threaded upscales within 2.5%, where the Pi's pay 5-12% under GCC.
+- Clang's 720p -> 4K RGBA32 took +14.6% at 1917611 and gave 12.2% back at 1ed9965, which does not touch what that row
+  runs; 24 MP -> 1080p, 4K -> 64x64 and 101 MP -> 720p moved 4-5% the same way. Code placement.
+
 ## Experiments that lost
 
 **1. Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted). GCC SIMD speedup 0.86-1.25x before,

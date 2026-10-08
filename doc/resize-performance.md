@@ -27,6 +27,9 @@ under the same section headings.
     read by each build's minimum and by the median of back-to-back pairs, resolve about 3%.
 - A CI comparison needs several samples per side: re-running the old commit's run alongside the new one gives same-time
   pairs. A re-run is a new attempt of the same run, with its own logs.
+- An attempt's logs: `gh api repos/<repo>/actions/runs/<run>/attempts/<n>/jobs` for its job ids, then
+  `gh api --allow-escape-sequences repos/<repo>/actions/jobs/<id>/logs`. `gh run view --attempt <n>` lists the latest
+  attempt's jobs whatever n is, and without the flag `gh api` prints nothing for a log.
 - `QT_NO_GUI_THREADPOOL=1` keeps the Qt control serial; `run_tests` sets it.
 - Every benchmark allocates a fresh destination inside the timing, as the Qt control does. Threaded rows measured up to
   29b97e9 reused one destination.
@@ -39,6 +42,11 @@ under the same section headings.
   the same build with `__nop()` padding at the kernel's start, in 16-byte steps.
 - An A/B build in a second worktree starts from deleted object files: after a checkout there, MSBuild recompiled the AVX2
   kernels and left the other sources' objects stale.
+- A second clang-cl variant built by jom in one shell session reused the first's objects, the outputs deleted in
+  between: its build took 10 s. One session per variant, with the kernel sources' timestamps touched.
+- An A/B table's rows that the change cannot reach are its control: a "gain" no larger than their spread is not one.
+- A row can move with code it does not run: clang-cl's 4K -> 1080p Grayscale8 by 10-12% (open lead 18). A change read
+  from one row needs that row to run the changed code.
 - A CI label's runner CPU varies between runs, and the ratios with it: Qt's SSE code and the AVX2 kernel do not scale
   alike. A job's numbers compare across runs only when the CPU line in its report header names the same model.
 - The report header names the commit, CPU, compiler and cache sizing.
@@ -55,6 +63,11 @@ under the same section headings.
 - VTune's hardware events need an elevated prompt. With about ten events each is counted throughout; the
   `uarch-exploration` preset rotates some 190, and its totals came out inconsistent. `-report hw-events -group-by function`
   separates instantiations of one template.
+- Where a kernel's time goes: `-collect hotspots -knob sampling-mode=hw` on one benchmark section, then
+  `-report hotspots -group-by address`, the samples summed over each loop's address range in the `dumpbin` listing.
+  Grouped by function or source line, the forced-inline primitives each get their own row and a loop's share is lost.
+- A benchmark section's VTune totals include Catch2's clock calibration (`RtlQueryPerformanceCounter`, about 1 s).
+- Instructions retired per cycle tells an instruction-bound loop (above 3 on Coffee Lake) from a stalled one.
 
 ## Machines
 
@@ -390,7 +403,8 @@ the batched horizontal loop lost it (threaded upscales +33% to +72%); Clang's ba
 - Against the per-column loop with plain stores (the Pi's log): threaded upscales of 32-byte layouts +5% to +6% under
   GCC and +3% to +8% under Clang, the price of not depending on detection; threaded 720p -> 4K RGB24 +12% under GCC,
   -17% under Clang; single-threaded rows within 3.5%, 4K -> 1080p Grayscale8 -3% to -7%.
-- Measured on Cortex-A72 only.
+- Neoverse N2 pays nothing for it: threaded upscales within 2.5% under GCC and Clang (its log). The M1 runner shows
+  no collapse and is too noisy for more.
 
 ### The horizontal passes' shape is part of their tuning
 
@@ -509,6 +523,9 @@ into strips whose per-strip costs exceed those of the larger ring.
     rows and +5% on 24 MP -> 1080p, +8% on 101 MP -> 720p, +12% on 4K -> 64x64. Long runs do overlap four chains.
 20. **Run table entries of 12 bytes** (8500T, not committed): three `uint32_t` in place of three `size_t`. MSVC within
     2%, clang-cl +3.5% to +8% on colour upscales.
+21. **Streaming stores for the 32-byte output blocks at AVX2** (8500T, not committed): `_mm_stream_si128` where the
+    block is 16-byte aligned, which VTune shows is every block of 720p -> 4K RGBA32. Upscales within 2% under MSVC and
+    clang-cl; MSVC's 4K -> 1080p RGB32 +4% to +6% and 8K -> 4K +4%. RGB24's 24-byte blocks were left on plain stores.
 
 ## Open leads
 
@@ -563,10 +580,10 @@ into strips whose per-strip costs exceed those of the larger ring.
     bands) and 21-36% on the PC (16), 4K -> 64x64 aside (their logs).
     - A count that is not a multiple of the pool's threads loses the gain: 8 bands on 6 threads run like 4.
     - Bands past twice the thread count cost 5-20% on the 8500T. `ParallelForFn` does not carry the thread count.
-16. **Streaming stores to the destination at AVX2 are untried:** experiment 9 is the N4100's SSE4.1 only. The 8500T has
-    a 256 KB L2 per core, a sixteenth of the N4100's per-cluster 4 MB. Its RGB24 loss came from unaligned blocks: streaming
-    the aligned middle of a row avoids it.
-17. **`STNP` beyond Cortex-A72:** Apple Silicon and Neoverse are unmeasured. Why the A72 detects a stream of plain
+16. **The destination's first touch:** in a VTune run of 720p -> 4K RGBA32 on the 8500T, the destination allocated
+    inside the timed call, `touchDestPagesInOrder` takes 0.8 s against the AVX2 kernel's 6.9 s, and 2.5 s more fall
+    outside the binary's sources, not attributed. Streaming stores leave the row's time unchanged (experiment 21).
+17. **`STNP` on Apple Silicon is unmeasured** beyond the CI runner's noise. Why the A72 detects a stream of plain
     stores in one build and not in another is not found. Lead 8 may be the same effect.
 18. **What the horizontal loop executes besides arithmetic** (8500T, VTune, MSVC, 4K -> 1080p RGB32):
     - The per-column loop is 65% of the kernel, conversion 18%, the vertical pass 16%.
