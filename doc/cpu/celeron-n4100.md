@@ -141,6 +141,14 @@ SSE4.1, ten alternating rounds, median of same-round ratios, against 93b1b79.
 
 With threads: -2% to -8%. Measured on the loop before `filterRun` was split from it.
 
+The short-run pass's groups filtered the same way, ten rounds of the pixel-layout rows against 1917611:
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 720p -> 4K Grayscale8 | -19.3% | -16.8% |
+| 4K -> 1080p Grayscale8 | -10.5% (minimum to minimum -1.9%) | +4.5% |
+| 3- and 4-channel rows | within 1.4% | within 1.2% |
+
 ## 2026-10-04, b8892fc
 
 ### Method

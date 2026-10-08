@@ -280,6 +280,32 @@ file. The Qt and SSE4.1 rows were switched off in these builds, which takes a ru
 - The loop without a check, its batch end found by a scan: MSVC -3% to -6% on the 4K downscales; clang-cl +7.1% on
   4K -> 1080p Grayscale8, +4.4% on 1080p -> 1440p, +2% to +3% on 720p -> 4K RGB32 and RGB24; GCC within 2-4% either way.
 
+### The short-run pass, and the temp pixel's store
+
+Twenty alternating rounds against 1917611, one binary per compiler carrying both changes: they touch disjoint rows.
+
+| Rows | MSVC | clang-cl |
+|---|---:|---:|
+| 720p -> 4K Grayscale8 (short-run groups from the range by value) | -16.6% | -20.5% |
+| RGB24 and RGB32 rows (one 16-byte store per temp pixel, not committed) | -3.3% to +0.4% | -4.1% to +4.3% |
+| RGBA32 rows, touched by neither | -0.9% to +1.1% | -0.2% to +0.6% |
+| 4K -> 1080p Grayscale8, touched by neither | +2.4% | +3.0% |
+
+### VTune on the committed MSVC build (1917611)
+
+Hardware-sampled hotspots, 2024.3, 4K -> 1080p RGB32, samples attributed to the kernel's loops by address.
+
+| Part of `resizeRows<3, 4>` | Share |
+|---|---:|
+| Per-column filter loop, row pair | 64.9% |
+| Conversion to floats | 17.6% |
+| Vertical taps | 11.2% |
+| Vertical output | 5.1% |
+
+- The filter loop retires about 3.3 instructions per cycle.
+- 12-tap runs take the 8-tap block and the 4-tap block once each: no inner loop iterates.
+- VTune 2025.4 and later do not recognize this processor.
+
 ### Rounds on this machine
 
 - One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP

@@ -291,6 +291,16 @@ The batched loop, as AVX2 and SSE4.1 have it:
 - `STNP` here covers the 32-byte stores of RGBA32 and RGB32 only. Single-threaded 720p -> 4K RGBA32 under GCC: 106 ms
   with it, 99 ms where the bypass engages without it.
 
+The short-run pass's groups filtered from the range by value, ten rounds of the pixel-layout rows against 1917611:
+
+| | GCC | Clang |
+|---|---:|---:|
+| 720p -> 4K Grayscale8 | -8.9% | -11.8% |
+| 4K -> 1080p Grayscale8 | -0.1% | +2.7% |
+| L2 refills, write-backs on 720p -> 4K Grayscale8 | 15.6 M -> 15.1 M, 7.5 M -> 7.1 M | 16.7 M -> 15.8 M, 8.8 M -> 7.7 M |
+
+The bypass is kept, single-threaded; no threaded one-channel row was measured.
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing

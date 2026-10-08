@@ -462,24 +462,78 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
-		// One dest column of filterHorizontalShortRuns: each row's run times its weights, lane by lane
-		template <size_t PixelStride, size_t Rows>
+		// One dest column of a short-run group: each row's run at runFloatOffset times its weights, lane by lane.
+		// 4 floats are loaded whatever the run's length.
+		template <size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void multiplyShortRun(
+			float* const (&sourceFloats)[Rows],
+			size_t runFloatOffset,
+			std::span<const float> weights,
+			Floats4& productsA,
+			[[maybe_unused]] Floats4& productsB) noexcept
+		{
+			const size_t tapCount = weights.size();
+			assert(tapCount <= 4);
+			const Floats4 runWeights = loadFloats4(weights.data());
+			productsA = mul(keepFirstLanes(loadFloats4(sourceFloats[0] + runFloatOffset), tapCount), runWeights);
+			if constexpr (Rows == 2)
+				productsB = mul(keepFirstLanes(loadFloats4(sourceFloats[1] + runFloatOffset), tapCount), runWeights);
+		}
+
+		// multiplyShortRun for dest column dx, its run prepared first
+		template <size_t PixelStride, size_t Rows>
+		IMAGE_PROCESSING_SIMD_INLINE void prepareAndMultiplyShortRun(
 			SlidingSourceFloats<1, PixelStride, Rows>& source,
 			AxisWeights::RunLookup xRunLookup,
 			size_t dx,
 			Floats4& productsA,
-			[[maybe_unused]] Floats4& productsB) noexcept
+			Floats4& productsB) noexcept
 		{
 			const auto [firstPixel, weights] = xRunLookup.runFor(dx);
-			const size_t tapCount = weights.size();
-			assert(tapCount <= 4);
-			// 4 floats are loaded whatever the run's length: the ones past it may be unconverted
+			// The floats past the run may be unconverted
 			const size_t runFloatOffset = source.prepareRun(firstPixel, 4);
-			const Floats4 runWeights = loadFloats4(weights.data());
-			productsA = mul(keepFirstLanes(loadFloats4(source.floats[0] + runFloatOffset), tapCount), runWeights);
-			if constexpr (Rows == 2)
-				productsB = mul(keepFirstLanes(loadFloats4(source.floats[1] + runFloatOffset), tapCount), runWeights);
+			multiplyShortRun<Rows>(source.floats, runFloatOffset, weights, productsA, productsB);
+		}
+
+		// Filters whole groups of four dest columns from firstGroup on, into the temp rows at their offset from destBegin,
+		// while every column's 4 floats lie within source pixels [bufferBegin, bufferEnd). Returns the first group not filtered.
+		// sourceFloats, and the range by value: see filterBufferedRuns.
+		template <size_t Rows>
+		IMAGE_PROCESSING_SIMD_INLINE size_t filterBufferedShortRunGroups(
+			float* const (&sourceFloats)[Rows], size_t bufferBegin, size_t bufferEnd,
+			float* const (&tempRows)[Rows], size_t destBegin, size_t firstGroup, size_t destEnd,
+			AxisWeights::RunLookup xRunLookup) noexcept
+		{
+			if (bufferEnd < bufferBegin + 4)
+				return firstGroup;
+
+			const size_t lastOffset = bufferEnd - bufferBegin - 4;
+			size_t groupBegin = firstGroup;
+			for (; groupBegin + 4 <= destEnd; groupBegin += 4) IMAGE_PROCESSING_FORCE_INLINE_CALLS
+			{
+				const auto [firstPixel0, weights0] = xRunLookup.runFor(groupBegin);
+				const auto [firstPixel1, weights1] = xRunLookup.runFor(groupBegin + 1);
+				const auto [firstPixel2, weights2] = xRunLookup.runFor(groupBegin + 2);
+				const auto [firstPixel3, weights3] = xRunLookup.runFor(groupBegin + 3);
+				// Unsigned: a run before bufferBegin wraps past lastOffset
+				const size_t offset0 = firstPixel0 - bufferBegin, offset1 = firstPixel1 - bufferBegin;
+				const size_t offset2 = firstPixel2 - bufferBegin, offset3 = firstPixel3 - bufferBegin;
+				if ((offset0 > lastOffset) | (offset1 > lastOffset) | (offset2 > lastOffset) | (offset3 > lastOffset))
+					break;
+
+				Floats4 productsA0, productsA1, productsA2, productsA3;
+				[[maybe_unused]] Floats4 productsB0, productsB1, productsB2, productsB3;
+				multiplyShortRun<Rows>(sourceFloats, offset0, weights0, productsA0, productsB0);
+				multiplyShortRun<Rows>(sourceFloats, offset1, weights1, productsA1, productsB1);
+				multiplyShortRun<Rows>(sourceFloats, offset2, weights2, productsA2, productsB2);
+				multiplyShortRun<Rows>(sourceFloats, offset3, weights3, productsA3, productsB3);
+
+				storeFloats4(tempRows[0] + (groupBegin - destBegin), sumEachOfFour(productsA0, productsA1, productsA2, productsA3));
+				if constexpr (Rows == 2)
+					storeFloats4(tempRows[1] + (groupBegin - destBegin), sumEachOfFour(productsB0, productsB1, productsB2, productsB3));
+			}
+
+			return groupBegin;
 		}
 
 		// filterHorizontalRowGroup for 1-float pixels where no run exceeds 4 taps: four dest columns share one reduction and one store.
@@ -496,15 +550,20 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 			for (size_t groupBegin = destBegin; groupBegin < destEnd; groupBegin += 4) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
+				groupBegin = filterBufferedShortRunGroups<Rows>(source.floats, source.base, source.converted, tempRows, destBegin, groupBegin, destEnd, xRunLookup);
+				if (groupBegin >= destEnd)
+					break;
+
+				// A group not wholly in the buffers, or the last, partial one: prepares each column's run.
 				// The columns by name, not in a loop over an array: MSVC leaves that loop rolled, with the products in memory.
 				// A group past the last column repeats it.
 				const size_t lastColumn = destEnd - 1;
 				Floats4 productsA0, productsA1, productsA2, productsA3;
 				[[maybe_unused]] Floats4 productsB0, productsB1, productsB2, productsB3;
-				multiplyShortRun(source, xRunLookup, std::min(groupBegin, lastColumn), productsA0, productsB0);
-				multiplyShortRun(source, xRunLookup, std::min(groupBegin + 1, lastColumn), productsA1, productsB1);
-				multiplyShortRun(source, xRunLookup, std::min(groupBegin + 2, lastColumn), productsA2, productsB2);
-				multiplyShortRun(source, xRunLookup, std::min(groupBegin + 3, lastColumn), productsA3, productsB3);
+				prepareAndMultiplyShortRun(source, xRunLookup, std::min(groupBegin, lastColumn), productsA0, productsB0);
+				prepareAndMultiplyShortRun(source, xRunLookup, std::min(groupBegin + 1, lastColumn), productsA1, productsB1);
+				prepareAndMultiplyShortRun(source, xRunLookup, std::min(groupBegin + 2, lastColumn), productsA2, productsB2);
+				prepareAndMultiplyShortRun(source, xRunLookup, std::min(groupBegin + 3, lastColumn), productsA3, productsB3);
 
 				const size_t columnCount = std::min<size_t>(4, destEnd - groupBegin);
 				Floats4 sums[Rows] = { sumEachOfFour(productsA0, productsA1, productsA2, productsA3) };

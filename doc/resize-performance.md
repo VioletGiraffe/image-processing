@@ -290,6 +290,11 @@ pass reduces and stores each column on its own.
 - GCC gains a third or less of what the others do, on both architectures: -8% to -10% on the EPYC 7763, -2% on
   Neoverse-N2. Not investigated.
 - Two-channel pixels still take the general pass.
+- Whole groups whose columns lie in the source buffers are filtered from the buffers' range held by value
+  (`filterBufferedShortRunGroups`), as in the general pass below. 720p -> 4K Grayscale8: 8500T, AVX2 -17% under MSVC,
+  -20% under clang-cl; N4100, SSE4.1 -19% and -17%; Pi, NEON -9% under GCC, -12% under Clang.
+- With that, clang-cl's 4K -> 1080p Grayscale8 is 3-4% slower on both machines; MSVC +2% on the 8500T. The row does not run
+  the changed loop, and its own loops are the same size in the listing: open lead 18.
 
 ### Two chains at SSE4.1, and a first block that assigns
 
@@ -367,7 +372,7 @@ the run lookup's pointers above.
 | N4100, SSE4.1 | clang-cl | -2% to -8% | -5% to -6% |
 
 - 4K -> 1080p Grayscale8: -5% to -12% on every row above.
-- Unchanged: 4K -> 64x64, and Grayscale8 upscales, which take `filterHorizontalShortRuns`.
+- Unchanged: 4K -> 64x64, and Grayscale8 upscales, which take `filterHorizontalShortRuns` (see its section).
 - The range in registers is the gain, not fewer checks: the loop still compares each run against it. A form that
   found each batch's end ahead and looped with no check gained half as much and cost clang-cl 4-7% on some rows.
 - NEON keeps one column per preparation (`filterAllBufferedColumns`). GCC's build of the batched loop on Cortex-A72
@@ -484,6 +489,8 @@ into strips whose per-strip costs exceed those of the larger ring.
 17. **The destination's blocks zeroed ahead with `DC ZVA`** (Pi, GCC, not committed): 720p -> 4K RGBA32 +12% single-threaded
     and +10% with threads against the batched loop it was meant to mend. The zeroed lines pass through L2 as the stored
     ones do. A prefetch 2 lines ahead of the temp rows' stores, for writing or for reading: no change.
+18. **One 16-byte store per 3-channel temp pixel** (8500T, not committed): temp rows padded by one float, in place of an
+    8-byte and a 4-byte store. MSVC -3% to +0.4% on the RGB rows, clang-cl -4% to +4%, the untouched RGBA32 rows within 1%.
 
 ## Open leads
 
@@ -548,5 +555,11 @@ into strips whose per-strip costs exceed those of the larger ring.
       whose builds keep the bypass, it costs threaded upscales 3-7%.
     - Not covered: RGB24's 24-byte and the one-channel output stores. Not measured: Apple Silicon, Neoverse.
     - Lead 8 may be the same effect.
-18. **State read through a structure inside a hot loop:** the gain of the by-value range came from nowhere in the
-    arithmetic. `filterHorizontalShortRuns` still prepares per column, and the vertical pass is unexamined for the same.
+18. **What the horizontal loop executes besides arithmetic** (8500T, VTune, MSVC, 4K -> 1080p RGB32):
+    - The per-column loop is 65% of the kernel, conversion 18%, the vertical pass 16%.
+    - It retires about 3.3 instructions per cycle: instruction count limits it, not stalls or the shuffle port.
+    - About 78 instructions per column pair for about 28 of arithmetic: run lookup, range check, offsets, tap-count
+      branches, four permutation constants reloaded, four stack reloads.
+    - Untried: run table entries smaller than three `size_t`.
+    - The vertical pass reads no state through a structure in its tap loop: nothing to take by value there.
+    - clang-cl's 4K -> 1080p Grayscale8 lost 3-4% when the short-run pass changed beside it: cause not found.
