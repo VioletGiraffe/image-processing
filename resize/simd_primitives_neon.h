@@ -33,8 +33,6 @@ namespace ImageProcessing::Detail::Neon
 	inline constexpr size_t horizontalChainCount = 4;
 	// Blocks the vertical pass filters per step: one block already has 6-8 accumulators, two registers per Floats8
 	inline constexpr size_t verticalBlocksPerStep = 1;
-	// See the AVX2 one. false: with true, GCC's build loses the destination stores' cache bypass on Cortex-A72, threaded upscales +33-72%
-	inline constexpr bool filterAllBufferedColumns = false;
 
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 
@@ -208,16 +206,54 @@ namespace ImageProcessing::Detail::Neon
 		return { vminq_f32(pixels.low, pixelAlphas<FloatsPerPixel>(pixels.low)), vminq_f32(pixels.high, pixelAlphas<FloatsPerPixel>(pixels.high)) };
 	}
 
-	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
+	// The output blocks' stores, as STNP: the non-temporal hint keeps a destination written once out of the cache.
+	// Cortex-A72 detects such a stream of plain stores only in some builds: a threaded upscale costs up to 1.9x where it does not.
+	// A block must hint all of its stores: one plain store among them loses the bypass.
+	// No intrinsic emits STNP.
+	IMAGE_PROCESSING_SIMD_INLINE void storeThirtyTwoBytesNonTemporal(uint8_t* dest, uint8x16_t first, uint8x16_t second) noexcept
 	{
-		vst1q_u8(dest, packSixteenFloatsToBytes(values0, values1));
-		vst1q_u8(dest + 16, packSixteenFloatsToBytes(values2, values3));
+		__asm__ volatile("stnp %q0, %q1, [%2]" : : "w"(first), "w"(second), "r"(dest) : "memory");
 	}
 
+	IMAGE_PROCESSING_SIMD_INLINE void storeSixteenBytesNonTemporal(uint8_t* dest, uint8x16_t bytes) noexcept
+	{
+		__asm__ volatile("stnp %d0, %d1, [%2]" : : "w"(vget_low_u8(bytes)), "w"(vget_high_u8(bytes)), "r"(dest) : "memory");
+	}
+
+	IMAGE_PROCESSING_SIMD_INLINE void storeEightBytesNonTemporal(uint8_t* dest, uint8x8_t bytes) noexcept
+	{
+		__asm__ volatile("stnp %s0, %s1, [%2]" : : "w"(bytes), "w"(vext_u8(bytes, bytes, 4)), "r"(dest) : "memory");
+	}
+
+	template <BlockTarget Target>
+	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
+	{
+		const uint8x16_t first = packSixteenFloatsToBytes(values0, values1);
+		const uint8x16_t second = packSixteenFloatsToBytes(values2, values3);
+		if constexpr (Target == BlockTarget::Destination)
+			storeThirtyTwoBytesNonTemporal(dest, first, second);
+		else
+		{
+			vst1q_u8(dest, first);
+			vst1q_u8(dest + 16, second);
+		}
+	}
+
+	template <BlockTarget Target>
 	IMAGE_PROCESSING_SIMD_INLINE void writeTwentyFourBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2) noexcept
 	{
-		vst1q_u8(dest, packSixteenFloatsToBytes(values0, values1));
-		vst1_u8(dest + 16, vqmovn_u16(packEightFloatsToWords(values2)));
+		const uint8x16_t firstSixteen = packSixteenFloatsToBytes(values0, values1);
+		const uint8x8_t lastEight = vqmovn_u16(packEightFloatsToWords(values2));
+		if constexpr (Target == BlockTarget::Destination)
+		{
+			storeSixteenBytesNonTemporal(dest, firstSixteen);
+			storeEightBytesNonTemporal(dest + 16, lastEight);
+		}
+		else
+		{
+			vst1q_u8(dest, firstSixteen);
+			vst1_u8(dest + 16, lastEight);
+		}
 	}
 
 	IMAGE_PROCESSING_SIMD_INLINE Rgb32PixelTails rgb32PixelTails(uint8_t tailValue) noexcept
@@ -225,7 +261,7 @@ namespace ImageProcessing::Detail::Neon
 		return vreinterpretq_u8_u32(vdupq_n_u32(static_cast<uint32_t>(tailValue) << 24));
 	}
 
-	// values0..2 hold the 8 pixels' 24 color floats
+	// values0..2 hold the 8 pixels' 24 color floats. Only written to the destination.
 	IMAGE_PROCESSING_SIMD_INLINE void writeEightRgb32Pixels(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Rgb32PixelTails pixelTails) noexcept
 	{
 		const uint8x16_t firstSixteenRgbBytes = packSixteenFloatsToBytes(values0, values1);
@@ -239,7 +275,7 @@ namespace ImageProcessing::Detail::Neon
 			9, 10, 11, 0xFF };
 		const uint8x16_t rgbToRgb32 = vld1q_u8(rgbToRgb32Indices);
 
-		vst1q_u8(dest, vorrq_u8(vqtbl1q_u8(firstSixteenRgbBytes, rgbToRgb32), pixelTails));
-		vst1q_u8(dest + 16, vorrq_u8(vqtbl1q_u8(lastTwelveRgbBytes, rgbToRgb32), pixelTails));
+		storeThirtyTwoBytesNonTemporal(dest,
+			vorrq_u8(vqtbl1q_u8(firstSixteenRgbBytes, rgbToRgb32), pixelTails), vorrq_u8(vqtbl1q_u8(lastTwelveRgbBytes, rgbToRgb32), pixelTails));
 	}
 }

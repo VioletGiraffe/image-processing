@@ -440,25 +440,12 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		{
 			const AxisWeights::RunLookup xRunLookup = xWeights.runLookup();
 
-			if constexpr (filterAllBufferedColumns)
+			for (size_t dx = destBegin; dx < destEnd;) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
-				for (size_t dx = destBegin; dx < destEnd;) IMAGE_PROCESSING_FORCE_INLINE_CALLS
-				{
-					// The column's run is in the buffers after this, so each pass filters at least that column
-					const auto [firstPixel, weights] = xRunLookup.runFor(dx);
-					source.prepareRun(firstPixel, weights.size());
-					dx = filterBufferedRuns<Channels>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRunLookup);
-				}
-			}
-			else
-			{
-				const WeightSpreader<sourceFloatsPerPixel(Channels)> weightSpreader{};
-				for (size_t dx = destBegin; dx < destEnd; ++dx) IMAGE_PROCESSING_FORCE_INLINE_CALLS
-				{
-					const auto [firstPixel, weights] = xRunLookup.runFor(dx);
-					const size_t runFloatOffset = source.prepareRun(firstPixel, weights.size());
-					filterRun<Channels>(source.floats, runFloatOffset, weights, weightSpreader, tempRows, (dx - destBegin) * Channels);
-				}
+				// The column's run is in the buffers after this, so each pass filters at least that column
+				const auto [firstPixel, weights] = xRunLookup.runFor(dx);
+				source.prepareRun(firstPixel, weights.size());
+				dx = filterBufferedRuns<Channels>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRunLookup);
 			}
 		}
 
@@ -608,15 +595,15 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		}
 
 		// A block's pixels, color capped at alpha, as bytes packed Channels per pixel
-		template <size_t Channels>
+		template <size_t Channels, BlockTarget Target>
 		IMAGE_PROCESSING_SIMD_INLINE void writeBlockBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, [[maybe_unused]] Floats8 values3) noexcept
 		{
 			if constexpr (Channels == 3)
-				writeTwentyFourBytes(dest, values0, values1, values2);
+				writeTwentyFourBytes<Target>(dest, values0, values1, values2);
 			else if constexpr (hasAlphaChannel(Channels))
-				writeThirtyTwoBytes(dest, capColorAtAlpha<Channels>(values0), capColorAtAlpha<Channels>(values1), capColorAtAlpha<Channels>(values2), capColorAtAlpha<Channels>(values3));
+				writeThirtyTwoBytes<Target>(dest, capColorAtAlpha<Channels>(values0), capColorAtAlpha<Channels>(values1), capColorAtAlpha<Channels>(values2), capColorAtAlpha<Channels>(values3));
 			else
-				writeThirtyTwoBytes(dest, values0, values1, values2, values3);
+				writeThirtyTwoBytes<Target>(dest, values0, values1, values2, values3);
 		}
 
 		// A vertical block's accumulators, by name: see RowChains
@@ -651,12 +638,12 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			if constexpr (Channels == 3 && PixelStride == 4)
 				writeEightRgb32Pixels(blockDest, block.accum0, block.accum1, block.accum2, pixelTails);
 			else if constexpr (PixelStride == Channels)
-				writeBlockBytes<Channels>(blockDest, block.accum0, block.accum1, block.accum2, block.accum3);
+				writeBlockBytes<Channels, BlockTarget::Destination>(blockDest, block.accum0, block.accum1, block.accum2, block.accum3);
 			else
 			{
 				constexpr size_t pixelsPerBlock = verticalBlockPixels(Channels);
 				alignas(16) uint8_t blockBytes[pixelsPerBlock * Channels];
-				writeBlockBytes<Channels>(blockBytes, block.accum0, block.accum1, block.accum2, block.accum3);
+				writeBlockBytes<Channels, BlockTarget::Scratch>(blockBytes, block.accum0, block.accum1, block.accum2, block.accum3);
 				for (size_t blockPixel = 0; blockPixel < pixelsPerBlock; ++blockPixel)
 				{
 					uint8_t* const destPixel = blockDest + blockPixel * pixelStride;

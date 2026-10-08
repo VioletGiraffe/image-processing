@@ -39,8 +39,6 @@ namespace ImageProcessing::Detail::Sse41
 	inline constexpr size_t horizontalChainCount = 2;
 	// Blocks the vertical pass filters per step: one block already has 6-8 accumulators, two registers per Floats8
 	inline constexpr size_t verticalBlocksPerStep = 1;
-	// See the AVX2 one
-	inline constexpr bool filterAllBufferedColumns = true;
 
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 
@@ -218,12 +216,15 @@ namespace ImageProcessing::Detail::Sse41
 		return { _mm_min_ps(pixels.low, pixelAlphas<FloatsPerPixel>(pixels.low)), _mm_min_ps(pixels.high, pixelAlphas<FloatsPerPixel>(pixels.high)) };
 	}
 
+	// Target: both are stored alike at this level
+	template <BlockTarget Target>
 	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
 	{
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(values0, values1));
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest + 16), packSixteenFloatsToBytes(values2, values3));
 	}
 
+	template <BlockTarget Target>
 	IMAGE_PROCESSING_SIMD_INLINE void writeTwentyFourBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2) noexcept
 	{
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(values0, values1));

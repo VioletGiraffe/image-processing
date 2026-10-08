@@ -375,8 +375,22 @@ the run lookup's pointers above.
 - Unchanged: 4K -> 64x64, and Grayscale8 upscales, which take `filterHorizontalShortRuns` (see its section).
 - The range in registers is the gain, not fewer checks: the loop still compares each run against it. A form that
   found each batch's end ahead and looped with no check gained half as much and cost clang-cl 4-7% on some rows.
-- NEON keeps one column per preparation (`filterAllBufferedColumns`). GCC's build of the batched loop on Cortex-A72
-  stops the destination's stores from bypassing the cache: threaded upscales +33% to +72% (the Pi's log, open lead 17).
+- NEON: 0% to -4% on single-threaded downscales, and only with the output blocks stored by `STNP` (next section).
+
+### NEON stores its output blocks with `STNP`
+
+On Cortex-A72 a destination written once bypasses L2 when the core detects the stream of stores, and whether it does
+depends on the build: the same store instructions keep the bypass in one build and lose it in another. GCC's build of
+the batched horizontal loop lost it (threaded upscales +33% to +72%); Clang's baseline lacked it on RGB24 upscales.
+`STNP` carries the non-temporal hint explicitly, as inline assembly: no intrinsic emits it.
+
+- Every store of a block must carry it. RGB24's 24 bytes with 16 hinted and 8 plain: threaded 720p -> 4K RGB24 +87%
+  under GCC. All 24 hinted: +12%.
+- `BlockTarget` tells the block writers where the bytes go: the stack buffer of the odd-stride path takes plain stores.
+- Against the per-column loop with plain stores (the Pi's log): threaded upscales of 32-byte layouts +5% to +6% under
+  GCC and +3% to +8% under Clang, the price of not depending on detection; threaded 720p -> 4K RGB24 +12% under GCC,
+  -17% under Clang; single-threaded rows within 3.5%, 4K -> 1080p Grayscale8 -3% to -7%.
+- Measured on Cortex-A72 only.
 
 ### The horizontal passes' shape is part of their tuning
 
@@ -491,6 +505,10 @@ into strips whose per-strip costs exceed those of the larger ring.
     ones do. A prefetch 2 lines ahead of the temp rows' stores, for writing or for reading: no change.
 18. **One 16-byte store per 3-channel temp pixel** (8500T, not committed): temp rows padded by one float, in place of an
     8-byte and a 4-byte store. MSVC -3% to +0.4% on the RGB rows, clang-cl -4% to +4%, the untouched RGBA32 rows within 1%.
+19. **Two horizontal chains at AVX2** (8500T, not committed): clang-cl -2% to -4% on most rows, MSVC within 2% on 12-tap
+    rows and +5% on 24 MP -> 1080p, +8% on 101 MP -> 720p, +12% on 4K -> 64x64. Long runs do overlap four chains.
+20. **Run table entries of 12 bytes** (8500T, not committed): three `uint32_t` in place of three `size_t`. MSVC within
+    2%, clang-cl +3.5% to +8% on colour upscales.
 
 ## Open leads
 
@@ -548,18 +566,13 @@ into strips whose per-strip costs exceed those of the larger ring.
 16. **Streaming stores to the destination at AVX2 are untried:** experiment 9 is the N4100's SSE4.1 only. The 8500T has
     a 256 KB L2 per core, a sixteenth of the N4100's per-cluster 4 MB. Its RGB24 loss came from unaligned blocks: streaming
     the aligned middle of a row avoids it.
-17. **NEON keeps the horizontal filter's per-column preparation:** on Cortex-A72 the destination's stores bypass L2 in
-    some builds and not in others, with the same store instructions (the Pi's log). GCC's builds of the batched loop,
-    and of a one-column loop through `filterBufferedRuns`, lose the bypass on upscales.
-    - `STNP` for the 32-byte output stores restores it under GCC: threaded 720p -> 4K RGBA32 +72% -> +6%. Under Clang,
-      whose builds keep the bypass, it costs threaded upscales 3-7%.
-    - Not covered: RGB24's 24-byte and the one-channel output stores. Not measured: Apple Silicon, Neoverse.
-    - Lead 8 may be the same effect.
+17. **`STNP` beyond Cortex-A72:** Apple Silicon and Neoverse are unmeasured. Why the A72 detects a stream of plain
+    stores in one build and not in another is not found. Lead 8 may be the same effect.
 18. **What the horizontal loop executes besides arithmetic** (8500T, VTune, MSVC, 4K -> 1080p RGB32):
     - The per-column loop is 65% of the kernel, conversion 18%, the vertical pass 16%.
     - It retires about 3.3 instructions per cycle: instruction count limits it, not stalls or the shuffle port.
     - About 78 instructions per column pair for about 28 of arithmetic: run lookup, range check, offsets, tap-count
       branches, four permutation constants reloaded, four stack reloads.
-    - Untried: run table entries smaller than three `size_t`.
     - The vertical pass reads no state through a structure in its tap loop: nothing to take by value there.
-    - clang-cl's 4K -> 1080p Grayscale8 lost 3-4% when the short-run pass changed beside it: cause not found.
+    - clang-cl's 4K -> 1080p Grayscale8 moves with code that it does not run: +3-4% when the short-run pass changed
+      beside it, -10% to -12% in both builds of experiments 19 and 20. Placement, mechanism not found.

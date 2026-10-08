@@ -255,9 +255,8 @@ Three alternating rounds each.
 
 ## The horizontal filter's batched loop, and the destination's stores
 
-Ten alternating rounds, median of same-round ratios, against 93b1b79. NEON keeps one column per preparation
-(`filterAllBufferedColumns`): with it the committed sources are within 2.5% under GCC, 1080p -> 1440p with threads at
-+3.8%, and within 1.5% under Clang.
+Ten alternating rounds, median of same-round ratios, against 93b1b79. With one column per preparation, as NEON
+shipped first, the sources were within 2.5% under GCC, 1080p -> 1440p with threads at +3.8%, and within 1.5% under Clang.
 
 The batched loop, as AVX2 and SSE4.1 have it:
 
@@ -300,6 +299,37 @@ The short-run pass's groups filtered from the range by value, ten rounds of the 
 | L2 refills, write-backs on 720p -> 4K Grayscale8 | 15.6 M -> 15.1 M, 7.5 M -> 7.1 M | 16.7 M -> 15.8 M, 8.8 M -> 7.7 M |
 
 The bypass is kept, single-threaded; no threaded one-channel row was measured.
+
+### `STNP` on every block store, and the batched loop with it
+
+Eight alternating rounds against 1ed9965. "Stores": `STNP` with the per-column loop. "Both": with the batched loop.
+
+| Scenario | GCC, stores | GCC, both | Clang, stores | Clang, both |
+|---|---:|---:|---:|---:|
+| 4K -> 1080p RGB32 | -0.3% | -2.0% | -0.6% | -0.6% |
+| 4K -> 1080p RGBA32 | +0.7% | -1.2% | -1.8% | -1.6% |
+| 4K -> 1080p Grayscale8 | -0.4% | -4.2% | +0.2% | -3.0% |
+| 24 MP -> 1080p | -1.6% | -3.1% | +1.2% | -0.7% |
+| 720p -> 4K RGBA32 | +2.6% | +2.7% | +1.8% | -1.1% |
+| 720p -> 4K RGB32 | +0.2% | +0.4% | -0.5% | -2.3% |
+| 1080p -> 1440p RGB32 | -2.2% | -2.8% | -0.9% | -3.5% |
+| 720p -> 4K RGBA32, threads | -0.2% | +6.4% | +3.0% | +0.3% |
+| 1080p -> 1440p RGB32, threads | +7.3% | +5.3% | +5.0% | +3.0% |
+| 4K -> 1080p RGBA32, threads | -3.3% | -3.2% | +0.3% | +0.4% |
+
+RGB24, whose 24-byte block is 16 + 8 bytes. "16": `STNP` on the 16 only. "24": on both, the 8 as two 4-byte halves.
+Both with the batched loop; the second pair of columns from a second run of eight rounds.
+
+| Scenario | GCC, 16 | GCC, 24 | Clang, 16 | Clang, 24 |
+|---|---:|---:|---:|---:|
+| 720p -> 4K RGB24 | +18.0% | +2.9% | -2.7% | -1.9% |
+| 720p -> 4K RGB24, threads | +86.8% | +11.6% | -23.6% | -17.0% |
+| 4K -> 1080p RGB24 | +0.8% | +0.1% | -0.3% | -0.9% |
+| 4K -> 1080p RGB24, threads | +2.1% | +1.2% | -0.3% | +1.1% |
+
+- Threaded 720p -> 4K RGB24 at 1ed9965: 23.7 ms under GCC, 30.8 under Clang, whose build lacks the bypass there.
+- The committed form was not timed: it differs from "both" with "24" in the odd-stride path's plain stores, which no
+  benchmark row takes.
 
 ## Experiments that lost
 

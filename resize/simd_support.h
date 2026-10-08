@@ -58,6 +58,12 @@
 	#define IMAGE_PROCESSING_NEON_INLINE inline __attribute__((always_inline))
 #endif
 
+namespace ImageProcessing::Detail
+{
+	// Where a kernel writes an output block. Destination: the image's rows, written once and not read back.
+	enum class BlockTarget { Destination, Scratch };
+}
+
 namespace ImageProcessing::SimdSupport
 {
 #if IMAGE_PROCESSING_X64

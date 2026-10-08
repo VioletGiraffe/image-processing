@@ -306,6 +306,21 @@ Hardware-sampled hotspots, 2024.3, 4K -> 1080p RGB32, samples attributed to the 
 - 12-tap runs take the 8-tap block and the 4-tap block once each: no inner loop iterates.
 - VTune 2025.4 and later do not recognize this processor.
 
+### Two chains at AVX2, and 12-byte run table entries (neither committed)
+
+Twenty alternating rounds against 1ed9965.
+
+| Scenario | Two chains, MSVC | Two chains, clang-cl | 12-byte entries, MSVC | 12-byte entries, clang-cl |
+|---|---:|---:|---:|---:|
+| 4K -> 1080p RGB32, RGB24, RGBA32 | -0.1%, -2.3%, +0.1% | -2.9%, -2.2%, -3.4% | +0.7%, -0.5%, -0.3% | -1.9%, +2.2%, -2.8% |
+| 720p -> 4K RGBA32, RGB32, RGB24 | -1.4%, +0.8%, -1.0% | -2.4%, -2.7%, -6.8% | +0.6%, +1.6%, -0.4% | +4.9%, +3.5%, +8.4% |
+| 24 MP -> 1080p | +5.0% | -2.3% | +1.5% | -0.2% |
+| 101 MP -> 720p | +7.8% | -1.9% | +0.2% | +0.3% |
+| 4K -> 64x64 | +12.3% | +5.3% | +0.3% | +1.4% |
+| 4K -> 1080p Grayscale8 | -1.3% | -12.1% | -0.1% | -9.7% |
+
+clang-cl's Grayscale8 row gains in both builds, neither of which changes what it runs.
+
 ### Rounds on this machine
 
 - One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP

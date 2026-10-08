@@ -34,8 +34,6 @@ namespace ImageProcessing::Detail::Avx2
 	inline constexpr size_t horizontalChainCount = 4;
 	// Blocks the vertical pass filters per step. 2: a block's taps go through only 3-4 registers here, and a pair shares each tap's weight and zero test
 	inline constexpr size_t verticalBlocksPerStep = 2;
-	// The horizontal pass filters every column whose run the source buffers hold before it prepares them again; one column where false
-	inline constexpr bool filterAllBufferedColumns = true;
 
 	// The code after the kernel is legacy-SSE encoded, and stalls while the upper YMM state is dirty
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept { SimdSupport::clearAvxUpperState(); }
@@ -222,12 +220,15 @@ namespace ImageProcessing::Detail::Avx2
 		return _mm256_min_ps(pixels, pixelAlphas<FloatsPerPixel>(pixels));
 	}
 
+	// Target: both are stored alike at this level
+	template <BlockTarget Target>
 	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
 	{
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(values0, values1));
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest + 16), packSixteenFloatsToBytes(values2, values3));
 	}
 
+	template <BlockTarget Target>
 	IMAGE_PROCESSING_SIMD_INLINE void writeTwentyFourBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2) noexcept
 	{
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(values0, values1));
