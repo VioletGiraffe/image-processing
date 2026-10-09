@@ -203,10 +203,14 @@ namespace ImageProcessing::Detail::Sse41
 	}
 
 	// Color is capped at alpha: writePixelBytes caps it too
-	template <size_t FloatsPerPixel>
-	IMAGE_PROCESSING_SIMD_INLINE Floats8 capColorAtAlpha(Floats8 pixels) noexcept
+	template <size_t Channels>
+	IMAGE_PROCESSING_SIMD_INLINE __m128i capColorBytesAtAlpha(__m128i pixels) noexcept
 	{
-		return { _mm_min_ps(pixels.low, pixelAlphas<FloatsPerPixel>(pixels.low)), _mm_min_ps(pixels.high, pixelAlphas<FloatsPerPixel>(pixels.high)) };
+		static_assert(Channels == 2 || Channels == 4);
+		const __m128i alphaOfEachByte = Channels == 4
+			? _mm_setr_epi8(3, 3, 3, 3, 7, 7, 7, 7, 11, 11, 11, 11, 15, 15, 15, 15)
+			: _mm_setr_epi8(1, 1, 3, 3, 5, 5, 7, 7, 9, 9, 11, 11, 13, 13, 15, 15);
+		return _mm_min_epu8(pixels, _mm_shuffle_epi8(pixels, alphaOfEachByte));
 	}
 
 	// Target: both are stored alike at this level
@@ -215,6 +219,14 @@ namespace ImageProcessing::Detail::Sse41
 	{
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(values0, values1));
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest + 16), packSixteenFloatsToBytes(values2, values3));
+	}
+
+	// The values are pixels of Channels floats, alpha last
+	template <BlockTarget Target, size_t Channels>
+	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytesCappedAtAlpha(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
+	{
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), capColorBytesAtAlpha<Channels>(packSixteenFloatsToBytes(values0, values1)));
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest + 16), capColorBytesAtAlpha<Channels>(packSixteenFloatsToBytes(values2, values3)));
 	}
 
 	template <BlockTarget Target>

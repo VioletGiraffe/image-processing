@@ -182,15 +182,25 @@ RGB32 4K -> 1080p controls: 18.7 against 8.1 ms on the PC, 87.9 against 40.2 on 
 would add a pass and a 33 MB temporary per 4K frame. Premultiplying while converting to float costs nothing measurable on
 the PC, and about 5% single-threaded on the Pi.
 
-### 128-bit packs for the output bytes (e16c6c4)
+### Output blocks packed whole at AVX2, and capped at alpha as bytes
 
-The vertical pass rounds floats to bytes:
-- 256-bit packs work per 128-bit lane. Joining the lanes takes a lane-crossing `permutevar8x32`, which SIMDe emulated
-  element by element on NEON.
-- 128-bit packs keep element order, so the permute is not needed.
+The vertical pass rounds a block of floats to bytes. In a 3x RGBA32 upscale that step cost as much as the taps (27% and
+25% of the kernel, 8500T, VTune): its shuffles, extracts and packs all need port 5.
 
-Resizer / QImage, 720p -> 4K RGBA32: ARM Clang CI 0.31 -> 0.28, Pi 0.39 -> 0.37, PC 0.31 -> 0.31. Downscales stayed within
-about 4% on all three.
+- AVX2 packs a block's 32 floats with 256-bit packs. They work per 128-bit lane, so one dword permute per block puts
+  the bytes in order, and one store writes them. Packing each vector at 128 bits takes an extract per vector.
+- Color is capped at alpha on the packed bytes, at every level: one shuffle and one minimum per 16 or 32 bytes, not one
+  of each per float vector. Rounding and saturation keep order, so the bytes equal those of capping the floats.
+- Port-5 operations per 32 RGBA floats at AVX2: 14 -> 5. Operations in all: 28 -> 15.
+
+| Row, against e60816d | 8500T MSVC | 8500T clang-cl | N4100 MSVC | N4100 clang-cl | Pi GCC | Pi Clang |
+|---|---:|---:|---:|---:|---:|---:|
+| 720p -> 4K RGBA32 | -12.8% | -13.2% | -5.6% | -7.7% | -1.9% | +0.4% |
+| 720p -> 4K RGB32 | -5.0% | -6.1% | +1.2% | -0.3% | -0.1% | -0.5% |
+| 720p -> 4K Grayscale8 | -4.7% | -6.7% | -0.1% | +0.1% | -0.1% | -0.3% |
+| 720p -> 4K RGBA32, threads | -6.8% | -6.4% | -3.1% | -7.7% | -3.4% | -2.3% |
+
+SSE4.1 and NEON change only where there is alpha. Downscale rows stayed within the noise at every level.
 
 ### Forced inlining on every platform (1199012)
 
@@ -633,8 +643,8 @@ into strips whose per-strip costs exceed those of the larger ring.
       branches, four permutation constants reloaded, four stack reloads.
     - Experiments 18 to 20, 22 and 23 each took a few of those instructions out or moved them: none gained.
     - The vertical pass reads no state through a structure in its tap loop: nothing to take by value there.
-    - In an upscale the vertical pass's output, its rounding, packing, alpha cap and stores, costs as much as its
-      taps (27% and 25% of the kernel): untried.
+    - The vertical accumulators could start at 0.5 and drop the rounding add, 8 per step at AVX2: untried. It changes
+      the order of the float sum, so the bytes would not all equal today's.
     - NEON stores a 3-float temp pixel through the stack, a 16-byte store then 8 and 4 bytes copied out (GCC's listing
       on the Pi): untried.
     - clang-cl's 4K -> 1080p Grayscale8 moves with code that it does not run: +3-4% when the short-run pass changed

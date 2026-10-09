@@ -422,3 +422,18 @@ MSVC's code for `filterHorizontalRowGroup` with two rows of 4-float pixels, read
   overlap in time, and their setup and reduction are paid per column.
 - The column loop reloads seven of its own pointers and counters from the stack per column.
 - Estimated from the listing: about 170 micro-ops per column pair, of which 72 are the taps' loads, multiplies and adds.
+
+### Output bytes capped at alpha after packing
+
+Ten alternating rounds against e60816d: median of same-round ratios. Only rows with alpha run changed code.
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 720p -> 4K RGBA32 | -5.6% | -7.7% |
+| 720p -> 4K RGBA32, threads | -3.1% | -7.7% |
+| 4K -> 1080p RGBA32 | +0.9% | -1.1% |
+| 4K -> 1080p RGBA32, threads | +0.3% | -1.8% |
+| Other single-threaded rows (code unchanged) | -0.9% to +1.3% | -0.5% to +1.1% |
+
+- Every run had other load: "System" 2-8 s per 67 s run, the Claude desktop app 2-14 s.
+- The threaded rows' minima moved by -12% to +47% on rows whose code did not change: only their medians are usable.

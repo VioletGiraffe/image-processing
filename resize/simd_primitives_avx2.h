@@ -28,7 +28,7 @@ namespace ImageProcessing::Detail::Avx2
 	// 8 consecutive filter weights
 	using WeightBlock = __m256;
 	// The alpha bytes writeEightRgb32Pixels sets
-	using Rgb32PixelTails = __m128i;
+	using Rgb32PixelTails = __m256i;
 
 	// The horizontal pass's accumulation chains per row, a Floats8 each
 	inline constexpr size_t horizontalChainCount = 4;
@@ -192,64 +192,76 @@ namespace ImageProcessing::Detail::Avx2
 		return _mm256_blend_ps(premultiplied, pixels, FloatsPerPixel == 4 ? 0x88 : 0xAA);
 	}
 
-	// Rounds 8 floats to 8 signed words in order.
-	// The packs are 128-bit: 256-bit packs work per lane and need a lane-crossing permute after them.
-	// Signed saturation: packus_epi16 reads its input as signed, and then clamps what is below 0 or past 255.
-	IMAGE_PROCESSING_SIMD_INLINE __m128i packEightFloatsToWords(Floats8 values) noexcept
+	IMAGE_PROCESSING_SIMD_INLINE __m256i roundEightFloatsToInts(Floats8 values) noexcept
 	{
-		const __m256i integers = _mm256_cvttps_epi32(_mm256_add_ps(values, _mm256_set1_ps(0.5f)));
-		return _mm_packs_epi32(_mm256_castsi256_si128(integers), _mm256_extracti128_si256(integers, 1));
+		return _mm256_cvttps_epi32(_mm256_add_ps(values, _mm256_set1_ps(0.5f)));
 	}
 
-	IMAGE_PROCESSING_SIMD_INLINE __m128i packSixteenFloatsToBytes(Floats8 first, Floats8 second) noexcept
+	// Rounds 32 floats to 32 bytes, as 8 dwords: 0-3 hold the first 4 bytes of values0..3, 4-7 the last 4.
+	// 256-bit packs work per 128-bit lane: one dword permute after them orders a whole block.
+	// Signed saturation first: packus_epi16 reads its input as signed, and then clamps what is below 0 or past 255.
+	IMAGE_PROCESSING_SIMD_INLINE __m256i packThirtyTwoFloatsToLaneBytes(Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
 	{
-		return _mm_packus_epi16(packEightFloatsToWords(first), packEightFloatsToWords(second));
+		return _mm256_packus_epi16(
+			_mm256_packs_epi32(roundEightFloatsToInts(values0), roundEightFloatsToInts(values1)),
+			_mm256_packs_epi32(roundEightFloatsToInts(values2), roundEightFloatsToInts(values3)));
 	}
 
-	// Color is capped at alpha: writePixelBytes caps it too
-	template <size_t FloatsPerPixel>
-	IMAGE_PROCESSING_SIMD_INLINE Floats8 capColorAtAlpha(Floats8 pixels) noexcept
+	// Color is capped at alpha: writePixelBytes caps it too.
+	// Valid on packThirtyTwoFloatsToLaneBytes' order too: it keeps each pixel's bytes together.
+	template <size_t Channels>
+	IMAGE_PROCESSING_SIMD_INLINE __m256i capColorBytesAtAlpha(__m256i pixels) noexcept
 	{
-		return _mm256_min_ps(pixels, pixelAlphas<FloatsPerPixel>(pixels));
+		static_assert(Channels == 2 || Channels == 4);
+		const __m256i alphaOfEachByte = Channels == 4
+			? _mm256_setr_epi8(3, 3, 3, 3, 7, 7, 7, 7, 11, 11, 11, 11, 15, 15, 15, 15, 3, 3, 3, 3, 7, 7, 7, 7, 11, 11, 11, 11, 15, 15, 15, 15)
+			: _mm256_setr_epi8(1, 1, 3, 3, 5, 5, 7, 7, 9, 9, 11, 11, 13, 13, 15, 15, 1, 1, 3, 3, 5, 5, 7, 7, 9, 9, 11, 11, 13, 13, 15, 15);
+		return _mm256_min_epu8(pixels, _mm256_shuffle_epi8(pixels, alphaOfEachByte));
+	}
+
+	IMAGE_PROCESSING_SIMD_INLINE void storeLaneBytesInValueOrder(uint8_t* dest, __m256i laneBytes) noexcept
+	{
+		_mm256_storeu_si256(reinterpret_cast<__m256i*>(dest), _mm256_permutevar8x32_epi32(laneBytes, _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7)));
 	}
 
 	// Target: both are stored alike at this level
 	template <BlockTarget Target>
 	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
 	{
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(values0, values1));
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest + 16), packSixteenFloatsToBytes(values2, values3));
+		storeLaneBytesInValueOrder(dest, packThirtyTwoFloatsToLaneBytes(values0, values1, values2, values3));
+	}
+
+	// The values are pixels of Channels floats, alpha last
+	template <BlockTarget Target, size_t Channels>
+	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytesCappedAtAlpha(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
+	{
+		storeLaneBytesInValueOrder(dest, capColorBytesAtAlpha<Channels>(packThirtyTwoFloatsToLaneBytes(values0, values1, values2, values3)));
 	}
 
 	template <BlockTarget Target>
 	IMAGE_PROCESSING_SIMD_INLINE void writeTwentyFourBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2) noexcept
 	{
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), packSixteenFloatsToBytes(values0, values1));
-		const __m128i lastWords = packEightFloatsToWords(values2);
-		_mm_storel_epi64(reinterpret_cast<__m128i*>(dest + 16), _mm_packus_epi16(lastWords, lastWords));
+		const __m256i laneBytes = packThirtyTwoFloatsToLaneBytes(values0, values1, values2, values2);
+		// The low lane gets bytes 0-15, the high lane 16-23
+		const __m256i bytes = _mm256_permutevar8x32_epi32(laneBytes, _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 2, 6));
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), _mm256_castsi256_si128(bytes));
+		_mm_storel_epi64(reinterpret_cast<__m128i*>(dest + 16), _mm256_extracti128_si256(bytes, 1));
 	}
 
 	IMAGE_PROCESSING_SIMD_INLINE Rgb32PixelTails rgb32PixelTails(uint8_t tailValue) noexcept
 	{
-		return _mm_set1_epi32(std::bit_cast<int32_t>(static_cast<uint32_t>(tailValue) << 24));
+		return _mm256_set1_epi32(std::bit_cast<int32_t>(static_cast<uint32_t>(tailValue) << 24));
 	}
 
 	// values0..2 hold the 8 pixels' 24 color floats
 	IMAGE_PROCESSING_SIMD_INLINE void writeEightRgb32Pixels(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Rgb32PixelTails pixelTails) noexcept
 	{
-		const __m128i firstSixteenRgbBytes = packSixteenFloatsToBytes(values0, values1);
-		const __m128i lastWords = packEightFloatsToWords(values2);
-		const __m128i lastEightRgbBytes = _mm_packus_epi16(lastWords, lastWords);
-		const __m128i lastTwelveRgbBytes = _mm_alignr_epi8(lastEightRgbBytes, firstSixteenRgbBytes, 12);
-		const __m128i rgbToRgb32 = _mm_setr_epi8(
-			0, 1, 2, -1,
-			3, 4, 5, -1,
-			6, 7, 8, -1,
-			9, 10, 11, -1);
-
-		const __m128i pixels0 = _mm_or_si128(_mm_shuffle_epi8(firstSixteenRgbBytes, rgbToRgb32), pixelTails);
-		const __m128i pixels1 = _mm_or_si128(_mm_shuffle_epi8(lastTwelveRgbBytes, rgbToRgb32), pixelTails);
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), pixels0);
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest + 16), pixels1);
+		const __m256i laneBytes = packThirtyTwoFloatsToLaneBytes(values0, values1, values2, values2);
+		// Each lane gets its 4 pixels' 12 color bytes first: bytes 0-11, and 12-23
+		const __m256i colorBytes = _mm256_permutevar8x32_epi32(laneBytes, _mm256_setr_epi32(0, 4, 1, 5, 5, 2, 6, 6));
+		const __m256i rgbToRgb32 = _mm256_setr_epi8(
+			0, 1, 2, -1, 3, 4, 5, -1, 6, 7, 8, -1, 9, 10, 11, -1,
+			0, 1, 2, -1, 3, 4, 5, -1, 6, 7, 8, -1, 9, 10, 11, -1);
+		_mm256_storeu_si256(reinterpret_cast<__m256i*>(dest), _mm256_or_si256(_mm256_shuffle_epi8(colorBytes, rgbToRgb32), pixelTails));
 	}
 }

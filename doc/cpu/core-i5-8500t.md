@@ -362,6 +362,27 @@ the committed sources, the kernel compiled once per choice.
 - The flag read from `AxisWeights` in `filterHorizontal`, not passed in: MSVC's 4K -> 1080p RGB32 +3% to +7%.
 - Every x run padded to a multiple of 4 taps, with the 4-float pass alone: the thumbnail +3% to +5%.
 
+### Output blocks packed whole, and capped at alpha as bytes
+
+Twenty alternating rounds against e60816d: median of same-round ratios / minimum to minimum.
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 720p -> 4K RGBA32 | -12.8% / -14.4% | -13.2% / -13.3% |
+| 720p -> 4K RGB32 | -5.0% / -9.8% | -6.1% / -6.9% |
+| 720p -> 4K Grayscale8 | -4.7% / -5.7% | -6.7% / -6.8% |
+| 720p -> 4K RGB24 | -0.9% / -3.3% | -3.3% / -3.7% |
+| 1080p -> 1440p RGB32 | -4.9% / -5.1% | -3.5% / -3.5% |
+| 720p -> 4K RGBA32, threads | -6.8% / -7.4% | -6.4% / -6.5% |
+| 1080p -> 1440p RGB32, threads | -3.1% / -3.2% | -2.6% / -1.4% |
+| 4K -> 1080p RGBA32 | -2.2% / -6.4% | -2.7% / -0.3% |
+| Other downscale rows | -1.7% to +3.5% / -5.4% to +1.5% | -3.2% to +0.7% / -6.5% to +2.8% |
+
+The vertical pass of the 720p -> 4K RGBA32 row before the change (VTune, MSVC, per step of 16 pixels):
+- The taps: 3 on average, 8 `vfmadd231ps` each, about 45 instructions.
+- The output: 56 instructions, 28 of them on port 5 (8 `vshufps`, 8 `vextracti128`, 8 `vpackssdw`, 4 `vpackuswb`).
+- Each took about 20 cycles.
+
 ### Rounds on this machine
 
 - One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP

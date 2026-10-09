@@ -193,10 +193,17 @@ namespace ImageProcessing::Detail::Neon
 	}
 
 	// Color is capped at alpha: writePixelBytes caps it too
-	template <size_t FloatsPerPixel>
-	IMAGE_PROCESSING_SIMD_INLINE Floats8 capColorAtAlpha(Floats8 pixels) noexcept
+	template <size_t Channels>
+	IMAGE_PROCESSING_SIMD_INLINE uint8x16_t capColorBytesAtAlpha(uint8x16_t pixels) noexcept
 	{
-		return { vminq_f32(pixels.low, pixelAlphas<FloatsPerPixel>(pixels.low)), vminq_f32(pixels.high, pixelAlphas<FloatsPerPixel>(pixels.high)) };
+		static_assert(Channels == 2 || Channels == 4);
+		if constexpr (Channels == 4)
+		{
+			static constexpr uint8_t alphaOfEachByte[16] = { 3, 3, 3, 3, 7, 7, 7, 7, 11, 11, 11, 11, 15, 15, 15, 15 };
+			return vminq_u8(pixels, vqtbl1q_u8(pixels, vld1q_u8(alphaOfEachByte)));
+		}
+		else
+			return vminq_u8(pixels, vtrn2q_u8(pixels, pixels));
 	}
 
 	// The output blocks' stores, as STNP: the non-temporal hint keeps a destination written once out of the cache.
@@ -219,10 +226,8 @@ namespace ImageProcessing::Detail::Neon
 	}
 
 	template <BlockTarget Target>
-	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
+	IMAGE_PROCESSING_SIMD_INLINE void storeThirtyTwoBytes(uint8_t* dest, uint8x16_t first, uint8x16_t second) noexcept
 	{
-		const uint8x16_t first = packSixteenFloatsToBytes(values0, values1);
-		const uint8x16_t second = packSixteenFloatsToBytes(values2, values3);
 		if constexpr (Target == BlockTarget::Destination)
 			storeThirtyTwoBytesNonTemporal(dest, first, second);
 		else
@@ -230,6 +235,20 @@ namespace ImageProcessing::Detail::Neon
 			vst1q_u8(dest, first);
 			vst1q_u8(dest + 16, second);
 		}
+	}
+
+	template <BlockTarget Target>
+	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytes(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
+	{
+		storeThirtyTwoBytes<Target>(dest, packSixteenFloatsToBytes(values0, values1), packSixteenFloatsToBytes(values2, values3));
+	}
+
+	// The values are pixels of Channels floats, alpha last
+	template <BlockTarget Target, size_t Channels>
+	IMAGE_PROCESSING_SIMD_INLINE void writeThirtyTwoBytesCappedAtAlpha(uint8_t* dest, Floats8 values0, Floats8 values1, Floats8 values2, Floats8 values3) noexcept
+	{
+		storeThirtyTwoBytes<Target>(dest,
+			capColorBytesAtAlpha<Channels>(packSixteenFloatsToBytes(values0, values1)), capColorBytesAtAlpha<Channels>(packSixteenFloatsToBytes(values2, values3)));
 	}
 
 	template <BlockTarget Target>

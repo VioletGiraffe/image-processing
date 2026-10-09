@@ -364,6 +364,20 @@ The committed sources, the kernel compiled once per kind of x run, in a second r
 
 GCC's threaded 720p -> 4K RGBA32 read +1.4% for "named" in the first run and +8.9% in this one.
 
+## Output bytes capped at alpha after packing
+
+Eight alternating rounds against e60816d: median of same-round ratios / minimum to minimum. Only rows with alpha run
+changed code.
+
+| Scenario | GCC | Clang |
+|---|---:|---:|
+| 720p -> 4K RGBA32 | -1.9% / -2.5% | +0.4% / -1.1% |
+| 720p -> 4K RGBA32, threads | -3.4% / -3.6% | -2.3% / +1.7% |
+| 4K -> 1080p RGBA32 | +0.2% / -0.0% | -0.8% / +0.8% |
+| 4K -> 1080p RGBA32, threads | +2.6% / +0.4% | +1.1% / +1.8% |
+| 1080p -> 1440p RGB32, threads (code unchanged) | +6.5% / +3.5% | +6.3% / -0.1% |
+| Other rows (code unchanged) | -1.4% to +1.1% | -4.7% to +1.1% |
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing

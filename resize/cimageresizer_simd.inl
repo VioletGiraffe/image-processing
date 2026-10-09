@@ -659,7 +659,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			if constexpr (Channels == 3)
 				writeTwentyFourBytes<Target>(dest, values0, values1, values2);
 			else if constexpr (hasAlphaChannel(Channels))
-				writeThirtyTwoBytes<Target>(dest, capColorAtAlpha<Channels>(values0), capColorAtAlpha<Channels>(values1), capColorAtAlpha<Channels>(values2), capColorAtAlpha<Channels>(values3));
+				writeThirtyTwoBytesCappedAtAlpha<Target, Channels>(dest, values0, values1, values2, values3);
 			else
 				writeThirtyTwoBytes<Target>(dest, values0, values1, values2, values3);
 		}
