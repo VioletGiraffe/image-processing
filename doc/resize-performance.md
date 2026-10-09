@@ -76,6 +76,7 @@ under the same section headings.
 | [PC](cpu/core-i5-12600k.md) | Core i5-12600K, P-cores | 48 KB L1D, 1.25 MB private L2 per P-core | MSVC 19.51 (toolset v145), Qt 6.11.2 |
 | [Raspberry Pi 4](cpu/raspberry-pi-4.md) | 4x Cortex-A72, 1.8 GHz | 32 KB L1D, 1 MB L2 shared by all cores | Clang 22 unless noted |
 | [Celeron N4100](cpu/celeron-n4100.md) | 4x Goldmont Plus, no AVX: SSE4.1 is its only level | 24 KB L1D, 4 MB L2 shared by all cores | MSVC 19.51, Qt 6.12.0 |
+| [Core i3-2310M](cpu/core-i3-2310m.md) | 2x Sandy Bridge, 4 threads, no AVX2: SSE4.1 is its only level | 32 KB L1D, 256 KB private L2 per core, 3 MB L3 | Runs the 8500T's builds |
 | [Core i5-8500T](cpu/core-i5-8500t.md) | 6x Coffee Lake | 32 KB L1D, 256 KB private L2 per core, 9 MB L3 | MSVC 19.51, Qt 6.11.2; clang-cl where noted |
 | [ubuntu-24.04-arm](cpu/neoverse-n2.md) | Cobalt 100 (Neoverse N2), 4 cores | 1 MB private L2 per core | GCC and Clang jobs |
 | [ubuntu-latest, windows-latest](cpu/x64-ci-runners.md) | 2 cores, 4 threads, varying by run. Seen: AMD EPYC 9V45 (Zen 5), 9V74 (Zen 4), 7763 (Zen 3); Xeon Platinum 8573C, 8370C, Xeon 6973P-C | Private L2 per core: 1 MB on Zen 4 and 5, 512 KB on Zen 3, 2 MB on the Xeons (1.25 MB on the 8370C) | GCC and Clang; MSVC and clang-cl |
@@ -360,6 +361,13 @@ MSVC kept eight on the stack. A 12-tap run, a 2x Lanczos3 downscale, ran the fou
 overlapped, and their zeroing and reduction were paid per column.
 
 - Each primitives header states its level's chain count: 2 at SSE4.1, 4 at AVX2 and NEON.
+- The accumulators are updated in place, by `addProduct`. Written `chain = mulAdd(a, b, chain)`, the sum comes back as
+  a pair of registers, and MSVC does not always merge that pair with the accumulator: the row pair's 8-tap loop then
+  computes each sum in a second register, copies it back, and keeps two accumulators on the stack (47 instructions
+  for 39). Which kernels got that form changed with unrelated code elsewhere in the kernel: RGBA32 and Grayscale8 had
+  it, and a change to the vertical pass gave it to the 3-channel kernels, at +15% to +20% on their downscales.
+- In place: MSVC's 4K -> 1080p RGBA32 -10% on the i3-2310M and -7% on the N4100, threaded rows included. Nothing
+  else moves, at any level or under clang-cl, GCC or Clang.
 - A run's first block starts the chains with its products: no zeroed accumulators, no add to zero. With FMA the result
   is bit-identical.
 - N4100, MSVC: opaque 4-byte and RGB24 downscales -7% to -14% (4K -> 1080p RGB32 115.6 -> 102.1 ms), 4K -> 64x64 -2%,
@@ -577,6 +585,11 @@ into strips whose per-strip costs exceed those of the larger ring.
 23. **Running offsets in the batched horizontal loop** (8500T, not committed): the temp offset advanced per column and
     the run's buffer offset computed once for the range check and the load. MSVC -1% to -3% on upscales and +4.5% on
     4K -> 1080p RGBA32; clang-cl +7% to +10% on the RGB24 rows.
+24. **Vertical accumulators started at 0.5** (8500T, not committed), so that the output step truncates without its
+    rounding add: 8 `vaddps` fewer per 16-pixel step at AVX2, and the float sum in a different order. The 720p -> 4K
+    rows -1% to -3% under MSVC and clang-cl, clang-cl's RGB24 within 1.5%; the 4K -> 1080p rows +1% to +4% by median
+    and within about 2% by minimum. The adds run on
+    ports 0 and 1, which do not bound the step. The tests pass with it.
 
 ## Open leads
 
@@ -643,8 +656,6 @@ into strips whose per-strip costs exceed those of the larger ring.
       branches, four permutation constants reloaded, four stack reloads.
     - Experiments 18 to 20, 22 and 23 each took a few of those instructions out or moved them: none gained.
     - The vertical pass reads no state through a structure in its tap loop: nothing to take by value there.
-    - The vertical accumulators could start at 0.5 and drop the rounding add, 8 per step at AVX2: untried. It changes
-      the order of the float sum, so the bytes would not all equal today's.
     - NEON stores a 3-float temp pixel through the stack, a 16-byte store then 8 and 4 bytes copied out (GCC's listing
       on the Pi): untried.
     - clang-cl's 4K -> 1080p Grayscale8 moves with code that it does not run: +3-4% when the short-run pass changed

@@ -70,6 +70,13 @@ namespace ImageProcessing::Detail::Neon
 		return { vfmaq_f32(accum.low, a.low, b.low), vfmaq_f32(accum.high, a.high, b.high) };
 	}
 
+	// accum += a * b, fused
+	IMAGE_PROCESSING_SIMD_INLINE void addProduct(Floats8& accum, Floats8 a, Floats8 b) noexcept
+	{
+		accum.low = vfmaq_f32(accum.low, a.low, b.low);
+		accum.high = vfmaq_f32(accum.high, a.high, b.high);
+	}
+
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 mulAdd(Floats4 a, Floats4 b, Floats4 accum) noexcept { return vfmaq_f32(accum, a, b); }
 	IMAGE_PROCESSING_SIMD_INLINE float mulAdd(float a, float b, float accum) noexcept { return std::fma(a, b, accum); }
 

@@ -378,6 +378,18 @@ changed code.
 | 1080p -> 1440p RGB32, threads (code unchanged) | +6.5% / +3.5% | +6.3% / -0.1% |
 | Other rows (code unchanged) | -1.4% to +1.1% | -4.7% to +1.1% |
 
+## Accumulators updated in place
+
+Eight alternating rounds against 64af30d, `vcgencmd get_throttled` 0x0 after them. No row moves by both measures:
+
+| | GCC | Clang |
+|---|---:|---:|
+| Median of same-round ratios | -2.4% to +3.8% | -5.2% to +4.3% |
+| Minimum to minimum | -1.6% to +2.7% | -3.1% to +1.1% |
+
+The largest medians: GCC's 4K -> 64x64 +3.8% (minimum +0.5%); Clang's threaded 4K -> 1080p RGBA32 -5.2% (+0.5%) and
+720p -> 4K RGBA32 +4.3% (+1.1%).
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing

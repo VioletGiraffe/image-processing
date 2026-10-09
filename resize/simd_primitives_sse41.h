@@ -83,6 +83,15 @@ namespace ImageProcessing::Detail::Sse41
 		return { _mm_add_ps(_mm_mul_ps(a.low, b.low), accum.low), _mm_add_ps(_mm_mul_ps(a.high, b.high), accum.high) };
 	}
 
+	// accum += a * b.
+	// In place, not accum = mulAdd(a, b, accum): MSVC does not always merge the returned pair with accum, and then
+	// computes every sum in a second register, copies it back, and keeps two of a row pair's accumulators on the stack.
+	IMAGE_PROCESSING_SIMD_INLINE void addProduct(Floats8& accum, Floats8 a, Floats8 b) noexcept
+	{
+		accum.low = _mm_add_ps(accum.low, _mm_mul_ps(a.low, b.low));
+		accum.high = _mm_add_ps(accum.high, _mm_mul_ps(a.high, b.high));
+	}
+
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 mulAdd(Floats4 a, Floats4 b, Floats4 accum) noexcept { return _mm_add_ps(_mm_mul_ps(a, b), accum); }
 	// Not std::fma: without the instruction it is a library call
 	IMAGE_PROCESSING_SIMD_INLINE float mulAdd(float a, float b, float accum) noexcept { return a * b + accum; }

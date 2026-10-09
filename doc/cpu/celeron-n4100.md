@@ -437,3 +437,34 @@ Ten alternating rounds against e60816d: median of same-round ratios. Only rows w
 
 - Every run had other load: "System" 2-8 s per 67 s run, the Claude desktop app 2-14 s.
 - The threaded rows' minima moved by -12% to +47% on rows whose code did not change: only their medians are usable.
+
+### Accumulators updated in place, in the block chains and the vertical taps
+
+Six alternating rounds of the single-threaded display and layout rows against 64af30d, binaries built on the 8500T:
+median of same-round ratios / minimum to minimum. The committed form also converts the two shorter horizontal steps,
+which this run did not have.
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 4K -> 1080p RGBA32 | -7.2% / -6.2% | +0.5% / -0.1% |
+| 4K -> 1080p RGB32, RGB24, Grayscale8 | -0.3%, +0.0%, +0.7% / -0.5%, +0.3%, +0.2% | -0.1%, +0.0%, -0.6% / -0.6%, +0.2%, +1.0% |
+| 720p -> 4K RGBA32, RGB32, RGB24, Grayscale8 | +0.1%, -0.5%, -1.3%, -0.3% / -0.3%, -1.2%, -0.3%, +1.6% | +0.3%, -1.0%, +0.3%, +0.3% / -0.4%, -0.3%, -0.1%, -0.8% |
+| 24 MP -> 1080p, 1080p -> 1440p, 1080p -> 240p, medians | +0.3%, -0.2%, -0.2% | -0.1%, -0.9%, -0.2% |
+
+MSVC's row-pair 8-tap loop at SSE4.1, instructions / stack accesses, from the listings:
+
+| Kernel | 64af30d | In place |
+|---|---|---|
+| RGB32, RGB24 | 39 / 0 | 39 / 0 |
+| RGBA32 | 47 / 2 | 39 / 0 |
+| Grayscale8 | 41 / 2 | 33 / 0 |
+
+- The single-row loop: 31 -> 27 instructions.
+- The vertical pass outlined, as its own function: the 3-channel kernels' loop became 47 / 2 or 43 / 0.
+- The add written `accum + a * b` in `mulAdd`: no change.
+
+### A session at a quarter speed
+
+One session ran everything 4x slow: a test run 977 s for 232 s the day before, a benchmark run 165-180 s for 67 s,
+"System" at 12 s of CPU per run. `% Processor Performance` read 45% of the 1.1 GHz nominal clock during a run; CPU-Z
+showed 1.5-2.3 GHz. Some hours later, untouched, the machine ran at full speed. The cause is not known.

@@ -230,9 +230,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 			else
 			{
-				chainA = mulAdd(loadFloats8(blockPixelsA + Chain * 8), weights, chainA);
+				addProduct(chainA, loadFloats8(blockPixelsA + Chain * 8), weights);
 				if constexpr (Rows == 2)
-					chainB = mulAdd(loadFloats8(blockPixelsB + Chain * 8), weights, chainB);
+					addProduct(chainB, loadFloats8(blockPixelsB + Chain * 8), weights);
 			}
 		}
 
@@ -341,7 +341,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					for (size_t row = 0; row < Rows; ++row)
 					{
 						const float* blockPixels = runPixels[row] + tap * floatsPerPixel;
-						accumPairs[row] = mulAdd(loadFloats8(blockPixels), w0, mulAdd(loadFloats8(blockPixels + 8), w1, accumPairs[row]));
+						addProduct(accumPairs[row], loadFloats8(blockPixels + 8), w1);
+						addProduct(accumPairs[row], loadFloats8(blockPixels), w0);
 					}
 
 					tap += 16 / floatsPerPixel;
@@ -354,7 +355,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				const float* blockWeights = weights.data() + tap;
 				const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, loadWeightBlock(blockWeights));
 				for (size_t row = 0; row < Rows; ++row)
-					accumPairs[row] = mulAdd(loadFloats8(runPixels[row] + tap * floatsPerPixel), w0, accumPairs[row]);
+					addProduct(accumPairs[row], loadFloats8(runPixels[row] + tap * floatsPerPixel), w0);
 
 				tap += 8 / floatsPerPixel;
 			}
@@ -677,11 +678,11 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		template <size_t BlockFloats>
 		IMAGE_PROCESSING_SIMD_INLINE void addTapToBlock(BlockAccums& block, const float* source, Floats8 weightVector) noexcept
 		{
-			block.accum0 = mulAdd(loadFloats8(source), weightVector, block.accum0);
-			block.accum1 = mulAdd(loadFloats8(source + 8), weightVector, block.accum1);
-			block.accum2 = mulAdd(loadFloats8(source + 16), weightVector, block.accum2);
+			addProduct(block.accum0, loadFloats8(source), weightVector);
+			addProduct(block.accum1, loadFloats8(source + 8), weightVector);
+			addProduct(block.accum2, loadFloats8(source + 16), weightVector);
 			if constexpr (BlockFloats == 32)
-				block.accum3 = mulAdd(loadFloats8(source + 24), weightVector, block.accum3);
+				addProduct(block.accum3, loadFloats8(source + 24), weightVector);
 		}
 
 		// Writes a block's pixels at blockDest, each followed by its tail bytes

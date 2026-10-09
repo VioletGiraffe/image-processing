@@ -63,6 +63,8 @@ namespace ImageProcessing::Detail::Avx2
 
 	// a * b + accum, fused
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 mulAdd(Floats8 a, Floats8 b, Floats8 accum) noexcept { return _mm256_fmadd_ps(a, b, accum); }
+	// accum += a * b, fused
+	IMAGE_PROCESSING_SIMD_INLINE void addProduct(Floats8& accum, Floats8 a, Floats8 b) noexcept { accum = _mm256_fmadd_ps(a, b, accum); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 mulAdd(Floats4 a, Floats4 b, Floats4 accum) noexcept { return _mm_fmadd_ps(a, b, accum); }
 	IMAGE_PROCESSING_SIMD_INLINE float mulAdd(float a, float b, float accum) noexcept { return std::fma(a, b, accum); }
 

@@ -383,6 +383,41 @@ The vertical pass of the 720p -> 4K RGBA32 row before the change (VTune, MSVC, p
 - The output: 56 instructions, 28 of them on port 5 (8 `vshufps`, 8 `vextracti128`, 8 `vpackssdw`, 4 `vpackuswb`).
 - Each took about 20 cycles.
 
+### Vertical accumulators started at 0.5 (not committed)
+
+Twenty alternating rounds against 64af30d: median of same-round ratios / minimum to minimum.
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 720p -> 4K RGBA32 | -1.3% / -2.3% | -2.2% / -2.9% |
+| 720p -> 4K RGB32 | -1.1% / -1.8% | -1.7% / -1.0% |
+| 720p -> 4K Grayscale8 | -2.8% / -1.5% | -0.8% / -1.6% |
+| 720p -> 4K RGB24 | -1.4% / -2.2% | +1.5% / -0.2% |
+| 1080p -> 1440p RGB32 | -0.3% / -0.8% | +0.0% / +0.4% |
+| 4K -> 1080p RGB32 | +2.8% / -0.2% | +3.5% / +2.1% |
+| 4K -> 1080p RGBA32 | +2.6% / +1.2% | +4.3% / +0.1% |
+| 4K -> 1080p RGB24 | +1.9% / +0.4% | +0.7% / -2.1% |
+| 4K -> 1080p Grayscale8 | +1.4% / +0.0% | +1.2% / +0.7% |
+| Threaded rows | -1.1% to +0.9% | -1.3% to +1.1% |
+
+MSVC's general-pass kernels in the two builds, from the listings:
+- The horizontal filter and conversion loops are identical. The vertical tap loops differ in register names only.
+- Each kernel is 60-65 bytes shorter and starts elsewhere: several loops sit at another offset in their 64-byte line.
+- Jumps on a 32-byte boundary inside the inner loops: the same count in both.
+
+clang-cl's listings were not compared.
+
+### Accumulators updated in place
+
+Twenty alternating rounds against 64af30d. Every row within -1.8% to +2.2% under MSVC and -3.1% to +1.1% under
+clang-cl by median of same-round ratios; by minimum, -3.7% to +2.5% and -1.1% to +2.4%.
+
+MSVC's AVX2 kernels in the two builds, from the listings:
+- 375 of 376 inner loops have the same instruction count, multiplies and stack accesses. The exception gains one
+  instruction: the group loop of the one-channel four-tap kernel for a runtime pixel stride.
+- 8 kernels differ in register names only, 3 by one or two instructions of per-strip setup, 3 not at all.
+- The two one-channel four-tap kernels address their frame through `rbp` where it was `rsp`.
+
 ### Rounds on this machine
 
 - One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP
