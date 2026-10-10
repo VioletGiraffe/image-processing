@@ -5,7 +5,8 @@ The measurements behind the resizer's design, and the experiments that lost. Ben
 the table. Every table names the commit it was measured at: re-measure after changing the resizer.
 
 This document holds what the design rests on, with headline figures. The full tables are in the per-CPU logs in `doc/cpu/`,
-under the same section headings.
+under the same section headings. How far the kernels run from the hardware's multiply-add peak, and what the distance
+consists of, is in [throughput-ceiling.md](throughput-ceiling.md).
 
 ## Reading the numbers
 
@@ -93,6 +94,7 @@ In `scripts/perf/`, each with `--help`:
 | `count_boundary_jumps.py` | Counts the kernels' jumps that cross or end on a 32-byte boundary in a `dumpbin` or `objdump` listing. A padded build counts under 1%, a plain one 15-25%. |
 | `extract_kernels.py` | Prints a listing's kernels in a form two builds diff in: padding dropped, a jump's target as its distance in instructions. `--loops` prints each kernel's loops with their sizes and stack references. |
 | `annotate_vtune_hotspots.py` | Sums a VTune by-address hotspots report over the kernels' loops of a listing, or over each instruction. |
+| `multiply_add_ceiling.cpp` | A standalone program: the two passes' multiply-adds without the kernel's bookkeeping, and other forms of the horizontal pass. Its header has the build commands. |
 
 The builds to compare are made by hand, the toolchain paths differing per machine:
 
@@ -770,3 +772,7 @@ into strips whose per-strip costs exceed those of the larger ring.
     - The vertical pass reads no state through a structure in its tap loop: nothing to take by value there.
     - NEON stores a 3-float temp pixel through the stack, a 16-byte store then 8 and 4 bytes copied out (GCC's listing
       on the Pi): untried.
+19. **A tap per multiply-add with the row pair's pixels interleaved** ([throughput-ceiling.md](throughput-ceiling.md)): the
+    horizontal arithmetic alone, against the kernel's form, is +3% to +17% on the 8500T, +17% to +29% on the 12600K's
+    P-cores and +61% to +73% on its E-cores. Untried in the kernel, where a third of the loop is bookkeeping it keeps and
+    the conversion would write the pair's pixels alternately.
