@@ -432,6 +432,17 @@ touched either window.
 - CI: downscales -5% to -10% on Neoverse-N2 under GCC and Clang, threaded ones up to -17%; Clang's AVX2 downscales on
   the EPYC 7763 -4% to -10%.
 
+### The weight spread's indices hidden from Clang
+
+`WeightSpreader` at AVX2 is one `vpermps` per chain. Clang, knowing the indices, emits `vshufps` + `vpermpd` for it: 12
+shuffles per column of a 12-tap run where MSVC has 6, all on the one port that runs shuffles. `spreadIndices`
+passes the indices through an empty inline-assembly statement under Clang, which then holds them in registers and emits
+the `vpermps`.
+
+- 8500T, clang-cl, 8 rounds: 101 MP -> 720p -8%, 4K -> 64x64 -8% to -11%, 1080p -> 240p -7%, 24 MP -> 1080p -4% to -6%,
+  4K -> 1080p RGB32 -5% in one section and level in the other, threaded rows -1% to -8%. Grayscale8 has no spread.
+- MSVC's kernels keep their instruction sequence. Clang on Linux and the 2-float spread are untimed.
+
 ### Output bytes packed without a clamp
 
 The vertical pass capped its sums at 255 before converting them: `packus_epi16` reads its input as signed, so a word past
@@ -710,9 +721,11 @@ into strips whose per-strip costs exceed those of the larger ring.
     - Both passes cost the same per multiply-add, so filtering vertically first on downscales would gain nothing.
     - 16-bit fixed-point kernels would drop the conversion, halve the temp rows' bytes and double the multiply-adds
       per instruction.
-14. **MSVC against clang-cl at AVX2 on the 8500T:** MSVC ahead by 5-15% on the 3-channel downscales, clang-cl by 3-7% on
-    Grayscale8. By parts (its log), clang-cl loses in the horizontal pass, 10-40% on 3- and 4-channel rows: it spreads a
-    block's weights with two shuffles per chain where MSVC emits one permute. No source form found that changes it.
+14. **MSVC against clang-cl at AVX2 on the 8500T**, with the spread's indices hidden from Clang: clang-cl ahead by 6-8%
+    on Grayscale8, level on 101 MP -> 720p, MSVC ahead by 2-6% on the 4K -> 1080p rows and 24 MP -> 1080p.
+    - clang-cl's per-column loop reloads four constants of the conversion code on every column: it keeps them in
+      registers the column's chains need. No source form tried.
+    - At SSE4.1 MSVC is ahead by 6-9% on the 3- and 4-channel downscales, on the 8500T and the i3-2310M: not looked into.
 15. **The cap of 4 bands leaves threads idle:** a band per thread takes 18-29% off the threaded rows on the 8500T (6
     bands) and 21-36% on the PC (16), 4K -> 64x64 aside (their logs).
     - A count that is not a multiple of the pool's threads loses the gain: 8 bands on 6 threads run like 4.

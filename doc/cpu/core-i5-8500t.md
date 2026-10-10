@@ -523,6 +523,33 @@ e8d2d15 against 3e0a1ea, the SSE4.1 rows, six rounds: median of same-round ratio
 MSVC's 4K -> 1080p Grayscale8 alone, six processes of 300 samples: 17.89 to 18.07 ms at 3e0a1ea, 19.10 to 19.32 at
 e8d2d15. clang-cl's: 15.87 to 16.40 and 15.83 to 16.21.
 
+### The weight spread's indices hidden from Clang
+
+4K -> 1080p RGB32, VTune, 600 samples, one process per build: the RGB32 kernel 14.4 s under MSVC, 15.8 s under clang-cl
+and 14.5 s with the indices hidden; its per-column loop 8.9, 9.9 and 9.2 s; instructions retired 136.6, 148.8 and 142.5 G.
+
+Eight alternating rounds without the controls: median of same-round ratios / minimum to minimum.
+
+| Scenario | Hidden against plain clang-cl | Plain clang-cl against MSVC | Hidden against MSVC |
+|---|---:|---:|---:|
+| 101 MP -> 720p RGB32 | -8.4% / -8.6% | +10.0% / +9.8% | +0.1% / +0.4% |
+| 4K -> 64x64 RGB32 | -7.6% / -11.0% | +1.8% / +3.1% | -4.0% / -8.2% |
+| 1080p -> 240p RGB32 | -6.7% / -7.2% | +11.0% / +11.6% | +3.1% / +3.6% |
+| 24 MP -> 1080p RGB32 | -4.4% / -5.7% | +6.9% / +10.4% | +2.3% / +4.1% |
+| 4K -> 1080p RGB32, the display section's | -5.4% / -4.5% | +4.7% / +7.8% | -0.2% / +2.9% |
+| 4K -> 1080p RGB32, the layouts section's | +0.1% / -2.1% | +4.8% / +7.5% | +6.5% / +5.3% |
+| 4K -> 1080p RGB24 | -0.7% / -4.9% | +3.3% / +9.5% | +5.0% / +4.2% |
+| 4K -> 1080p RGBA32 | +2.3% / -0.8% | -2.1% / +4.2% | +2.0% / +3.3% |
+| 720p -> 4K RGBA32, RGB32, RGB24 | +0.9%, -3.1%, -0.2% / -0.1%, -2.8%, -1.3% | -1.1%, -2.5%, -5.0% / +0.3%, -3.0%, -1.0% | -0.6%, -8.5%, -4.9% / +0.2%, -5.8%, -2.3% |
+| 1080p -> 1440p RGB32 | -1.5% / -1.1% | -0.7% / +0.1% | -1.5% / -1.1% |
+| 4K -> 1080p and 720p -> 4K Grayscale8 | +0.8%, -0.4% / +0.9%, -0.5% | -6.5%, -5.9% / -6.7%, -7.5% | -6.0%, -7.8% / -5.9%, -7.9% |
+| Threaded rows | -8.0% to -0.5% / -6.2% to -1.7% | -1.6% to +10.9% | -9.6% to +4.8% |
+
+- The indices read from a writable global, in place of the assembly statement: about half the gain on most rows.
+- The two sections' 4K -> 1080p RGB32 are one job.
+- MSVC's AVX2 kernels with `spreadIndices`: the same instructions, 25 of 24685 differing in the order of a commutative
+  operation's operands or in a register's name.
+
 ### Rounds on this machine
 
 - One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP
