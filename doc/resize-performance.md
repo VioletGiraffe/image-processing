@@ -79,6 +79,26 @@ under the same section headings.
 - A benchmark section's VTune totals include Catch2's clock calibration (`RtlQueryPerformanceCounter`, about 1 s).
 - Instructions retired per cycle tells an instruction-bound loop (above 3 on Coffee Lake) from a stalled one.
 
+## Tools
+
+In `scripts/perf/`, each with `--help`:
+
+| Script | Purpose |
+|---|---|
+| `run_benchmark_rounds.py` | Runs several builds' test executables in alternating rounds, one result file per run, and prints the other processes' CPU time over each run. `--no-controls` leaves out the QImage and SSE4.1 runs, about half of a round. |
+| `compare_benchmark_rounds.py` | Per benchmark, each build against a reference build: the median of same-round ratios and the minimum-to-minimum ratio, the two figures of the per-CPU logs' A/B tables. |
+| `count_boundary_jumps.py` | Counts the kernels' jumps that cross or end on a 32-byte boundary in a `dumpbin` or `objdump` listing. A padded build counts under 1%, a plain one 15-25%. |
+
+The builds to compare are made by hand, the toolchain paths differing per machine:
+
+1. A second worktree beside the checkout, `git worktree add ../image-processing-ab <commit>`: the tests reach the
+   sibling repositories by relative path.
+2. Per variant: delete `tests/build` and `tests/bin`, build, and copy `image-processing-tests` out under the variant's
+   name, the `.pdb` with it. The name becomes the build's label in the two scripts.
+3. A variant that differs by a define takes it through `CL` (the notes on reading the generated code).
+4. A listing with `dumpbin /disasm` needs the `.pdb` beside the executable under the name the executable records,
+   `image-processing-tests.pdb`: one directory per variant.
+
 ## Machines
 
 | | CPU | Caches | Toolchain |
