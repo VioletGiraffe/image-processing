@@ -705,3 +705,12 @@ into strips whose per-strip costs exceed those of the larger ring.
       on the Pi): untried.
     - clang-cl's 4K -> 1080p Grayscale8 moves with code that it does not run: +3-4% when the short-run pass changed
       beside it, -10% to -12% in both builds of experiments 19 and 20. Placement, mechanism not found.
+11. **An AVX level for CPUs with AVX and no AVX2** (Sandy Bridge, Ivy Bridge). A prototype with 256-bit floats and
+    128-bit integer steps, in the SSE4.1 level's place: the i3-2310M's log has its shape and figures.
+    - The i3-2310M: 24 MP -> 1080p, 1080p -> 240p, 4K -> 64x64 and 101 MP -> 720p -16% to -29%; upscales and Grayscale8
+      within noise.
+    - Its single-threaded 4K -> 1080p rows vary by round, -2% to -9%; with threads -9% to -16%. Unexplained. Untried:
+      32-byte-aligned float buffers, and the SSE4.1 chain and block counts.
+    - A core that splits 256-bit operations gains nothing: the 12600K's E-core loses 4-18% on upscales (the PC's log).
+      AMD's CPUs with AVX and no AVX2 split them too; none is measured.
+    - The SSE4.1 kernels VEX-encoded, with no other change: -5% to +4% on the i3-2310M, +5% to +57% on the PC's P-core.
