@@ -68,3 +68,35 @@ def read_functions(path, name_pattern=KERNEL_PATTERN):
                 current[-1].length += _byte_count(line)
     return functions
 
+
+
+def is_padding(instruction):
+    text = f"{instruction.mnemonic} {instruction.operands}"
+    return "nop" in text or instruction.mnemonic == "int3" or text in ("int 3", "xchg %ax,%ax")
+
+
+# The index of the instruction a jump goes to, None for a target outside the function or a computed one
+def jump_target_index(instruction, index_by_address):
+    if not instruction.mnemonic.startswith("j"):
+        return None
+    target = re.match(r"(?:0x)?([0-9A-Fa-f]{5,16})\b", instruction.operands)
+    return index_by_address.get(int(target.group(1), 16)) if target else None
+
+
+# Loops as (first, last) instruction indexes, a loop being a backward jump within the function; outer loops precede the loops they hold
+def find_loops(instructions):
+    index_by_address = {instruction.address: index for index, instruction in enumerate(instructions)}
+    loops = []
+    for index, instruction in enumerate(instructions):
+        target = jump_target_index(instruction, index_by_address)
+        if target is not None and target <= index:
+            loops.append((target, index))
+    return sorted(loops, key=lambda loop: (loop[0], -loop[1]))
+
+
+def is_innermost(loop, loops):
+    return not any(other != loop and other[0] >= loop[0] and other[1] <= loop[1] for other in loops)
+
+
+def references_stack(instruction):
+    return re.search(r"\[(rsp|rbp)\b|\((%rsp|%rbp)", instruction.operands) is not None

@@ -65,7 +65,7 @@ under the same section headings.
   the executable: `objdump -d -C`, or `dumpbin /disasm` with the PDB next to it.
 - Under MSVC the two kernel levels are generated differently: the SSE4.1 source at link time with the rest of the
   project, the AVX2 source by its own compile rule. An inlining decision can differ between them.
-- Two builds' kernels compare by instruction sequence with the `nop`s and jump targets removed.
+- Two builds' kernels compare by instruction sequence with the `nop`s and jump targets removed: `extract_kernels.py`.
 - A variant build takes its define through the `CL` environment variable, set for the msbuild step only: set before
   qmake, it breaks qmake's compiler probe. From Git Bash the value starts with `-D`, as a leading `/` is rewritten into a path.
 - VTune's hardware events need an elevated prompt. With about ten events each is counted throughout; the
@@ -74,7 +74,8 @@ under the same section headings.
 - `-collect uarch-exploration` stopped the 8500T with bugcheck 0xD1 in VTune's sampling driver, `sepdrv5.sys`, during
   its first run. Hotspots in hardware mode has not.
 - Where a kernel's time goes: `-collect hotspots -knob sampling-mode=hw` on one benchmark section, then
-  `-report hotspots -group-by address`, the samples summed over each loop's address range in the `dumpbin` listing.
+  `-report hotspots -group-by address`, the samples summed over each loop's address range in the `dumpbin` listing
+  (`annotate_vtune_hotspots.py`, the full commands in its header).
   Grouped by function or source line, the forced-inline primitives each get their own row and a loop's share is lost.
 - A benchmark section's VTune totals include Catch2's clock calibration (`RtlQueryPerformanceCounter`, about 1 s).
 - Instructions retired per cycle tells an instruction-bound loop (above 3 on Coffee Lake) from a stalled one.
@@ -88,6 +89,8 @@ In `scripts/perf/`, each with `--help`:
 | `run_benchmark_rounds.py` | Runs several builds' test executables in alternating rounds, one result file per run, and prints the other processes' CPU time over each run. `--no-controls` leaves out the QImage and SSE4.1 runs, about half of a round. |
 | `compare_benchmark_rounds.py` | Per benchmark, each build against a reference build: the median of same-round ratios and the minimum-to-minimum ratio, the two figures of the per-CPU logs' A/B tables. |
 | `count_boundary_jumps.py` | Counts the kernels' jumps that cross or end on a 32-byte boundary in a `dumpbin` or `objdump` listing. A padded build counts under 1%, a plain one 15-25%. |
+| `extract_kernels.py` | Prints a listing's kernels in a form two builds diff in: padding dropped, a jump's target as its distance in instructions. `--loops` prints each kernel's loops with their sizes and stack references. |
+| `annotate_vtune_hotspots.py` | Sums a VTune by-address hotspots report over the kernels' loops of a listing, or over each instruction. |
 
 The builds to compare are made by hand, the toolchain paths differing per machine:
 
