@@ -42,13 +42,18 @@ OTHER_FILES += $$PWD/cimageresizer_simd.inl
 	# The generator supplies /Fd to its own compile rules but not to this one, and /Zi without it writes the PDB to
 	# the build's working directory, where the linker will not find it and drops this object's symbols (LNK4099).
 	avx2Compiler.commands = $$QMAKE_CXX -c $$AVX2_CXXFLAGS -Fd$$shell_quote($${OBJECTS_DIR}/) ${QMAKE_FILE_IN} -Fo${QMAKE_FILE_OUT}
-} else:linux:contains(QT_ARCH, x86_64) {
+} else:contains(QT_ARCH, x86_64) {
 	# The option keeps jumps off 32-byte boundaries, as /QIntel-jcc-erratum does: on the Skylake family such a jump is not held
 	# in the decoded cache, and the kernels' speed changes by up to 20% with where their jumps fall.
 	# -fno-lto: the assembler takes the option, and with LTO it runs at the link, where a per-file option is lost.
-	contains(QMAKE_COMPILER, clang): AVX2_KERNEL_FLAGS = -mbranches-within-32B-boundaries
-	else: AVX2_KERNEL_FLAGS = -Wa,-mbranches-within-32B-boundaries
-	avx2Compiler.commands = $(CXX) -c $(CXXFLAGS) $(INCPATH) $$AVX2_KERNEL_FLAGS -fno-lto -o ${QMAKE_FILE_OUT} ${QMAKE_FILE_IN}
+	linux {
+		contains(QMAKE_COMPILER, clang): AVX2_KERNEL_FLAGS = -mbranches-within-32B-boundaries
+		else: AVX2_KERNEL_FLAGS = -Wa,-mbranches-within-32B-boundaries
+		avx2Compiler.commands = $(CXX) -c $(CXXFLAGS) $(INCPATH) $$AVX2_KERNEL_FLAGS -fno-lto -o ${QMAKE_FILE_OUT} ${QMAKE_FILE_IN}
+	}
+	contains(QMAKE_COMPILER, clang_cl) {
+		avx2Compiler.commands = $(CXX) -c $(CXXFLAGS) $(INCPATH) /clang:-mbranches-within-32B-boundaries -fno-lto -Fo${QMAKE_FILE_OUT} ${QMAKE_FILE_IN}
+	}
 }
 
 isEmpty(avx2Compiler.commands) {

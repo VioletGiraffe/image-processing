@@ -468,6 +468,147 @@ The two rows that stand out, six processes each, per-process mean ms:
 
 MSVC's tap loops in the committed build equal the experiment's by instruction and multiply count, in every kernel.
 
+### clang-cl's 4K -> 1080p Grayscale8 with the list: jump placement
+
+The committed list read +6% on this row against 3e0a1ea, and the experiment's inline form did not. Per-process mean ms,
+six processes of 500 samples each unless noted:
+
+| clang-cl build | Range | Median |
+|---|---|---:|
+| 3e0a1ea | 13.15 to 13.95 | 13.50 to 13.75 by session |
+| e8d2d15 | 14.12 to 14.81 | 14.24 to 14.36 by session |
+| e8d2d15, the list's arrays allocated after the source floats | 14.79 to 15.18 | 14.97 |
+| e8d2d15, the source floats' addresses printed | 14.68 to 15.18 | 14.72 |
+| 3e0a1ea, jumps kept off 32-byte boundaries by the linker | 13.39 to 14.27 | 13.65 |
+| e8d2d15, jumps kept off 32-byte boundaries by the linker | 13.16 to 13.93 | 13.49 |
+
+- VTune, two runs of 1200 samples per build: the vertical pass 1.4 s at 3e0a1ea and 1.5 to 2.0 s at e8d2d15; conversion
+  and the horizontal pass 14.1 to 14.3 s and 15.5 s, with fewer instructions retired at e8d2d15. The per-column loop of
+  the 12-tap row pair is the same instructions in both builds, and takes 23.8 s and 26.8 s over the two runs.
+- Jumps of that loop that cross or end on a 32-byte boundary: two at 3e0a1ea and in the experiment's build, on paths
+  taken rarely; three at e8d2d15, two of them taken per output column.
+- Not the buffers' placement: the source floats put at 13 offsets within a page, and the second row's buffer at 6
+  distances from the first, gave 14.6 to 15.2 ms at each, three processes apiece. The addresses a process got by
+  itself do not follow its time.
+- Each change to the kernel source moved every kernel's code: the build with the arrays allocated four lines later
+  differs from e8d2d15 in 127 to 2379 instructions per kernel.
+- `/clang:-mbranches-within-32B-boundaries` on the compile changes nothing in a build with LTO: the executable's code
+  is byte-identical. The linker takes it as `/mllvm:-x86-branches-within-32B-boundaries`.
+
+The AVX2 kernel file through its own rule, padded and without LTO, against e8d2d15 as built before: eight rounds,
+median of same-round ratios / minimum to minimum. "Linker" is e8d2d15 with LTO and the linker's option.
+
+| Scenario | Linker | Own rule |
+|---|---:|---:|
+| 4K -> 1080p Grayscale8 | -7.6% / -6.7% | -9.0% / -8.1% |
+| 4K -> 1080p RGBA32, RGB32, RGB24 | +0.6%, +0.6%, -0.1% / -2.4%, -0.7%, -5.4% | -3.2%, -2.4%, -0.5% / +0.9%, +2.1%, -2.3% |
+| 720p -> 4K RGBA32, RGB32, RGB24, Grayscale8 | +0.4%, +0.8%, -1.3%, -0.8% / -0.9%, +0.1%, -0.8%, -2.2% | -3.6%, -0.9%, -2.4%, -3.8% / -2.2%, -0.9%, -0.6%, -1.8% |
+| 1080p -> 1440p RGB32 | -1.5% / +1.9% | -3.4% / -0.8% |
+| 24 MP -> 1080p, 1080p -> 240p, 4K -> 64x64, 101 MP -> 720p, 8K -> 4K | -2.4% to +0.3% / -1.7% to +1.4% | -2.5% to +0.3% / -2.0% to +0.2% |
+| Threaded rows | -4.9% to +6.5% / -1.8% to +3.1% | -4.7% to -0.2% / -5.2% to +2.6% |
+
+### The vertical taps' list at SSE4.1 on this machine
+
+e8d2d15 against 3e0a1ea, the SSE4.1 rows, six rounds: median of same-round ratios / minimum to minimum.
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 720p -> 4K RGBA32, RGB32 | -9.6%, -9.2% / -8.1%, -6.8% | -6.5%, -5.6% / -3.1%, -4.7% |
+| 720p -> 4K Grayscale8, RGB24 | -11.8%, -11.1% / -10.5%, -10.9% | -4.2%, -1.0% / -5.9%, -2.1% |
+| 1080p -> 1440p RGB32 | -8.1% / -5.6% | +0.9% / +0.3% |
+| 4K -> 1080p Grayscale8 | +5.7% / +5.3% | +1.7% / +0.2% |
+| 4K -> 1080p RGBA32, RGB32, RGB24 | +2.2%, +0.8%, -3.9% / +1.7%, +0.9%, -3.1% | +1.0%, +2.7%, -5.0% / +0.9%, +2.5%, -5.2% |
+| Other downscales | -0.4% to +1.7% | -0.5% to +2.6% |
+
+MSVC's 4K -> 1080p Grayscale8 alone, six processes of 300 samples: 17.89 to 18.07 ms at 3e0a1ea, 19.10 to 19.32 at
+e8d2d15. clang-cl's: 15.87 to 16.40 and 15.83 to 16.21.
+
+### The weight spread's indices hidden from Clang
+
+4K -> 1080p RGB32, VTune, 600 samples, one process per build: the RGB32 kernel 14.4 s under MSVC, 15.8 s under clang-cl
+and 14.5 s with the indices hidden; its per-column loop 8.9, 9.9 and 9.2 s; instructions retired 136.6, 148.8 and 142.5 G.
+
+Eight alternating rounds without the controls: median of same-round ratios / minimum to minimum.
+
+| Scenario | Hidden against plain clang-cl | Plain clang-cl against MSVC | Hidden against MSVC |
+|---|---:|---:|---:|
+| 101 MP -> 720p RGB32 | -8.4% / -8.6% | +10.0% / +9.8% | +0.1% / +0.4% |
+| 4K -> 64x64 RGB32 | -7.6% / -11.0% | +1.8% / +3.1% | -4.0% / -8.2% |
+| 1080p -> 240p RGB32 | -6.7% / -7.2% | +11.0% / +11.6% | +3.1% / +3.6% |
+| 24 MP -> 1080p RGB32 | -4.4% / -5.7% | +6.9% / +10.4% | +2.3% / +4.1% |
+| 4K -> 1080p RGB32, the display section's | -5.4% / -4.5% | +4.7% / +7.8% | -0.2% / +2.9% |
+| 4K -> 1080p RGB32, the layouts section's | +0.1% / -2.1% | +4.8% / +7.5% | +6.5% / +5.3% |
+| 4K -> 1080p RGB24 | -0.7% / -4.9% | +3.3% / +9.5% | +5.0% / +4.2% |
+| 4K -> 1080p RGBA32 | +2.3% / -0.8% | -2.1% / +4.2% | +2.0% / +3.3% |
+| 720p -> 4K RGBA32, RGB32, RGB24 | +0.9%, -3.1%, -0.2% / -0.1%, -2.8%, -1.3% | -1.1%, -2.5%, -5.0% / +0.3%, -3.0%, -1.0% | -0.6%, -8.5%, -4.9% / +0.2%, -5.8%, -2.3% |
+| 1080p -> 1440p RGB32 | -1.5% / -1.1% | -0.7% / +0.1% | -1.5% / -1.1% |
+| 4K -> 1080p and 720p -> 4K Grayscale8 | +0.8%, -0.4% / +0.9%, -0.5% | -6.5%, -5.9% / -6.7%, -7.5% | -6.0%, -7.8% / -5.9%, -7.9% |
+| Threaded rows | -8.0% to -0.5% / -6.2% to -1.7% | -1.6% to +10.9% | -9.6% to +4.8% |
+
+- The indices read from a writable global, in place of the assembly statement: about half the gain on most rows.
+- The two sections' 4K -> 1080p RGB32 are one job.
+- MSVC's AVX2 kernels with `spreadIndices`: the same instructions, 25 of 24685 differing in the order of a commutative
+  operation's operands or in a register's name.
+
+### The conversion's tail loop kept scalar under Clang
+
+clang-cl, against 17d2fa0: median of same-round ratios / minimum to minimum. AVX2: eight rounds without the controls.
+SSE4.1: six rounds with them.
+
+| Scenario | AVX2 | SSE4.1 |
+|---|---:|---:|
+| 24 MP -> 1080p RGB32 | -2.2% / -5.8% | -0.6% / -0.1% |
+| 4K -> 1080p RGB32, the display section's | -2.9% / -0.2% | -0.6% / -0.1% |
+| 1080p -> 240p RGB32 | -2.5% / -1.4% | -0.4% / -0.6% |
+| 4K -> 64x64, 101 MP -> 720p | -2.6%, -1.4% / -0.3%, -1.5% | -0.2%, 0.0% / -0.5%, +0.1% |
+| 4K -> 1080p RGB32, RGB24, RGBA32 | +1.5%, -2.2%, 0.0% / +0.3%, -0.3%, +2.5% | -0.8%, -3.9%, -0.3% / -0.4%, -3.8%, -0.7% |
+| 4K -> 1080p Grayscale8 | +0.7% / +0.4%; eight processes of 300 samples -2.7% / -1.3% | -1.3% / -1.9% |
+| 720p -> 4K Grayscale8 | +2.8% / +3.0%; eight processes of 300 samples +2.5% / +3.5% | -2.1% / -2.5% |
+| 720p -> 4K RGBA32, RGB32, RGB24 | -0.2%, -1.5%, -2.0% / -3.3%, -3.9%, -0.6% | +0.3%, +2.5%, +0.1% / -0.4%, -0.5%, +1.3% |
+| 1080p -> 1440p RGB32 | -0.4% / -2.3% | +0.9% / +1.7% |
+| Threaded rows | -2.5% to +3.0% / -4.6% to +1.3% | -4.5% to +0.8% / -3.9% to +1.4% |
+
+- Against MSVC in the AVX2 session: 24 MP -> 1080p -0.3% / +0.5%, 4K -> 1080p RGB32 +0.3% / -1.5% and -1.2% / +1.2%,
+  1080p -> 240p -0.8% / +0.2%, 101 MP -> 720p -0.2% / -0.2%, 4K -> 64x64 -8.3% / -8.6%.
+- The RGB32 kernel, 4K -> 1080p, VTune: constant loads executed 11 -> 5, instructions retired 142.5 -> 140.8 G.
+- Kernel sizes: the RGB32 one 2123 -> 1884 instructions, the one-channel four-tap one 3485 -> 2441.
+- 720p -> 4K Grayscale8, VTune, 2000 samples: the horizontal four-column loop 55 instructions with 5 stack accesses and
+  3.92 s before, 61 with 7 and 4.32 s after; the kernel 8.85 and 9.06 s.
+- MSVC's AVX2 kernels: identical. Its rows in the same rounds, one build against the other: within 2% by minimum.
+
+### MSVC against clang-cl at SSE4.1, and the SSE4.1 kernels padded
+
+b1395f9. Six alternating rounds with the controls, the SSE4.1 rows, all against the plain MSVC build: median of
+same-round ratios / minimum to minimum. "Padded": jumps kept off 32-byte boundaries in the SSE4.1 kernels too, MSVC
+by `/QIntel-jcc-erratum` on every source, clang-cl by the linker's `/mllvm:-x86-branches-within-32B-boundaries`.
+
+| Scenario | MSVC, ms | MSVC padded | clang-cl | clang-cl padded |
+|---|---:|---:|---:|---:|
+| 4K -> 1080p RGB24 | 37.75 | -1.6% / -1.9% | +10.0% / +8.8% | +5.7% / +5.2% |
+| 4K -> 1080p RGB32 | 36.97 | -2.5% / -2.8% | +3.4% / +4.0% | +3.2% / +3.9% |
+| 4K -> 1080p RGB32, the display section's | 36.88 | -2.8% / -2.6% | +3.8% / +3.4% | +4.0% / +4.0% |
+| 4K -> 1080p RGBA32 | 43.58 | -4.5% / -4.7% | -2.1% / -2.0% | -1.8% / -2.7% |
+| 4K -> 1080p Grayscale8 | 20.21 | -14.2% / -15.3% | -19.4% / -21.0% | -20.7% / -20.7% |
+| 24 MP -> 1080p, 101 MP -> 720p | 87.40, 326.18 | -0.6%, -0.8% / +0.1%, -0.9% | +1.3%, +1.6% / +1.3%, +1.8% | +0.8%, +0.5% / +1.3%, +0.7% |
+| 1080p -> 240p, 4K -> 64x64 | 7.17, 23.67 | -0.3%, -1.1% / -0.2%, -1.2% | +1.1%, +0.6% / +1.4%, +0.1% | +1.4%, -0.4% / +1.6%, -0.4% |
+| 720p -> 4K RGBA32, RGB32, RGB24 | 20.95, 19.53, 18.03 | +2.3%, +4.5%, -1.3% / +1.0%, -0.2%, -1.4% | +5.9%, +2.4%, +2.0% / +3.1%, -1.6%, +2.3% | +5.0%, +1.3%, -0.6% / +3.4%, -1.7%, +0.1% |
+| 720p -> 4K Grayscale8 | 6.35 | -1.0% / -1.0% | -6.3% / -6.6% | -7.1% / -6.5% |
+| 1080p -> 1440p RGB32 | 13.79 | -0.5% / -0.9% | -2.6% / -2.6% | -2.1% / -1.9% |
+
+The padded builds' RGB32 kernel on 4K -> 1080p, VTune, 300 samples, two runs each, MSVC / clang-cl:
+
+| | Seconds | Instructions retired |
+|---|---|---|
+| Kernel | 10.68, 10.73 / 11.39, 11.24 | 137.7 G / 141.4 G |
+| Per-column loop | 6.88, 6.91 / 7.26, 7.35 | 97 G / 100 G |
+| Its tap loop: 39 and 38 instructions, the same operations | 3.52, 3.62 / 3.46, 3.53 | 48.8 G / 47.7 G |
+| Vertical step | 2.21, 2.17 / 2.24, 2.09 | 25-26 G / 24.8 G |
+
+- clang-cl's deficit is the per-column code around the tap loop, 0.45 s, and the conversion, 0.2 s.
+- Per column, outside the tap loop: clang-cl loads 9 values from the stack and copies two accumulators and two
+  general registers; MSVC loads 5.
+- The unpadded RGB24 kernels: 19 of 107 conditional jumps on a boundary under clang-cl, 23 of 87 under MSVC.
+
 ### Rounds on this machine
 
 - One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP

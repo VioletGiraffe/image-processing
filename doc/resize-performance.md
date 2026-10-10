@@ -5,7 +5,8 @@ The measurements behind the resizer's design, and the experiments that lost. Ben
 the table. Every table names the commit it was measured at: re-measure after changing the resizer.
 
 This document holds what the design rests on, with headline figures. The full tables are in the per-CPU logs in `doc/cpu/`,
-under the same section headings.
+under the same section headings. How far the kernels run from the hardware's multiply-add peak, and what the distance
+consists of, is in [throughput-ceiling.md](throughput-ceiling.md).
 
 ## Reading the numbers
 
@@ -45,8 +46,12 @@ under the same section headings.
 - A second clang-cl variant built by jom in one shell session reused the first's objects, the outputs deleted in
   between: its build took 10 s. One session per variant, with the kernel sources' timestamps touched.
 - An A/B table's rows that the change cannot reach are its control: a "gain" no larger than their spread is not one.
-- A row can move with code it does not run: clang-cl's 4K -> 1080p Grayscale8 by 10-12% (open lead 18). A change read
-  from one row needs that row to run the changed code.
+- A row can move with code it does not run, where the change moves its jumps (the sections on jumps and 32-byte
+  boundaries). A change read from one row needs that row to run the changed code.
+- clang-cl's AVX2 kernels were built without that padding up to e8d2d15: on the 8500T each of their rows up to that
+  commit carries several percent of jump placement.
+- The SSE4.1 kernels are not padded, and the 8500T runs them only when the benchmark caps the level: its SSE4.1 rows
+  carry jump placement, up to 14% on one row. An SSE4.1 change is judged on the i3-2310M or the N4100.
 - A process on the 8500T lands in one of two states about 8% apart, on an upscale's vertical pass: six processes of one
   binary gave per-process means of 16.2-16.7 or 17.4-18.2 ms. A single run of each variant can show either. The cause
   is not known.
@@ -63,17 +68,43 @@ under the same section headings.
   the executable: `objdump -d -C`, or `dumpbin /disasm` with the PDB next to it.
 - Under MSVC the two kernel levels are generated differently: the SSE4.1 source at link time with the rest of the
   project, the AVX2 source by its own compile rule. An inlining decision can differ between them.
-- Two builds' kernels compare by instruction sequence with the `nop`s and jump targets removed.
+- Two builds' kernels compare by instruction sequence with the `nop`s and jump targets removed: `extract_kernels.py`.
 - A variant build takes its define through the `CL` environment variable, set for the msbuild step only: set before
   qmake, it breaks qmake's compiler probe. From Git Bash the value starts with `-D`, as a leading `/` is rewritten into a path.
 - VTune's hardware events need an elevated prompt. With about ten events each is counted throughout; the
   `uarch-exploration` preset rotates some 190, and its totals came out inconsistent. `-report hw-events -group-by function`
   separates instantiations of one template.
+- `-collect uarch-exploration` stopped the 8500T with bugcheck 0xD1 in VTune's sampling driver, `sepdrv5.sys`, during
+  its first run. Hotspots in hardware mode has not.
 - Where a kernel's time goes: `-collect hotspots -knob sampling-mode=hw` on one benchmark section, then
-  `-report hotspots -group-by address`, the samples summed over each loop's address range in the `dumpbin` listing.
+  `-report hotspots -group-by address`, the samples summed over each loop's address range in the `dumpbin` listing
+  (`annotate_vtune_hotspots.py`, the full commands in its header).
   Grouped by function or source line, the forced-inline primitives each get their own row and a loop's share is lost.
 - A benchmark section's VTune totals include Catch2's clock calibration (`RtlQueryPerformanceCounter`, about 1 s).
 - Instructions retired per cycle tells an instruction-bound loop (above 3 on Coffee Lake) from a stalled one.
+
+## Tools
+
+In `scripts/perf/`, each with `--help`:
+
+| Script | Purpose |
+|---|---|
+| `run_benchmark_rounds.py` | Runs several builds' test executables in alternating rounds, one result file per run, and prints the other processes' CPU time over each run. `--no-controls` leaves out the QImage and SSE4.1 runs, about half of a round. |
+| `compare_benchmark_rounds.py` | Per benchmark, each build against a reference build: the median of same-round ratios and the minimum-to-minimum ratio, the two figures of the per-CPU logs' A/B tables. |
+| `count_boundary_jumps.py` | Counts the kernels' jumps that cross or end on a 32-byte boundary in a `dumpbin` or `objdump` listing. A padded build counts under 1%, a plain one 15-25%. |
+| `extract_kernels.py` | Prints a listing's kernels in a form two builds diff in: padding dropped, a jump's target as its distance in instructions. `--loops` prints each kernel's loops with their sizes and stack references. |
+| `annotate_vtune_hotspots.py` | Sums a VTune by-address hotspots report over the kernels' loops of a listing, or over each instruction. |
+| `multiply_add_ceiling.cpp` | A standalone program: the two passes' multiply-adds without the kernel's bookkeeping, and other forms of the horizontal pass. Its header has the build commands. |
+
+The builds to compare are made by hand, the toolchain paths differing per machine:
+
+1. A second worktree beside the checkout, `git worktree add ../image-processing-ab <commit>`: the tests reach the
+   sibling repositories by relative path.
+2. Per variant: delete `tests/build` and `tests/bin`, build, and copy `image-processing-tests` out under the variant's
+   name, the `.pdb` with it. The name becomes the build's label in the two scripts.
+3. A variant that differs by a define takes it through `CL` (the notes on reading the generated code).
+4. A listing with `dumpbin /disasm` needs the `.pdb` beside the executable under the name the executable records,
+   `image-processing-tests.pdb`: one directory per variant.
 
 ## Machines
 
@@ -296,9 +327,12 @@ boundary out of the decoded cache. There the kernels' speed follows where their 
 moves them: on the 8500T two GCC builds of one kernel differ by 5-8%, and one source change read as +6% and -6% on the
 same row at two placements.
 
-On x64 Linux the AVX2 kernel file compiles through its own rule with the assembler's `-mbranches-within-32B-boundaries`.
+On x64 Linux, and under clang-cl, the AVX2 kernel file compiles through its own rule with the assembler's
+`-mbranches-within-32B-boundaries`.
 - 8500T, GCC: the padded build is 2-11% faster than a plain build whose jumps fell badly, 0-7% faster than one whose
   jumps fell well. Clang: within +3% to -4% of a plain build that fell well.
+- 8500T, clang-cl: 4K -> 1080p Grayscale8 -9% against a plain build with two such jumps on its per-column path, the
+  other rows 0% to -4%. The AVX2 kernels' jumps and calls on a boundary: 755 of 4419 plain, 101 of 4535 padded.
 - PC (Alder Lake, GCC in the VM, 14 rounds): the padding costs 5% on the RGB32 upscales, 2-4% on the 4K -> 1080p RGB32
   and Grayscale8 downscales and 101 MP -> 720p, and gains 2% on the RGBA32 upscale. The older CPUs' gain was preferred.
   AMD is unmeasured.
@@ -402,6 +436,34 @@ touched either window.
 - CI: downscales -5% to -10% on Neoverse-N2 under GCC and Clang, threaded ones up to -17%; Clang's AVX2 downscales on
   the EPYC 7763 -4% to -10%.
 
+### The weight spread's indices hidden from Clang
+
+`WeightSpreader` at AVX2 is one `vpermps` per chain. Clang, knowing the indices, emits `vshufps` + `vpermpd` for it: 12
+shuffles per column of a 12-tap run where MSVC has 6, all on the one port that runs shuffles. `spreadIndices`
+passes the indices through an empty inline-assembly statement under Clang, which then holds them in registers and emits
+the `vpermps`.
+
+- 8500T, clang-cl, 8 rounds: 101 MP -> 720p -8%, 4K -> 64x64 -8% to -11%, 1080p -> 240p -7%, 24 MP -> 1080p -4% to -6%,
+  4K -> 1080p RGB32 -5% in one section and level in the other, threaded rows -1% to -8%. Grayscale8 has no spread.
+- MSVC's kernels keep their instruction sequence. Clang on Linux and the 2-float spread are untimed.
+
+### The conversion's tail loop kept scalar under Clang
+
+`convertPixelsToFloats` ends in a scalar loop over the few pixels its 16-byte blocks leave. Clang vectorizes it:
+hundreds of instructions per kernel for fewer pixels than one block holds. At AVX2 that code's four shuffle constants
+also stay in registers through the strip's loop, where the column loop's chains evict them: four reloads per column.
+`IMAGE_PROCESSING_SCALAR_LOOP` keeps the loop scalar under Clang. MSVC's and GCC's kernels are unchanged.
+
+| Clang build | Kernels' instructions | Result, 8 rounds |
+|---|---|---|
+| clang-cl AVX2, 8500T | 12-30% fewer per kernel | RGB32 downscales -1.4% to -2.9%, 4K -> 1080p Grayscale8 -1% to -3%, 720p -> 4K Grayscale8 +2.5% to +3.5% |
+| clang-cl SSE4.1, 8500T | | 4K -> 1080p RGB24 -4%, Grayscale8 -1% to -2.5%, the rest within 1% |
+| Clang NEON, Pi | 29184 -> 19660 over all kernels | RGB32 downscales -1.6% to -5.7%, the rest within 1%, 720p -> 4K RGB24 +1% to +2% |
+
+- With the spread's indices hidden as well, clang-cl at AVX2 is level with MSVC on the RGB32 downscales.
+- A layout without a fixed pixel stride converts every pixel in this loop, now scalar under Clang: unmeasured.
+- The Grayscale8 upscale's loss is open lead 14.
+
 ### Output bytes packed without a clamp
 
 The vertical pass capped its sums at 255 before converting them: `packus_epi16` reads its input as signed, so a word past
@@ -453,8 +515,7 @@ Each primitives header states its level's form in `verticalTapsListed`. Both for
   AVX2 and on the i3-2310M, worse on the N4100 and the Pi at 32 bytes.
 - Clang at NEON turns a `float` weight's load and broadcast into one `ld1r`, an operation more on the FP pipelines per
   tap; GCC keeps the scalar load and multiplies by its lane. Clang's `float` list is the worse of its two for that.
-- The restructured code matches the experiments' inline form on the 8500T, the i3-2310M and the Pi, except clang-cl's
-  4K -> 1080p Grayscale8 at AVX2 (open lead 10).
+- The restructured code matches the experiments' inline form on the 8500T, the i3-2310M and the Pi.
 
 ### The horizontal filter takes the source buffers' range by value
 
@@ -664,9 +725,9 @@ into strips whose per-strip costs exceed those of the larger ring.
 9. **The PC's only run since 0bd90e4 is a6c69e7, in its band-count section:** no step between the two is measured
    there on its own. Its MSVC upscale rows are the placement-sensitive ones.
 10. **What the vertical taps' forms leave behind** (their section):
-    - clang-cl's 4K -> 1080p Grayscale8 at AVX2 is 7% slower with the committed list than with the experiment's inline
-      form of the same algorithm: six processes of each, none overlapping. MSVC's listings show the same tap loops in
-      both. clang-cl's were not read.
+    - MSVC's 4K -> 1080p Grayscale8 at SSE4.1 is 5-7% slower with the list on the 8500T, and on no other machine: jump
+      placement. Padded like the AVX2 kernels, that row is 14% faster (its log). No CPU with the erratum runs these kernels
+      outside the benchmark.
     - The N4100's downscales pay 2-4% for the list at SSE4.1. A form chosen by core, not by level, would avoid it.
     - GCC at NEON loses 3% and 5.5% on the RGB32 and RGB24 upscales with the first tap assigned, where Clang gains.
       Its tap loop is as Clang's; the rest of its step was not read.
@@ -682,9 +743,17 @@ into strips whose per-strip costs exceed those of the larger ring.
     - Both passes cost the same per multiply-add, so filtering vertically first on downscales would gain nothing.
     - 16-bit fixed-point kernels would drop the conversion, halve the temp rows' bytes and double the multiply-adds
       per instruction.
-14. **MSVC against clang-cl at AVX2 on the 8500T:** MSVC ahead by 5-15% on the 3-channel downscales, clang-cl by 3-7% on
-    Grayscale8. By parts (its log), clang-cl loses in the horizontal pass, 10-40% on 3- and 4-channel rows: it spreads a
-    block's weights with two shuffles per chain where MSVC emits one permute. No source form found that changes it.
+14. **MSVC against clang-cl on the 8500T.** At AVX2, with the spread's indices hidden and the conversion's tail loop
+    scalar: level on the RGB32 downscales, clang-cl ahead by 4-8% on Grayscale8.
+    - clang-cl's one-channel four-column loop is short of general registers: 55 instructions with 5 stack accesses, and
+      61 with 7 once the tail loop is scalar, the added ones register moves and reloads. 720p -> 4K Grayscale8 loses
+      2.5-3.5% to that. Fewer values live across that loop would settle it, perhaps under MSVC too: untried.
+    - At SSE4.1 on the 8500T, both compilers' kernels padded: MSVC ahead by 6-7% on 4K -> 1080p RGB32 and RGB24, 3% on
+      RGBA32, within 2% elsewhere; unpadded, RGB24 reads 4 points worse for clang-cl. The kernels retire the same
+      instructions within 3% and their tap loops match. clang-cl's per-column code around them reloads 9 values from
+      the stack where MSVC's reloads 5, and copies registers: no single cause, no source form tried.
+    - The i3-2310M, the SSE4.1 CPU without the erratum, had MSVC ahead by 7-9% on those rows at e8d2d15: not remeasured
+      since the tail loop went scalar.
 15. **The cap of 4 bands leaves threads idle:** a band per thread takes 18-29% off the threaded rows on the 8500T (6
     bands) and 21-36% on the PC (16), 4K -> 64x64 aside (their logs).
     - A count that is not a multiple of the pool's threads loses the gain: 8 bands on 6 threads run like 4.
@@ -703,9 +772,11 @@ into strips whose per-strip costs exceed those of the larger ring.
     - The vertical pass reads no state through a structure in its tap loop: nothing to take by value there.
     - NEON stores a 3-float temp pixel through the stack, a 16-byte store then 8 and 4 bytes copied out (GCC's listing
       on the Pi): untried.
-    - clang-cl's 4K -> 1080p Grayscale8 moves with code that it does not run: +3-4% when the short-run pass changed
-      beside it, -10% to -12% in both builds of experiments 19 and 20. Placement, mechanism not found.
-11. **An AVX level for CPUs with AVX and no AVX2** (Sandy Bridge, Ivy Bridge). A prototype with 256-bit floats and
+19. **A tap per multiply-add with the row pair's pixels interleaved** ([throughput-ceiling.md](throughput-ceiling.md)): the
+    horizontal arithmetic alone, against the kernel's form, is +3% to +17% on the 8500T, +17% to +29% on the 12600K's
+    P-cores and +61% to +73% on its E-cores. Untried in the kernel, where a third of the loop is bookkeeping it keeps and
+    the conversion would write the pair's pixels alternately.
+20. **An AVX level for CPUs with AVX and no AVX2** (Sandy Bridge, Ivy Bridge). A prototype with 256-bit floats and
     128-bit integer steps, in the SSE4.1 level's place: the i3-2310M's log has its shape and figures.
     - The i3-2310M: 24 MP -> 1080p, 1080p -> 240p, 4K -> 64x64 and 101 MP -> 720p -16% to -29%; upscales and Grayscale8
       within noise.

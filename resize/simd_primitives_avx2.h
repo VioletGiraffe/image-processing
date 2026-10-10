@@ -100,16 +100,27 @@ namespace ImageProcessing::Detail::Avx2
 	template <size_t FloatsPerPixel>
 	class WeightSpreader;
 
+	// A WeightSpreader's vpermps indices.
+	// Hidden from Clang's optimizer: it rewrites a vpermps whose indices it knows as vshufps + vpermpd, two shuffles for one.
+	IMAGE_PROCESSING_SIMD_INLINE __m256i spreadIndices(int i0, int i1, int i2, int i3, int i4, int i5, int i6, int i7) noexcept
+	{
+		__m256i indices = _mm256_setr_epi32(i0, i1, i2, i3, i4, i5, i6, i7);
+#ifdef __clang__
+		__asm__ volatile("" : "+x"(indices));
+#endif
+		return indices;
+	}
+
 	template <>
 	class WeightSpreader<4>
 	{
 	public:
 		IMAGE_PROCESSING_SIMD_INLINE WeightSpreader() noexcept :
 			_pairIndices{
-				_mm256_setr_epi32(0, 0, 0, 0, 1, 1, 1, 1),
-				_mm256_setr_epi32(2, 2, 2, 2, 3, 3, 3, 3),
-				_mm256_setr_epi32(4, 4, 4, 4, 5, 5, 5, 5),
-				_mm256_setr_epi32(6, 6, 6, 6, 7, 7, 7, 7) }
+				spreadIndices(0, 0, 0, 0, 1, 1, 1, 1),
+				spreadIndices(2, 2, 2, 2, 3, 3, 3, 3),
+				spreadIndices(4, 4, 4, 4, 5, 5, 5, 5),
+				spreadIndices(6, 6, 6, 6, 7, 7, 7, 7) }
 		{}
 
 		template <size_t Part>
@@ -129,8 +140,8 @@ namespace ImageProcessing::Detail::Avx2
 	public:
 		IMAGE_PROCESSING_SIMD_INLINE WeightSpreader() noexcept :
 			_quadIndices{
-				_mm256_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3),
-				_mm256_setr_epi32(4, 4, 5, 5, 6, 6, 7, 7) }
+				spreadIndices(0, 0, 1, 1, 2, 2, 3, 3),
+				spreadIndices(4, 4, 5, 5, 6, 6, 7, 7) }
 		{}
 
 		template <size_t Part>

@@ -143,8 +143,10 @@ namespace
 
 			// An SSE4.1 run only where the default one takes the AVX2 kernels: scaled, on an AVX2 CPU.
 			// report_benchmark_ratios.py matches an SSE4.1 run to its default run by the scenario name.
+			// IMAGE_PROCESSING_BENCHMARK_NO_CONTROLS: only the default-level resizer runs, for comparing builds of it
+			const bool withControls = !qEnvironmentVariableIsSet("IMAGE_PROCESSING_BENCHMARK_NO_CONTROLS");
 			std::vector<std::optional<SimdLevel>> simdCaps{ std::nullopt };
-			if (supportedSimdLevels().size() > 1 && (sourceWidth != destWidth || sourceHeight != destHeight))
+			if (withControls && supportedSimdLevels().size() > 1 && (sourceWidth != destWidth || sourceHeight != destHeight))
 				simdCaps.push_back(SimdLevel::Sse41);
 
 			const auto resizerName = [name](std::optional<SimdLevel> simdCap) {
@@ -175,7 +177,7 @@ namespace
 			}
 
 			// The serial run of the same scenario provides the QImage control; report_benchmark_ratios.py matches it by stripping the suffix
-			if (threadPool)
+			if (threadPool || !withControls)
 				return;
 
 			if (sourceWidth == destWidth && sourceHeight == destHeight)
