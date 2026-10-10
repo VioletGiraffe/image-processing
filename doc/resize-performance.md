@@ -45,8 +45,10 @@ under the same section headings.
 - A second clang-cl variant built by jom in one shell session reused the first's objects, the outputs deleted in
   between: its build took 10 s. One session per variant, with the kernel sources' timestamps touched.
 - An A/B table's rows that the change cannot reach are its control: a "gain" no larger than their spread is not one.
-- A row can move with code it does not run: clang-cl's 4K -> 1080p Grayscale8 by 10-12% (open lead 18). A change read
-  from one row needs that row to run the changed code.
+- A row can move with code it does not run, where the change moves its jumps (the sections on jumps and 32-byte
+  boundaries). A change read from one row needs that row to run the changed code.
+- clang-cl's AVX2 kernels were built without that padding up to e8d2d15: on the 8500T each of their rows up to that
+  commit carries several percent of jump placement.
 - A process on the 8500T lands in one of two states about 8% apart, on an upscale's vertical pass: six processes of one
   binary gave per-process means of 16.2-16.7 or 17.4-18.2 ms. A single run of each variant can show either. The cause
   is not known.
@@ -69,6 +71,8 @@ under the same section headings.
 - VTune's hardware events need an elevated prompt. With about ten events each is counted throughout; the
   `uarch-exploration` preset rotates some 190, and its totals came out inconsistent. `-report hw-events -group-by function`
   separates instantiations of one template.
+- `-collect uarch-exploration` stopped the 8500T with bugcheck 0xD1 in VTune's sampling driver, `sepdrv5.sys`, during
+  its first run. Hotspots in hardware mode has not.
 - Where a kernel's time goes: `-collect hotspots -knob sampling-mode=hw` on one benchmark section, then
   `-report hotspots -group-by address`, the samples summed over each loop's address range in the `dumpbin` listing.
   Grouped by function or source line, the forced-inline primitives each get their own row and a loop's share is lost.
@@ -296,9 +300,12 @@ boundary out of the decoded cache. There the kernels' speed follows where their 
 moves them: on the 8500T two GCC builds of one kernel differ by 5-8%, and one source change read as +6% and -6% on the
 same row at two placements.
 
-On x64 Linux the AVX2 kernel file compiles through its own rule with the assembler's `-mbranches-within-32B-boundaries`.
+On x64 Linux, and under clang-cl, the AVX2 kernel file compiles through its own rule with the assembler's
+`-mbranches-within-32B-boundaries`.
 - 8500T, GCC: the padded build is 2-11% faster than a plain build whose jumps fell badly, 0-7% faster than one whose
   jumps fell well. Clang: within +3% to -4% of a plain build that fell well.
+- 8500T, clang-cl: 4K -> 1080p Grayscale8 -9% against a plain build with two such jumps on its per-column path, the
+  other rows 0% to -4%. The AVX2 kernels' jumps and calls on a boundary: 755 of 4419 plain, 101 of 4535 padded.
 - PC (Alder Lake, GCC in the VM, 14 rounds): the padding costs 5% on the RGB32 upscales, 2-4% on the 4K -> 1080p RGB32
   and Grayscale8 downscales and 101 MP -> 720p, and gains 2% on the RGBA32 upscale. The older CPUs' gain was preferred.
   AMD is unmeasured.
@@ -453,8 +460,7 @@ Each primitives header states its level's form in `verticalTapsListed`. Both for
   AVX2 and on the i3-2310M, worse on the N4100 and the Pi at 32 bytes.
 - Clang at NEON turns a `float` weight's load and broadcast into one `ld1r`, an operation more on the FP pipelines per
   tap; GCC keeps the scalar load and multiplies by its lane. Clang's `float` list is the worse of its two for that.
-- The restructured code matches the experiments' inline form on the 8500T, the i3-2310M and the Pi, except clang-cl's
-  4K -> 1080p Grayscale8 at AVX2 (open lead 10).
+- The restructured code matches the experiments' inline form on the 8500T, the i3-2310M and the Pi.
 
 ### The horizontal filter takes the source buffers' range by value
 
@@ -664,9 +670,8 @@ into strips whose per-strip costs exceed those of the larger ring.
 9. **The PC's only run since 0bd90e4 is a6c69e7, in its band-count section:** no step between the two is measured
    there on its own. Its MSVC upscale rows are the placement-sensitive ones.
 10. **What the vertical taps' forms leave behind** (their section):
-    - clang-cl's 4K -> 1080p Grayscale8 at AVX2 is 7% slower with the committed list than with the experiment's inline
-      form of the same algorithm: six processes of each, none overlapping. MSVC's listings show the same tap loops in
-      both. clang-cl's were not read.
+    - MSVC's 4K -> 1080p Grayscale8 at SSE4.1 is 5-7% slower with the list on the 8500T, and on no other machine. The
+      SSE4.1 kernels are not padded, so jump placement is a candidate: untested.
     - The N4100's downscales pay 2-4% for the list at SSE4.1. A form chosen by core, not by level, would avoid it.
     - GCC at NEON loses 3% and 5.5% on the RGB32 and RGB24 upscales with the first tap assigned, where Clang gains.
       Its tap loop is as Clang's; the rest of its step was not read.
@@ -703,5 +708,3 @@ into strips whose per-strip costs exceed those of the larger ring.
     - The vertical pass reads no state through a structure in its tap loop: nothing to take by value there.
     - NEON stores a 3-float temp pixel through the stack, a 16-byte store then 8 and 4 bytes copied out (GCC's listing
       on the Pi): untried.
-    - clang-cl's 4K -> 1080p Grayscale8 moves with code that it does not run: +3-4% when the short-run pass changed
-      beside it, -10% to -12% in both builds of experiments 19 and 20. Placement, mechanism not found.

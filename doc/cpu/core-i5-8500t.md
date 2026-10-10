@@ -468,6 +468,61 @@ The two rows that stand out, six processes each, per-process mean ms:
 
 MSVC's tap loops in the committed build equal the experiment's by instruction and multiply count, in every kernel.
 
+### clang-cl's 4K -> 1080p Grayscale8 with the list: jump placement
+
+The committed list read +6% on this row against 3e0a1ea, and the experiment's inline form did not. Per-process mean ms,
+six processes of 500 samples each unless noted:
+
+| clang-cl build | Range | Median |
+|---|---|---:|
+| 3e0a1ea | 13.15 to 13.95 | 13.50 to 13.75 by session |
+| e8d2d15 | 14.12 to 14.81 | 14.24 to 14.36 by session |
+| e8d2d15, the list's arrays allocated after the source floats | 14.79 to 15.18 | 14.97 |
+| e8d2d15, the source floats' addresses printed | 14.68 to 15.18 | 14.72 |
+| 3e0a1ea, jumps kept off 32-byte boundaries by the linker | 13.39 to 14.27 | 13.65 |
+| e8d2d15, jumps kept off 32-byte boundaries by the linker | 13.16 to 13.93 | 13.49 |
+
+- VTune, two runs of 1200 samples per build: the vertical pass 1.4 s at 3e0a1ea and 1.5 to 2.0 s at e8d2d15; conversion
+  and the horizontal pass 14.1 to 14.3 s and 15.5 s, with fewer instructions retired at e8d2d15. The per-column loop of
+  the 12-tap row pair is the same instructions in both builds, and takes 23.8 s and 26.8 s over the two runs.
+- Jumps of that loop that cross or end on a 32-byte boundary: two at 3e0a1ea and in the experiment's build, on paths
+  taken rarely; three at e8d2d15, two of them taken per output column.
+- Not the buffers' placement: the source floats put at 13 offsets within a page, and the second row's buffer at 6
+  distances from the first, gave 14.6 to 15.2 ms at each, three processes apiece. The addresses a process got by
+  itself do not follow its time.
+- Each change to the kernel source moved every kernel's code: the build with the arrays allocated four lines later
+  differs from e8d2d15 in 127 to 2379 instructions per kernel.
+- `/clang:-mbranches-within-32B-boundaries` on the compile changes nothing in a build with LTO: the executable's code
+  is byte-identical. The linker takes it as `/mllvm:-x86-branches-within-32B-boundaries`.
+
+The AVX2 kernel file through its own rule, padded and without LTO, against e8d2d15 as built before: eight rounds,
+median of same-round ratios / minimum to minimum. "Linker" is e8d2d15 with LTO and the linker's option.
+
+| Scenario | Linker | Own rule |
+|---|---:|---:|
+| 4K -> 1080p Grayscale8 | -7.6% / -6.7% | -9.0% / -8.1% |
+| 4K -> 1080p RGBA32, RGB32, RGB24 | +0.6%, +0.6%, -0.1% / -2.4%, -0.7%, -5.4% | -3.2%, -2.4%, -0.5% / +0.9%, +2.1%, -2.3% |
+| 720p -> 4K RGBA32, RGB32, RGB24, Grayscale8 | +0.4%, +0.8%, -1.3%, -0.8% / -0.9%, +0.1%, -0.8%, -2.2% | -3.6%, -0.9%, -2.4%, -3.8% / -2.2%, -0.9%, -0.6%, -1.8% |
+| 1080p -> 1440p RGB32 | -1.5% / +1.9% | -3.4% / -0.8% |
+| 24 MP -> 1080p, 1080p -> 240p, 4K -> 64x64, 101 MP -> 720p, 8K -> 4K | -2.4% to +0.3% / -1.7% to +1.4% | -2.5% to +0.3% / -2.0% to +0.2% |
+| Threaded rows | -4.9% to +6.5% / -1.8% to +3.1% | -4.7% to -0.2% / -5.2% to +2.6% |
+
+### The vertical taps' list at SSE4.1 on this machine
+
+e8d2d15 against 3e0a1ea, the SSE4.1 rows, six rounds: median of same-round ratios / minimum to minimum.
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 720p -> 4K RGBA32, RGB32 | -9.6%, -9.2% / -8.1%, -6.8% | -6.5%, -5.6% / -3.1%, -4.7% |
+| 720p -> 4K Grayscale8, RGB24 | -11.8%, -11.1% / -10.5%, -10.9% | -4.2%, -1.0% / -5.9%, -2.1% |
+| 1080p -> 1440p RGB32 | -8.1% / -5.6% | +0.9% / +0.3% |
+| 4K -> 1080p Grayscale8 | +5.7% / +5.3% | +1.7% / +0.2% |
+| 4K -> 1080p RGBA32, RGB32, RGB24 | +2.2%, +0.8%, -3.9% / +1.7%, +0.9%, -3.1% | +1.0%, +2.7%, -5.0% / +0.9%, +2.5%, -5.2% |
+| Other downscales | -0.4% to +1.7% | -0.5% to +2.6% |
+
+MSVC's 4K -> 1080p Grayscale8 alone, six processes of 300 samples: 17.89 to 18.07 ms at 3e0a1ea, 19.10 to 19.32 at
+e8d2d15. clang-cl's: 15.87 to 16.40 and 15.83 to 16.21.
+
 ### Rounds on this machine
 
 - One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP
