@@ -390,6 +390,41 @@ Eight alternating rounds against 64af30d, `vcgencmd get_throttled` 0x0 after the
 The largest medians: GCC's 4K -> 64x64 +3.8% (minimum +0.5%); Clang's threaded 4K -> 1080p RGBA32 -5.2% (+0.5%) and
 720p -> 4K RGBA32 +4.3% (+1.1%).
 
+## The vertical taps: a list, and the first tap assigned
+
+Single-threaded display and layout rows against 3e0a1ea, median of same-round ratios. "List": the nonzero taps listed
+per dest row, the first tap assigned. "Assign only": the first tap assigned, the rows walked as before. Eight rounds;
+the 32-byte column four. `vcgencmd get_throttled` 0x0 after every round.
+
+| Scenario | GCC list, 32-byte | GCC list, 16-byte | GCC list, `float` | GCC assign only | Clang list, 32-byte | Clang list, 16-byte | Clang list, `float` | Clang assign only |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 720p -> 4K RGBA32 | +3.3% | -3.7% | -2.9% | -0.8% | +5.5% | +4.5% | +7.6% | -2.0% |
+| 720p -> 4K RGB32 | +18.0% | -3.4% | -3.9% | +2.9% | +5.0% | +3.7% | +4.3% | -4.3% |
+| 720p -> 4K RGB24 | +19.2% | -0.2% | -0.3% | +5.5% | +2.7% | +4.6% | +4.8% | -3.1% |
+| 720p -> 4K Grayscale8 | +7.4% | -2.6% | -2.1% | +0.2% | +5.5% | +4.1% | +6.7% | -1.3% |
+| 1080p -> 1440p RGB32 | +13.9% | +0.9% | +2.7% | -0.4% | +4.4% | +5.0% | +6.0% | -2.4% |
+| 4K -> 1080p RGB32 | +7.6% | +1.6% | +0.5% | +0.7% | +2.3% | +5.3% | +3.5% | -0.6% |
+| 4K -> 1080p RGB24 | +7.3% | +1.6% | +1.3% | +0.5% | +3.9% | +3.2% | +3.7% | -0.8% |
+| 4K -> 1080p RGBA32 | +7.4% | +1.9% | +0.5% | +0.4% | +2.6% | +2.1% | +4.5% | -0.1% |
+| 24 MP -> 1080p | +8.6% | +1.2% | +0.9% | +0.1% | +2.3% | +5.9% | +3.3% | +0.4% |
+
+- Two forms were timed twice, four rounds then eight: within a point on every row.
+- The committed form, eight rounds, equals "assign only" within a point: GCC's 720p -> 4K RGB32 +3.4% and RGB24 +5.5%,
+  Clang's upscales -3.0% to -4.6%, every downscale within 1.7%.
+
+The 3-channel tap loop, per tap, from the listings:
+
+| Build | Instructions | Loads | Multiply-adds | Branches |
+|---|---:|---:|---:|---:|
+| Clang, 3e0a1ea | 16 | weight, 3 `ldp` | 6, by the weight's lane | 3 |
+| Clang, `float` list | 14 | row pointer, weight by `ld1r`, 3 `ldp` | 6, by vector | 1 |
+| Clang, 16-byte list | 13 | row pointer, weight, 3 `ldp` | 6, by vector | 1 |
+| GCC, 3e0a1ea | 16 | weight, 3 `ldp` | 6, by the weight's lane | 2 |
+| GCC, `float` list | 16 | row pointer, weight, 2 `ldr` and 2 `ldp` | 6, by the weight's lane | 1 |
+
+An `ldp` of two Q registers is two loads: 7 per tap without a list, 8 with one. Clang inlines both kernels of a pixel
+layout into its `resizeRows`.
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing

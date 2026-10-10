@@ -33,6 +33,8 @@ namespace ImageProcessing::Detail::Neon
 	inline constexpr size_t horizontalChainCount = 4;
 	// Blocks the vertical pass filters per step: one block already has 6-8 accumulators, two registers per Floats8
 	inline constexpr size_t verticalBlocksPerStep = 1;
+	// Not listed: a list's load per tap costs Cortex-A72 3-7% under Clang, at any stored weight size
+	inline constexpr bool verticalTapsListed = false;
 
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 

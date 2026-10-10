@@ -468,3 +468,28 @@ MSVC's row-pair 8-tap loop at SSE4.1, instructions / stack accesses, from the li
 One session ran everything 4x slow: a test run 977 s for 232 s the day before, a benchmark run 165-180 s for 67 s,
 "System" at 12 s of CPU per run. `% Processor Performance` read 45% of the 1.1 GHz nominal clock during a run; CPU-Z
 showed 1.5-2.3 GHz. Some hours later, untouched, the machine ran at full speed. The cause is not known.
+
+### The vertical taps: a list, and the first tap assigned
+
+Single-threaded display and layout rows against 3e0a1ea, binaries built on the 8500T, minimum to minimum: several
+medians in these runs carried single samples 10-55% off. "List": the nonzero taps listed per dest row. Six rounds.
+
+| Form | MSVC upscales | MSVC downscales | clang-cl upscales | clang-cl downscales |
+|---|---|---|---|---|
+| List, `float` weights, accumulators zeroed | -7.1% to +3.0% | +1.4% to +4.4% | +0.2% to +5.6% | +0.5% to +3.5% |
+| List, `float` weights, first tap assigned | -1.7% to -8.4% | +1.6% to +3.8% | -0.9% to -3.8% | +0.1% to +3.6% |
+| List, 16-byte weights, first tap assigned | -2.2% to -7.2% | +0.3% to +3.4% | -1.7% to -4.1% | -1.2% to +3.7% |
+| List, 32-byte weights, first tap assigned | -2.5% to +2.9% | +1.5% to +4.8% | -2.8% to +1.2% | +0.3% to +4.5% |
+| First tap assigned, no list (eight rounds) | -2.7% to -5.9% | -1.3% to +1.2% | -3.0% to -4.1% | -3.3% to +1.4% |
+
+VTune (2024.3 works here, event-based sampling), MSVC, one run per variant. The vertical pass, as the code after the
+horizontal loop, per iteration of that loop; its time as a ratio to that loop's, which cancels the clock:
+
+| | 4K -> 1080p RGB32: time ratio | 720p -> 4K RGB32: instructions | 720p -> 4K RGB32: time ratio |
+|---|---:|---:|---:|
+| 3e0a1ea, two runs | 1.237, 1.218 | 106.4, 106.2 | 2.196, 2.214 |
+| List, `float` | 1.240 | 72.0 | 1.956 |
+| List, 16-byte | 1.262 | 73.3 | 1.951 |
+| First tap assigned, no list | 1.191 | 94.7 | 1.971 |
+
+The committed form was not timed here: the machine was in its slow state again, from the first of four local builds.

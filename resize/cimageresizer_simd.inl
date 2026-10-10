@@ -17,6 +17,7 @@
 #include <memory>
 #include <span>
 #include <string.h>
+#include <type_traits>
 
 // The float equality tests are exact-zero checks by design
 DISABLE_CLANG_GCC_WARNING("-Wfloat-equal")
@@ -685,6 +686,164 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				addProduct(block.accum3, loadFloats8(source + 24), weightVector);
 		}
 
+		// Starts a block with one tap
+		template <size_t BlockFloats>
+		IMAGE_PROCESSING_SIMD_INLINE void assignTapToBlock(BlockAccums& block, const float* source, Floats8 weightVector) noexcept
+		{
+			block.accum0 = mul(loadFloats8(source), weightVector);
+			block.accum1 = mul(loadFloats8(source + 8), weightVector);
+			block.accum2 = mul(loadFloats8(source + 16), weightVector);
+			if constexpr (BlockFloats == 32)
+				block.accum3 = mul(loadFloats8(source + 24), weightVector);
+		}
+
+		// One dest row's y taps, in the form the level's verticalTapsListed selects.
+		// ListedTaps: the nonzero taps, each one's temp row and weight. count >= 1.
+		struct ListedTaps
+		{
+			const float* const* rows;
+			const float* weights;
+			size_t count;
+		};
+
+		// WalkedTaps: the tap window as it sits in the ring. weights covers both segments in order, zeros included.
+		struct WalkedTaps
+		{
+			std::array<TempRowSegment, 2> segments;
+			const float* weights;
+			size_t rowStride;
+		};
+
+		using DestRowTaps = std::conditional_t<verticalTapsListed, ListedTaps, WalkedTaps>;
+
+		// The taps of the window in segments. listedRows, listedWeights: storage for ListedTaps, rowWeights.size() entries each.
+		template <typename Taps = DestRowTaps>
+		IMAGE_PROCESSING_SIMD_INLINE Taps destRowTaps(
+			const std::array<TempRowSegment, 2>& segments,
+			std::span<const float> rowWeights,
+			size_t tempRowStride,
+			[[maybe_unused]] const float** listedRows,
+			[[maybe_unused]] float* listedWeights) noexcept
+		{
+			if constexpr (std::is_same_v<Taps, ListedTaps>)
+			{
+				size_t count = 0;
+				const float* weight = rowWeights.data();
+				for (const TempRowSegment& segment : segments)
+				{
+					const float* row = segment.firstRow;
+					for (const float* segmentEnd = weight + segment.rowCount; weight != segmentEnd; ++weight)
+					{
+						if (*weight != 0.0f)
+						{
+							listedRows[count] = row;
+							listedWeights[count] = *weight;
+							++count;
+						}
+
+						row += tempRowStride;
+					}
+				}
+
+				assert(count > 0);
+				return { listedRows, listedWeights, count };
+			}
+			else
+				return { segments, rowWeights.data(), tempRowStride };
+		}
+
+		// Filters a dest row's taps into Blocks adjacent blocks: each tap's floats from sourceOffset on in its temp row.
+		// The first tap starts the accumulators.
+		template <size_t BlockFloats, size_t Blocks>
+		IMAGE_PROCESSING_SIMD_INLINE void filterTapsIntoBlocks(const ListedTaps& taps, size_t sourceOffset, BlockAccums& first, [[maybe_unused]] BlockAccums& second) noexcept
+		{
+			{
+				const Floats8 weightVector = broadcastFloats8(taps.weights[0]);
+				const float* const source = taps.rows[0] + sourceOffset;
+				assignTapToBlock<BlockFloats>(first, source, weightVector);
+				if constexpr (Blocks == 2)
+					assignTapToBlock<BlockFloats>(second, source + BlockFloats, weightVector);
+			}
+
+			for (size_t tap = 1; tap < taps.count; ++tap)
+			{
+				const Floats8 weightVector = broadcastFloats8(taps.weights[tap]);
+				const float* const source = taps.rows[tap] + sourceOffset;
+				addTapToBlock<BlockFloats>(first, source, weightVector);
+				if constexpr (Blocks == 2)
+					addTapToBlock<BlockFloats>(second, source + BlockFloats, weightVector);
+			}
+		}
+
+		template <size_t BlockFloats, size_t Blocks>
+		IMAGE_PROCESSING_SIMD_INLINE void filterTapsIntoBlocks(const WalkedTaps& taps, size_t sourceOffset, BlockAccums& first, [[maybe_unused]] BlockAccums& second) noexcept
+		{
+			const float* weight = taps.weights;
+			// A window's first segment holds at least one row. Its tap is not tested against zero: the product is then 0.
+			{
+				const Floats8 weightVector = broadcastFloats8(*weight);
+				const float* const source = taps.segments[0].firstRow + sourceOffset;
+				assignTapToBlock<BlockFloats>(first, source, weightVector);
+				if constexpr (Blocks == 2)
+					assignTapToBlock<BlockFloats>(second, source + BlockFloats, weightVector);
+
+				++weight;
+			}
+
+			const std::array<TempRowSegment, 2> restSegments{ { { taps.segments[0].firstRow + taps.rowStride, taps.segments[0].rowCount - 1 }, taps.segments[1] } };
+			for (const TempRowSegment& segment : restSegments)
+			{
+				const float* source = segment.firstRow + sourceOffset;
+
+				// A zero tap costs a whole row sweep, and exact-ratio downscales produce them
+				// (the kernels are zero at integer offsets)
+				for (const float* segmentEnd = weight + segment.rowCount; weight != segmentEnd; ++weight)
+				{
+					if (*weight != 0.0f)
+					{
+						const Floats8 weightVector = broadcastFloats8(*weight);
+						addTapToBlock<BlockFloats>(first, source, weightVector);
+						if constexpr (Blocks == 2)
+							addTapToBlock<BlockFloats>(second, source + BlockFloats, weightVector);
+					}
+
+					source += taps.rowStride;
+				}
+			}
+		}
+
+		// Filters a dest row's taps into one pixel: Channels floats from sourceOffset on in each tap's temp row
+		template <size_t Channels>
+		IMAGE_PROCESSING_SIMD_INLINE void filterTapsIntoPixel(const ListedTaps& taps, size_t sourceOffset, std::array<float, Channels>& accum) noexcept
+		{
+			for (size_t tap = 0; tap < taps.count; ++tap)
+			{
+				const float* const source = taps.rows[tap] + sourceOffset;
+				for (size_t channel = 0; channel < Channels; ++channel)
+					accum[channel] = mulAdd(source[channel], taps.weights[tap], accum[channel]);
+			}
+		}
+
+		template <size_t Channels>
+		IMAGE_PROCESSING_SIMD_INLINE void filterTapsIntoPixel(const WalkedTaps& taps, size_t sourceOffset, std::array<float, Channels>& accum) noexcept
+		{
+			const float* weight = taps.weights;
+			for (const TempRowSegment& segment : taps.segments)
+			{
+				const float* source = segment.firstRow + sourceOffset;
+				for (const float* segmentEnd = weight + segment.rowCount; weight != segmentEnd; ++weight)
+				{
+					if (*weight != 0.0f)
+					{
+						for (size_t channel = 0; channel < Channels; ++channel)
+							accum[channel] = mulAdd(source[channel], *weight, accum[channel]);
+					}
+
+					source += taps.rowStride;
+				}
+			}
+		}
+
 		// Writes a block's pixels at blockDest, each followed by its tail bytes
 		template <size_t Channels, size_t PixelStride>
 		IMAGE_PROCESSING_SIMD_INLINE void writeVerticalBlock(
@@ -716,9 +875,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		// Parameters as filterVerticalDestRow's.
 		template <size_t Channels, size_t PixelStride, size_t Blocks>
 		IMAGE_PROCESSING_SIMD_INLINE void filterVerticalBlocks(
-			const std::array<TempRowSegment, 2>& segments,
-			std::span<const float> rowWeights,
-			size_t tempRowStride,
+			const DestRowTaps& taps,
 			[[maybe_unused]] Rgb32PixelTails pixelTails,
 			[[maybe_unused]] const uint8_t* pixelTail,
 			size_t pixelStride,
@@ -732,27 +889,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			// The blocks by name, not in an array: see RowChains
 			BlockAccums first{ zeroFloats8(), zeroFloats8(), zeroFloats8(), zeroFloats8() };
 			[[maybe_unused]] BlockAccums second{ zeroFloats8(), zeroFloats8(), zeroFloats8(), zeroFloats8() };
-
-			const float* weight = rowWeights.data();
-			for (const TempRowSegment& segment : segments)
-			{
-				const float* source = segment.firstRow + firstPixel * Channels;
-
-				// A zero tap costs a whole row sweep, and exact-ratio downscales produce them
-				// (the kernels are zero at integer offsets)
-				for (const float* segmentEnd = weight + segment.rowCount; weight != segmentEnd; ++weight)
-				{
-					if (*weight != 0.0f)
-					{
-						const Floats8 weightVector = broadcastFloats8(*weight);
-						addTapToBlock<blockFloats>(first, source, weightVector);
-						if constexpr (Blocks == 2)
-							addTapToBlock<blockFloats>(second, source + blockFloats, weightVector);
-					}
-
-					source += tempRowStride;
-				}
-			}
+			filterTapsIntoBlocks<blockFloats, Blocks>(taps, firstPixel * Channels, first, second);
 
 			uint8_t* const blockDest = destRow + firstPixel * pixelStride;
 			writeVerticalBlock<Channels, PixelStride>(blockDest, first, pixelTails, pixelTail, pixelStride);
@@ -760,13 +897,11 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				writeVerticalBlock<Channels, PixelStride>(blockDest + pixelsPerBlock * pixelStride, second, pixelTails, pixelTail, pixelStride);
 		}
 
-		// Writes one destination row from its y tap window. rowWeights covers both segments in order.
+		// Writes one destination row from its y taps.
 		// pixelTail: the bytes past the channels, up to pixelStride, that every dest pixel gets.
 		template <size_t Channels, size_t PixelStride>
 		IMAGE_PROCESSING_SIMD_INLINE void filterVerticalDestRow(
-			const std::array<TempRowSegment, 2>& segments,
-			std::span<const float> rowWeights,
-			size_t tempRowStride,
+			const DestRowTaps& taps,
 			const uint8_t* pixelTail,
 			size_t runtimePixelStride,
 			uint8_t* destRow,
@@ -783,31 +918,16 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			if constexpr (verticalBlocksPerStep == 2)
 			{
 				for (; pixel + 2 * pixelsPerBlock <= blockedPixelCount; pixel += 2 * pixelsPerBlock) IMAGE_PROCESSING_FORCE_INLINE_CALLS
-					filterVerticalBlocks<Channels, PixelStride, 2>(segments, rowWeights, tempRowStride, pixelTails, pixelTail, pixelStride, destRow, pixel);
+					filterVerticalBlocks<Channels, PixelStride, 2>(taps, pixelTails, pixelTail, pixelStride, destRow, pixel);
 			}
 
 			for (; pixel < blockedPixelCount; pixel += pixelsPerBlock) IMAGE_PROCESSING_FORCE_INLINE_CALLS
-				filterVerticalBlocks<Channels, PixelStride, 1>(segments, rowWeights, tempRowStride, pixelTails, pixelTail, pixelStride, destRow, pixel);
+				filterVerticalBlocks<Channels, PixelStride, 1>(taps, pixelTails, pixelTail, pixelStride, destRow, pixel);
 
 			for (; pixel < destWidth; ++pixel) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
 				std::array<float, Channels> accum{};
-				const float* weight = rowWeights.data();
-
-				for (const TempRowSegment& segment : segments)
-				{
-					const float* source = segment.firstRow + pixel * Channels;
-					for (const float* segmentEnd = weight + segment.rowCount; weight != segmentEnd; ++weight)
-					{
-						if (*weight != 0.0f)
-						{
-							for (size_t channel = 0; channel < Channels; ++channel)
-								accum[channel] = mulAdd(source[channel], *weight, accum[channel]);
-						}
-
-						source += tempRowStride;
-					}
-				}
+				filterTapsIntoPixel<Channels>(taps, pixel * Channels, accum);
 
 				uint8_t* const destPixel = destRow + pixel * pixelStride;
 				writePixelBytes(destPixel, accum.data(), Channels);
@@ -847,6 +967,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		const size_t tempRowStride = stripWidth * Channels;
 
 		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2 };
+		// ListedTaps' arrays, for the longest y run
+		const size_t listedTapCapacity = verticalTapsListed ? yWeights.longestRun() : 0;
+		const auto listedTapRows = std::make_unique_for_overwrite<const float*[]>(listedTapCapacity);
+		const auto listedTapWeights = std::make_unique_for_overwrite<float[]>(listedTapCapacity);
 
 		assert(FourTapXRuns == (xWeights.everyRunHasFourTaps && Channels != 2));
 		const size_t sourceFloatsCapacity = SourceRowPair::capacityFor(xWeights.longestRun());
@@ -895,7 +1019,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 				assert(produced - firstWindowRow <= ring.rowCapacity());
 				uint8_t* const stripDest = dest.scanLine<uint8_t>(dy) + stripBegin * pixelStride;
-				filterVerticalDestRow<Channels, PixelStride>(ring.window(firstWindowRow, rowWeights.size()), rowWeights, tempRowStride, pixelTail, pixelStride, stripDest, stripEnd - stripBegin);
+				const DestRowTaps taps = destRowTaps(ring.window(firstWindowRow, rowWeights.size()), rowWeights, tempRowStride, listedTapRows.get(), listedTapWeights.get());
+				filterVerticalDestRow<Channels, PixelStride>(taps, pixelTail, pixelStride, stripDest, stripEnd - stripBegin);
 			}
 		}
 

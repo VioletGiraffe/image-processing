@@ -39,6 +39,8 @@ namespace ImageProcessing::Detail::Sse41
 	inline constexpr size_t horizontalChainCount = 2;
 	// Blocks the vertical pass filters per step: one block already has 6-8 accumulators, two registers per Floats8
 	inline constexpr size_t verticalBlocksPerStep = 1;
+	// As at AVX2. A list costs a load per tap: Goldmont Plus pays 2-4% for it on downscales, Sandy Bridge nothing.
+	inline constexpr bool verticalTapsListed = true;
 
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 

@@ -418,6 +418,56 @@ MSVC's AVX2 kernels in the two builds, from the listings:
 - 8 kernels differ in register names only, 3 by one or two instructions of per-strip setup, 3 not at all.
 - The two one-channel four-tap kernels address their frame through `rbp` where it was `rsp`.
 
+### The vertical taps: a list, and the first tap assigned
+
+Against 3e0a1ea, median of same-round ratios / minimum to minimum. "List": the nonzero taps listed per dest row, the
+first tap assigned. "Assign only": the first tap assigned, the rows walked as before.
+
+Twenty rounds, the list with 32-byte stored weights:
+
+| Scenario | MSVC list | MSVC assign only | clang-cl list | clang-cl assign only |
+|---|---:|---:|---:|---:|
+| 720p -> 4K RGBA32 | -3.6% / -3.2% | +0.4% / -0.8% | -4.6% / -1.8% | -3.6% / -4.9% |
+| 720p -> 4K RGB32 | -5.0% / -3.5% | +1.5% / -0.3% | -1.6% / -2.2% | -1.4% / -2.0% |
+| 720p -> 4K RGB24 | -5.2% / -4.2% | -0.1% / -0.6% | -1.1% / -1.9% | -4.0% / -3.3% |
+| 720p -> 4K Grayscale8 | -4.4% / -2.3% | -1.7% / -0.2% | +0.8% / +0.8% | -1.1% / -0.9% |
+| 4K -> 1080p RGB32, RGB24, RGBA32 | +1.6%, +0.7%, +0.5% | +2.0%, +1.8%, +1.9% | -1.2%, +0.5%, -0.0% | -1.5%, +0.2%, -1.7% |
+
+The stored weight, ten rounds: `float`, 16 bytes and 32 bytes within noise of one another, upscales -1% to -4% under
+MSVC. Six processes each of 720p -> 4K RGBA32 (600 samples), mean ms:
+
+| | Per-process means | Best |
+|---|---|---:|
+| No list | 18.03 18.16 16.72 16.73 17.99 17.95 | 16.72 |
+| `float` | 16.28 16.76 17.86 16.67 16.23 16.17 | 16.17 |
+| 16 bytes | 17.69 17.44 17.39 17.39 16.25 16.27 | 16.25 |
+| 32 bytes | 16.47 16.36 16.32 16.32 16.29 16.18 | 16.18 |
+
+VTune, MSVC, 720p -> 4K RGBA32, instructions per iteration of the horizontal four-tap loop: the kernel 78.6 without a
+list and 63.1 to 63.3 with each of the three; the code after that loop, the vertical pass, 46.0 and 30.5 to 30.7.
+
+The committed form, twenty rounds: "experiment" is the `float` list written inline in `filterVerticalBlocks`.
+
+| Scenario | MSVC experiment | MSVC committed | clang-cl experiment | clang-cl committed |
+|---|---:|---:|---:|---:|
+| 720p -> 4K RGBA32 | -3.0% / -2.2% | -2.4% / -2.4% | -9.4% / -5.5% | -3.2% / -3.3% |
+| 720p -> 4K RGB32 | -1.3% / -2.6% | -3.1% / -3.6% | -0.1% / +2.9% | -3.6% / -2.3% |
+| 720p -> 4K RGB24 | -3.3% / -3.7% | -2.5% / -4.4% | -3.9% / -3.5% | -3.1% / -3.0% |
+| 720p -> 4K Grayscale8 | -1.4% / -2.0% | -0.8% / -1.4% | -0.1% / +0.1% | +1.5% / +1.6% |
+| 1080p -> 1440p RGB32 | -0.6% / -0.0% | -1.6% / -1.4% | +2.0% / +4.1% | -2.4% / -0.1% |
+| 4K -> 1080p RGBA32 | +1.9% / +1.4% | +3.9% / +4.6% | -3.3% / -0.3% | -0.7% / -0.4% |
+| 4K -> 1080p Grayscale8 | +0.3% / +0.6% | +1.4% / +0.3% | -1.1% / -1.0% | +6.4% / +6.0% |
+| Threaded rows | -1.4% to +1.7% | -2.0% to +1.0% | -1.4% to +3.5% | -1.6% to +1.1% |
+
+The two rows that stand out, six processes each, per-process mean ms:
+
+| | 3e0a1ea | Experiment | Committed |
+|---|---|---|---|
+| MSVC 4K -> 1080p RGBA32 | 25.3 to 28.5, median 27.78 | 26.9 to 29.6, median 27.43 | 26.9 to 29.3, median 27.18 |
+| clang-cl 4K -> 1080p Grayscale8 | 13.18 to 13.74 | 13.32 to 13.62 | 14.15 to 14.54 |
+
+MSVC's tap loops in the committed build equal the experiment's by instruction and multiply count, in every kernel.
+
 ### Rounds on this machine
 
 - One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP

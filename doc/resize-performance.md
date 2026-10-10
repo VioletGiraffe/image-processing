@@ -47,6 +47,12 @@ under the same section headings.
 - An A/B table's rows that the change cannot reach are its control: a "gain" no larger than their spread is not one.
 - A row can move with code it does not run: clang-cl's 4K -> 1080p Grayscale8 by 10-12% (open lead 18). A change read
   from one row needs that row to run the changed code.
+- A process on the 8500T lands in one of two states about 8% apart, on an upscale's vertical pass: six processes of one
+  binary gave per-process means of 16.2-16.7 or 17.4-18.2 ms. A single run of each variant can show either. The cause
+  is not known.
+- A VTune run's instruction counts per region repeat within a few percent; its times are one process's, and need
+  repeats as a timing run does. Regions are compared per unit of work: a loop the change does not touch, counted by
+  its instructions, gives the unit.
 - A CI label's runner CPU varies between runs, and the ratios with it: Qt's SSE code and the AVX2 kernel do not scale
   alike. A job's numbers compare across runs only when the CPU line in its report header names the same model.
 - The report header names the commit, CPU, compiler and cache sizing.
@@ -419,6 +425,37 @@ broadcast serve 16 pixels.
   instructions under MSVC.
 - GCC's RGBA32 upscale does not gain (the 8500T's log).
 
+### The vertical taps: listed on x64, walked at NEON, the first tap assigned
+
+Two changes to the vertical tap loop, measured apart:
+
+- **The first tap starts the accumulators**, in place of zeroing them and adding it. Without FMA that saves an add per
+  accumulator, a quarter of a bicubic upscale's accumulation: SSE4.1 upscales -3% to -6%. With FMA the product costs
+  what the multiply-add did: nothing at AVX2.
+- **A list of the dest row's nonzero taps**, each one's temp row pointer and weight, built once per dest row
+  (`ListedTaps`): the tap loop loses its zero test and the walk over the ring's two segments, a third of the vertical
+  pass's instructions at AVX2. It costs one load per tap.
+
+Each primitives header states its level's form in `verticalTapsListed`. Both forms assign the first tap.
+
+| Level, machine | List, first tap assigned | First tap assigned, no list |
+|---|---|---|
+| AVX2, 8500T | MSVC upscales -1% to -4%; clang-cl -2% to -4% | Nothing under MSVC; clang-cl upscales -1% to -5% |
+| SSE4.1, i3-2310M | MSVC upscales -5% to -13%, clang-cl -5% to -7%; downscales level | MSVC -2% to -6%, clang-cl -4% to -6% |
+| SSE4.1, N4100 | Upscales -2% to -8%; downscales +2% to +4% | Upscales -3% to -6%; downscales level |
+| NEON, Pi | Clang +3% to +7% on every row; GCC upscales to -6%, downscales +1% to +3% | Clang upscales -2% to -5%; GCC +3% and +5.5% on the RGB32 and RGB24 upscales |
+
+- The list is taken at both x64 levels and not at NEON.
+- The list's load per tap is what the narrow cores pay. On Cortex-A72 the committed tap loop already runs 7 loads for
+  6 multiply-adds per tap, and a list makes it 8. On the N4100 the list removes 31% of an upscale's vertical
+  instructions for the time that assigning the first tap gets by removing 11% (VTune).
+- The stored weight is a `float`, broadcast in the loop. Stored already broadcast, as 16 or 32 bytes: the same time at
+  AVX2 and on the i3-2310M, worse on the N4100 and the Pi at 32 bytes.
+- Clang at NEON turns a `float` weight's load and broadcast into one `ld1r`, an operation more on the FP pipelines per
+  tap; GCC keeps the scalar load and multiplies by its lane. Clang's `float` list is the worse of its two for that.
+- The restructured code matches the experiments' inline form on the 8500T, the i3-2310M and the Pi, except clang-cl's
+  4K -> 1080p Grayscale8 at AVX2 (open lead 10).
+
 ### The horizontal filter takes the source buffers' range by value
 
 `filterHorizontalRowGroup` prepares the source buffers for one column, then `filterBufferedRuns` filters every following
@@ -590,6 +627,13 @@ into strips whose per-strip costs exceed those of the larger ring.
     rows -1% to -3% under MSVC and clang-cl, clang-cl's RGB24 within 1.5%; the 4K -> 1080p rows +1% to +4% by median
     and within about 2% by minimum. The adds run on
     ports 0 and 1, which do not bound the step. The tests pass with it.
+25. **The tap list at NEON** (Pi, not committed), with 32-byte, 16-byte and `float` stored weights: Clang +3% to +7.5%
+    on nearly every row with each; GCC +3% to +19% at 32 bytes, and with the other two upscales to -6% and downscales
+    +0.5% to +3%.
+26. **The tap list's weights stored already broadcast** (not committed): 16 or 32 bytes per tap in place of a `float`.
+    Equal to `float` at AVX2 (best of six processes 16.17, 16.25 and 16.18 ms on 720p -> 4K RGBA32, 16.72 without a
+    list) and on the i3-2310M; 32 bytes cost the N4100's downscales up to 1.5 points more and the Pi's GCC build up to
+    19%.
 
 ## Open leads
 
@@ -619,13 +663,14 @@ into strips whose per-strip costs exceed those of the larger ring.
    21.9 ms for the same kernel source. Code placement or the buffers' addresses, undetermined. The Pi does not react.
 9. **The PC's only run since 0bd90e4 is a6c69e7, in its band-count section:** no step between the two is measured
    there on its own. Its MSVC upscale rows are the placement-sensitive ones.
-10. **The vertical pass with its taps listed once per dest row:** the nonzero taps' row pointers and weights in a list,
-    so the tap loop has no zero test. Not adopted; it gains one compiler at one level so far.
-    - In the two-block step at AVX2 on the 8500T: MSVC -3% to -6% on upscales and 4K downscales, +1% to +3% on 24 MP
-      and 101 MP; GCC and Clang within 2-4%; clang-cl no pattern (its log).
-    - At SSE4.1 on the N4100: MSVC +4% to +9% on every row in that form. An earlier form with broadcast weights and the
-      first tap assigned: clang-cl upscales -5% to -8%, MSVC nothing or downscales +2% to +4% (its log).
-    - Untried at NEON. Adopting it at AVX2 alone means a second form of the tap loop.
+10. **What the vertical taps' forms leave behind** (their section):
+    - clang-cl's 4K -> 1080p Grayscale8 at AVX2 is 7% slower with the committed list than with the experiment's inline
+      form of the same algorithm: six processes of each, none overlapping. MSVC's listings show the same tap loops in
+      both. clang-cl's were not read.
+    - The N4100's downscales pay 2-4% for the list at SSE4.1. A form chosen by core, not by level, would avoid it.
+    - GCC at NEON loses 3% and 5.5% on the RGB32 and RGB24 upscales with the first tap assigned, where Clang gains.
+      Its tap loop is as Clang's; the rest of its step was not read.
+    - GCC and Clang on x64 have not been timed with the list.
 11. **MSVC against clang-cl on the N4100, after the one-channel fixes:** clang-cl ahead by 12% on the Grayscale8
     downscale and 5% on the RGBA32 downscale, MSVC by 4-5% on the RGB32 and RGB24 downscales. The listings of those
     kernels have not been compared.
