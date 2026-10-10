@@ -576,6 +576,39 @@ SSE4.1: six rounds with them.
   3.92 s before, 61 with 7 and 4.32 s after; the kernel 8.85 and 9.06 s.
 - MSVC's AVX2 kernels: identical. Its rows in the same rounds, one build against the other: within 2% by minimum.
 
+### MSVC against clang-cl at SSE4.1, and the SSE4.1 kernels padded
+
+b1395f9. Six alternating rounds with the controls, the SSE4.1 rows, all against the plain MSVC build: median of
+same-round ratios / minimum to minimum. "Padded": jumps kept off 32-byte boundaries in the SSE4.1 kernels too, MSVC
+by `/QIntel-jcc-erratum` on every source, clang-cl by the linker's `/mllvm:-x86-branches-within-32B-boundaries`.
+
+| Scenario | MSVC, ms | MSVC padded | clang-cl | clang-cl padded |
+|---|---:|---:|---:|---:|
+| 4K -> 1080p RGB24 | 37.75 | -1.6% / -1.9% | +10.0% / +8.8% | +5.7% / +5.2% |
+| 4K -> 1080p RGB32 | 36.97 | -2.5% / -2.8% | +3.4% / +4.0% | +3.2% / +3.9% |
+| 4K -> 1080p RGB32, the display section's | 36.88 | -2.8% / -2.6% | +3.8% / +3.4% | +4.0% / +4.0% |
+| 4K -> 1080p RGBA32 | 43.58 | -4.5% / -4.7% | -2.1% / -2.0% | -1.8% / -2.7% |
+| 4K -> 1080p Grayscale8 | 20.21 | -14.2% / -15.3% | -19.4% / -21.0% | -20.7% / -20.7% |
+| 24 MP -> 1080p, 101 MP -> 720p | 87.40, 326.18 | -0.6%, -0.8% / +0.1%, -0.9% | +1.3%, +1.6% / +1.3%, +1.8% | +0.8%, +0.5% / +1.3%, +0.7% |
+| 1080p -> 240p, 4K -> 64x64 | 7.17, 23.67 | -0.3%, -1.1% / -0.2%, -1.2% | +1.1%, +0.6% / +1.4%, +0.1% | +1.4%, -0.4% / +1.6%, -0.4% |
+| 720p -> 4K RGBA32, RGB32, RGB24 | 20.95, 19.53, 18.03 | +2.3%, +4.5%, -1.3% / +1.0%, -0.2%, -1.4% | +5.9%, +2.4%, +2.0% / +3.1%, -1.6%, +2.3% | +5.0%, +1.3%, -0.6% / +3.4%, -1.7%, +0.1% |
+| 720p -> 4K Grayscale8 | 6.35 | -1.0% / -1.0% | -6.3% / -6.6% | -7.1% / -6.5% |
+| 1080p -> 1440p RGB32 | 13.79 | -0.5% / -0.9% | -2.6% / -2.6% | -2.1% / -1.9% |
+
+The padded builds' RGB32 kernel on 4K -> 1080p, VTune, 300 samples, two runs each, MSVC / clang-cl:
+
+| | Seconds | Instructions retired |
+|---|---|---|
+| Kernel | 10.68, 10.73 / 11.39, 11.24 | 137.7 G / 141.4 G |
+| Per-column loop | 6.88, 6.91 / 7.26, 7.35 | 97 G / 100 G |
+| Its tap loop: 39 and 38 instructions, the same operations | 3.52, 3.62 / 3.46, 3.53 | 48.8 G / 47.7 G |
+| Vertical step | 2.21, 2.17 / 2.24, 2.09 | 25-26 G / 24.8 G |
+
+- clang-cl's deficit is the per-column code around the tap loop, 0.45 s, and the conversion, 0.2 s.
+- Per column, outside the tap loop: clang-cl loads 9 values from the stack and copies two accumulators and two
+  general registers; MSVC loads 5.
+- The unpadded RGB24 kernels: 19 of 107 conditional jumps on a boundary under clang-cl, 23 of 87 under MSVC.
+
 ### Rounds on this machine
 
 - One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP

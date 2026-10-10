@@ -49,6 +49,8 @@ under the same section headings.
   boundaries). A change read from one row needs that row to run the changed code.
 - clang-cl's AVX2 kernels were built without that padding up to e8d2d15: on the 8500T each of their rows up to that
   commit carries several percent of jump placement.
+- The SSE4.1 kernels are not padded, and the 8500T runs them only when the benchmark caps the level: its SSE4.1 rows
+  carry jump placement, up to 14% on one row. An SSE4.1 change is judged on the i3-2310M or the N4100.
 - A process on the 8500T lands in one of two states about 8% apart, on an upscale's vertical pass: six processes of one
   binary gave per-process means of 16.2-16.7 or 17.4-18.2 ms. A single run of each variant can show either. The cause
   is not known.
@@ -721,8 +723,9 @@ into strips whose per-strip costs exceed those of the larger ring.
 9. **The PC's only run since 0bd90e4 is a6c69e7, in its band-count section:** no step between the two is measured
    there on its own. Its MSVC upscale rows are the placement-sensitive ones.
 10. **What the vertical taps' forms leave behind** (their section):
-    - MSVC's 4K -> 1080p Grayscale8 at SSE4.1 is 5-7% slower with the list on the 8500T, and on no other machine. The
-      SSE4.1 kernels are not padded, so jump placement is a candidate: untested.
+    - MSVC's 4K -> 1080p Grayscale8 at SSE4.1 is 5-7% slower with the list on the 8500T, and on no other machine: jump
+      placement. Padded like the AVX2 kernels, that row is 14% faster (its log). No CPU with the erratum runs these kernels
+      outside the benchmark.
     - The N4100's downscales pay 2-4% for the list at SSE4.1. A form chosen by core, not by level, would avoid it.
     - GCC at NEON loses 3% and 5.5% on the RGB32 and RGB24 upscales with the first tap assigned, where Clang gains.
       Its tap loop is as Clang's; the rest of its step was not read.
@@ -743,7 +746,12 @@ into strips whose per-strip costs exceed those of the larger ring.
     - clang-cl's one-channel four-column loop is short of general registers: 55 instructions with 5 stack accesses, and
       61 with 7 once the tail loop is scalar, the added ones register moves and reloads. 720p -> 4K Grayscale8 loses
       2.5-3.5% to that. Fewer values live across that loop would settle it, perhaps under MSVC too: untried.
-    - At SSE4.1 MSVC is ahead by 6-9% on the 3- and 4-channel downscales, on the 8500T and the i3-2310M: not looked into.
+    - At SSE4.1 on the 8500T, both compilers' kernels padded: MSVC ahead by 6-7% on 4K -> 1080p RGB32 and RGB24, 3% on
+      RGBA32, within 2% elsewhere; unpadded, RGB24 reads 4 points worse for clang-cl. The kernels retire the same
+      instructions within 3% and their tap loops match. clang-cl's per-column code around them reloads 9 values from
+      the stack where MSVC's reloads 5, and copies registers: no single cause, no source form tried.
+    - The i3-2310M, the SSE4.1 CPU without the erratum, had MSVC ahead by 7-9% on those rows at e8d2d15: not remeasured
+      since the tail loop went scalar.
 15. **The cap of 4 bands leaves threads idle:** a band per thread takes 18-29% off the threaded rows on the 8500T (6
     bands) and 21-36% on the PC (16), 4K -> 64x64 aside (their logs).
     - A count that is not a multiple of the pool's threads loses the gain: 8 bands on 6 threads run like 4.
