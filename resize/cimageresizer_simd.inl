@@ -70,7 +70,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 			}
 
-			// Premultiplies with the vector code's arithmetic: one row mixes both
+			// Premultiplies with the vector code's arithmetic: one row mixes both.
+			// Scalar: a few pixels after the block loop, and Clang's vector form keeps four constants in registers the filter's column loop needs.
+			IMAGE_PROCESSING_SCALAR_LOOP
 			for (; pixel < pixelCount; ++pixel)
 			{
 				const uint8_t* const sourcePixel = pixels + pixel * pixelStride;

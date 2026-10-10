@@ -550,6 +550,32 @@ Eight alternating rounds without the controls: median of same-round ratios / min
 - MSVC's AVX2 kernels with `spreadIndices`: the same instructions, 25 of 24685 differing in the order of a commutative
   operation's operands or in a register's name.
 
+### The conversion's tail loop kept scalar under Clang
+
+clang-cl, against 17d2fa0: median of same-round ratios / minimum to minimum. AVX2: eight rounds without the controls.
+SSE4.1: six rounds with them.
+
+| Scenario | AVX2 | SSE4.1 |
+|---|---:|---:|
+| 24 MP -> 1080p RGB32 | -2.2% / -5.8% | -0.6% / -0.1% |
+| 4K -> 1080p RGB32, the display section's | -2.9% / -0.2% | -0.6% / -0.1% |
+| 1080p -> 240p RGB32 | -2.5% / -1.4% | -0.4% / -0.6% |
+| 4K -> 64x64, 101 MP -> 720p | -2.6%, -1.4% / -0.3%, -1.5% | -0.2%, 0.0% / -0.5%, +0.1% |
+| 4K -> 1080p RGB32, RGB24, RGBA32 | +1.5%, -2.2%, 0.0% / +0.3%, -0.3%, +2.5% | -0.8%, -3.9%, -0.3% / -0.4%, -3.8%, -0.7% |
+| 4K -> 1080p Grayscale8 | +0.7% / +0.4%; eight processes of 300 samples -2.7% / -1.3% | -1.3% / -1.9% |
+| 720p -> 4K Grayscale8 | +2.8% / +3.0%; eight processes of 300 samples +2.5% / +3.5% | -2.1% / -2.5% |
+| 720p -> 4K RGBA32, RGB32, RGB24 | -0.2%, -1.5%, -2.0% / -3.3%, -3.9%, -0.6% | +0.3%, +2.5%, +0.1% / -0.4%, -0.5%, +1.3% |
+| 1080p -> 1440p RGB32 | -0.4% / -2.3% | +0.9% / +1.7% |
+| Threaded rows | -2.5% to +3.0% / -4.6% to +1.3% | -4.5% to +0.8% / -3.9% to +1.4% |
+
+- Against MSVC in the AVX2 session: 24 MP -> 1080p -0.3% / +0.5%, 4K -> 1080p RGB32 +0.3% / -1.5% and -1.2% / +1.2%,
+  1080p -> 240p -0.8% / +0.2%, 101 MP -> 720p -0.2% / -0.2%, 4K -> 64x64 -8.3% / -8.6%.
+- The RGB32 kernel, 4K -> 1080p, VTune: constant loads executed 11 -> 5, instructions retired 142.5 -> 140.8 G.
+- Kernel sizes: the RGB32 one 2123 -> 1884 instructions, the one-channel four-tap one 3485 -> 2441.
+- 720p -> 4K Grayscale8, VTune, 2000 samples: the horizontal four-column loop 55 instructions with 5 stack accesses and
+  3.92 s before, 61 with 7 and 4.32 s after; the kernel 8.85 and 9.06 s.
+- MSVC's AVX2 kernels: identical. Its rows in the same rounds, one build against the other: within 2% by minimum.
+
 ### Rounds on this machine
 
 - One binary's 4K -> 1080p rows range 13-19% over twenty rounds, with an interquartile range of 6-8%; 24 MP and 101 MP

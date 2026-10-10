@@ -425,6 +425,22 @@ The 3-channel tap loop, per tap, from the listings:
 An `ldp` of two Q registers is two loads: 7 per tap without a list, 8 with one. Clang inlines both kernels of a pixel
 layout into its `resizeRows`.
 
+## The conversion's tail loop kept scalar under Clang
+
+Clang, eight alternating rounds without the controls against 17d2fa0: median of same-round ratios / minimum to minimum.
+
+| Scenario | |
+|---|---:|
+| 1080p -> 240p RGB32 | -5.7% / -4.8% |
+| 24 MP -> 1080p, 4K -> 64x64, 101 MP -> 720p | -2.3%, -2.8%, -2.9% / -1.8%, -2.2%, -1.2% |
+| 4K -> 1080p RGB32, two sections | -2.7%, -1.6% / -2.0%, -1.1% |
+| 4K -> 1080p RGB24, RGBA32, Grayscale8 | -0.6%, -0.1%, 0.0% / -0.9%, +0.1%, +0.1% |
+| 720p -> 4K RGBA32, RGB32, RGB24, Grayscale8 | -0.7%, 0.0%, +0.8%, +0.1% / -0.9%, -1.2%, +1.9%, 0.0% |
+| 1080p -> 1440p RGB32 | -0.1% / -1.2% |
+| Threaded rows | -3.3% to +3.2% / -5.1% to +2.0% |
+
+The kernels' instructions, all nine functions: 29184 -> 19660. `vcgencmd get_throttled` printed `0x0` after the run.
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing

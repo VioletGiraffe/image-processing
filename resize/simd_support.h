@@ -41,6 +41,13 @@
 	#define IMAGE_PROCESSING_FLATTEN __attribute__((flatten))
 #endif
 
+// IMAGE_PROCESSING_SCALAR_LOOP, ahead of a loop: Clang neither vectorizes nor interleaves it
+#if defined(__clang__)
+	#define IMAGE_PROCESSING_SCALAR_LOOP _Pragma("clang loop vectorize(disable) interleave(disable)")
+#else
+	#define IMAGE_PROCESSING_SCALAR_LOOP
+#endif
+
 #if IMAGE_PROCESSING_X64 && (defined(__GNUC__) || defined(__clang__))
 	// GCC and Clang allow intrinsics above the baseline only in functions with the matching target
 	#define IMAGE_PROCESSING_AVX2_TARGET __attribute__((target("avx2,fma"), noinline))

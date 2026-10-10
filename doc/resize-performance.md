@@ -443,6 +443,23 @@ the `vpermps`.
   4K -> 1080p RGB32 -5% in one section and level in the other, threaded rows -1% to -8%. Grayscale8 has no spread.
 - MSVC's kernels keep their instruction sequence. Clang on Linux and the 2-float spread are untimed.
 
+### The conversion's tail loop kept scalar under Clang
+
+`convertPixelsToFloats` ends in a scalar loop over the few pixels its 16-byte blocks leave. Clang vectorizes it:
+hundreds of instructions per kernel for fewer pixels than one block holds. At AVX2 that code's four shuffle constants
+also stay in registers through the strip's loop, where the column loop's chains evict them: four reloads per column.
+`IMAGE_PROCESSING_SCALAR_LOOP` keeps the loop scalar under Clang. MSVC's and GCC's kernels are unchanged.
+
+| Clang build | Kernels' instructions | Result, 8 rounds |
+|---|---|---|
+| clang-cl AVX2, 8500T | 12-30% fewer per kernel | RGB32 downscales -1.4% to -2.9%, 4K -> 1080p Grayscale8 -1% to -3%, 720p -> 4K Grayscale8 +2.5% to +3.5% |
+| clang-cl SSE4.1, 8500T | | 4K -> 1080p RGB24 -4%, Grayscale8 -1% to -2.5%, the rest within 1% |
+| Clang NEON, Pi | 29184 -> 19660 over all kernels | RGB32 downscales -1.6% to -5.7%, the rest within 1%, 720p -> 4K RGB24 +1% to +2% |
+
+- With the spread's indices hidden as well, clang-cl at AVX2 is level with MSVC on the RGB32 downscales.
+- A layout without a fixed pixel stride converts every pixel in this loop, now scalar under Clang: unmeasured.
+- The Grayscale8 upscale's loss is open lead 14.
+
 ### Output bytes packed without a clamp
 
 The vertical pass capped its sums at 255 before converting them: `packus_epi16` reads its input as signed, so a word past
@@ -721,10 +738,11 @@ into strips whose per-strip costs exceed those of the larger ring.
     - Both passes cost the same per multiply-add, so filtering vertically first on downscales would gain nothing.
     - 16-bit fixed-point kernels would drop the conversion, halve the temp rows' bytes and double the multiply-adds
       per instruction.
-14. **MSVC against clang-cl at AVX2 on the 8500T**, with the spread's indices hidden from Clang: clang-cl ahead by 6-8%
-    on Grayscale8, level on 101 MP -> 720p, MSVC ahead by 2-6% on the 4K -> 1080p rows and 24 MP -> 1080p.
-    - clang-cl's per-column loop reloads four constants of the conversion code on every column: it keeps them in
-      registers the column's chains need. No source form tried.
+14. **MSVC against clang-cl on the 8500T.** At AVX2, with the spread's indices hidden and the conversion's tail loop
+    scalar: level on the RGB32 downscales, clang-cl ahead by 4-8% on Grayscale8.
+    - clang-cl's one-channel four-column loop is short of general registers: 55 instructions with 5 stack accesses, and
+      61 with 7 once the tail loop is scalar, the added ones register moves and reloads. 720p -> 4K Grayscale8 loses
+      2.5-3.5% to that. Fewer values live across that loop would settle it, perhaps under MSVC too: untried.
     - At SSE4.1 MSVC is ahead by 6-9% on the 3- and 4-channel downscales, on the 8500T and the i3-2310M: not looked into.
 15. **The cap of 4 bands leaves threads idle:** a band per thread takes 18-29% off the threaded rows on the 8500T (6
     bands) and 21-36% on the PC (16), 4K -> 64x64 aside (their logs).
