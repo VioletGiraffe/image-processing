@@ -53,8 +53,8 @@ consists of, is in [throughput-ceiling.md](throughput-ceiling.md).
 - The SSE4.1 kernels are not padded, and the 8500T runs them only when the benchmark caps the level: its SSE4.1 rows
   carry jump placement, up to 14% on one row. An SSE4.1 change is judged on the i3-2310M or the N4100.
 - A process on the 8500T lands in one of two states about 8% apart, on an upscale's vertical pass: six processes of one
-  binary gave per-process means of 16.2-16.7 or 17.4-18.2 ms. A single run of each variant can show either. The cause
-  is not known.
+  binary gave per-process means of 16.2-16.7 or 17.4-18.2 ms. A single run of each variant can show either.
+  - It is not the float buffers' placement, the core, the clock or other load (its log). Its cause is not known.
 - A VTune run's instruction counts per region repeat within a few percent; its times are one process's, and need
   repeats as a timing run does. Regions are compared per unit of work: a loop the change does not touch, counted by
   its instructions, gives the unit.
@@ -614,6 +614,16 @@ into strips whose per-strip costs exceed those of the larger ring.
   Pi, with threads too; no difference under Clang on the Pi.
 - The ring is then 64 columns times the y window: 276 KB per thread for 4K -> 64x64, against a budget of 128 KB.
 
+### The float buffers start on a cache line
+
+The temp ring and the source span are allocated on a 64-byte boundary. The AVX2 kernels load 32 bytes at a time from
+both, and from a start 16 bytes off a 32-byte boundary every other load spans two cache lines.
+
+- Left to the heap, the starts took all four 16-byte offsets, by process and by allocation.
+- Both starts 16 bytes off, against both on a boundary, in an experiment that placed them (the PC's and the 8500T's
+  logs): the 8500T +3% to +12%, the 12600K's P-core +4% to +10% and +20% on 4K -> 64x64, its E-core within 2%.
+- The heap's own starts cost the 8500T and the P-core 5-7% on 4K -> 1080p.
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -785,3 +795,9 @@ into strips whose per-strip costs exceed those of the larger ring.
     - A core that splits 256-bit operations gains nothing: the 12600K's E-core loses 4-18% on upscales (the PC's log).
       AMD's CPUs with AVX and no AVX2 split them too; none is measured.
     - The SSE4.1 kernels VEX-encoded, with no other change: -5% to +4% on the i3-2310M, +5% to +57% on the PC's P-core.
+21. **32-byte loads that the float buffers' 64-byte start does not align.** Unmeasured:
+    - The horizontal pass, a run at an odd pixel offset: 16 bytes off for 4-float pixels.
+    - The vertical pass, a temp row stride that is not a multiple of 32 bytes: a strip as wide as a destination whose
+      width is not a multiple of the vertical block's pixels.
+22. **The 12600K's E-core on 4K -> 1080p RGB32 and RGB24** has a state of 4-8% that follows the process's heap layout,
+    not the buffers' alignment (the PC's log). Not explained.

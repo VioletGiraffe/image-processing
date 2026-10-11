@@ -7,6 +7,7 @@
 #include <array>
 #include <cassert>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <stddef.h>
@@ -92,6 +93,19 @@ namespace ImageProcessing::Detail
 		bool everyRunHasFourTaps = false;
 	};
 
+	struct AlignedFloatsDeleter
+	{
+		void operator()(float* floats) const noexcept { ::operator delete[](floats, std::align_val_t{ 64 }); }
+	};
+
+	using AlignedFloats = std::unique_ptr<float[], AlignedFloatsDeleter>;
+
+	// Uninitialized, on a 64-byte boundary: off a 32-byte one, half of the AVX2 kernels' 32-byte loads span two cache lines
+	[[nodiscard]] inline AlignedFloats makeAlignedFloats(size_t count)
+	{
+		return AlignedFloats{ static_cast<float*>(::operator new[](count * sizeof(float), std::align_val_t{ 64 })) };
+	}
+
 	// A tap window's temp rows as they sit in a TempRowRing
 	struct TempRowSegment
 	{
@@ -127,7 +141,7 @@ namespace ImageProcessing::Detail
 		}
 
 	private:
-		std::unique_ptr<float[]> _rows;
+		AlignedFloats _rows;
 		size_t _rowStride;
 		size_t _rowCount;
 		uint64_t _firstNeededRow;

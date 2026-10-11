@@ -615,3 +615,57 @@ The padded builds' RGB32 kernel on 4K -> 1080p, VTune, 300 samples, two runs eac
   range 5%. Qt's rows range as much: the spread is the process's, not the kernel's.
 - Six rounds of ten samples gave -0.6% and -6.1% for one pair of binaries on 4K -> 1080p RGB24, an hour apart.
 - 8K -> 4K, four times the pixels of 4K -> 1080p, ranges 10-21%: a longer job does not average it out.
+
+### The process states on 720p -> 4K, and where the float buffers start
+
+An experiment at 4edb9e5, MSVC, not committed: one binary that places the temp ring's and the source span's starts by
+the executable's name. 720p -> 4K RGB32 without a pool, per-process mean ms of 20 samples unless noted.
+
+Placement:
+
+- The allocations' own starts vary by process: the ring and the span each at 0, 16, 32 or 48 bytes modulo 64 over 12
+  processes. They stay put within a process that runs this row alone; a full benchmark run sees all four.
+- Both on a 64-byte boundary: 14.3-14.6. Both 16 bytes past one: 15.3-15.5, +6.5%.
+- The ring on a 32-byte boundary, the span anywhere: 14.3-14.4. On this row the ring's start decides.
+
+The whole benchmark, 15 rounds, against both starts on a 64-byte boundary. A cell is the median of same-round ratios /
+minimum to minimum:
+
+| Scenario | On a 64-byte boundary, ms | Both 16 bytes past one | The allocations' own starts |
+|---|---:|---:|---:|
+| 24 MP -> 1080p RGB32 | 51.01 | +3.4% / +4.8% | +2.5% / +0.1% |
+| 4K -> 1080p RGB32, its two rows | 22.89, 22.88 | +9.2% / +10.9%, +11.2% / +11.4% | +5.8% / +0.6%, +7.3% / +3.1% |
+| 4K -> 1080p RGB24 | 23.09 | +11.9% / +12.0% | +6.1% / +4.7% |
+| 4K -> 1080p RGBA32 | 25.40 | +13.6% / +12.4% | +7.2% / +5.2% |
+| 4K -> 1080p Grayscale8 | 14.00 | +3.4% / +3.4% | +1.9% / -0.1% |
+| 720p -> 4K RGBA32 | 14.65 | +7.7% / +9.6% | +5.0% / +0.8% |
+| 720p -> 4K RGB32 | 14.29 | +5.8% / +6.6% | +0.4% / +0.2% |
+| 720p -> 4K RGB24 | 13.21 | +6.6% / +7.1% | +1.4% / -0.2% |
+| 720p -> 4K Grayscale8 | 5.09 | +8.0% / +7.9% | +1.7% / -0.3% |
+| 1080p -> 1440p RGB32 | 10.09 | +5.5% / +5.9% | +4.3% / +0.1% |
+| 1080p -> 240p RGB32 | 4.11 | +4.4% / +4.5% | +1.8% / +0.2% |
+| 4K -> 64x64 RGB32 | 11.67 | +4.2% / +4.3% | +1.6% / +0.2% |
+| 101 MP -> 720p RGB32 | 174.72 | +2.9% / +2.8% | +0.8% / +0.4% |
+| Native size, the control: no filter runs | 1.82 | -1.4% / -1.7% | +2.2% / -1.4% |
+| 4K -> 1080p RGBA32, RGB24, with a pool | 7.70, 6.90 | +9.7% / +10.3%, +7.7% / +9.2% | +7.5% / +6.5%, +6.6% / +6.4% |
+
+- The allocations' own starts land on a boundary in some rounds: their minimum matches the 64-byte boundary's on most
+  rows, their median does not.
+
+A second state that placement does not explain: 9 of 24 processes with both buffers on a 64-byte boundary gave 15.2-16.8.
+
+| Tested against it | Result |
+|---|---|
+| The ring's and the span's page offsets | No pattern over those 24 processes |
+| The source's and the destination's page offsets | The same in every process |
+| The core: six processes pinned to each | Both states on every core |
+| The clock: a 2-cycle dependent loop before and after each of 16 processes | 3.47-3.49 GHz every time |
+| 15 s of idle before a process, HWiNFO64 polling | No faster than back to back |
+| Other processes | 3.0 s of System and 1.9 s of pwsh over 121 s |
+
+- 40 pinned processes of 3 samples: 18 at 14.2-14.6, 10 at 15.6-15.7, 12 at 17.5-25.5, the first 7 among them.
+- Pinned processes of 60 samples: 15.0-15.5 each, between the two levels. Not explained.
+- The first six processes after a sustained load, one per core: 18.3-20.4.
+- With HWiNFO64 polling, 18 processes of 60 samples gave 15.3-17.2. Its plot of the clock: 3.3-3.4 GHz.
+
+The second state's cause is not found.

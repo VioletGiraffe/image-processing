@@ -471,7 +471,7 @@ Detail::TempRowRing::TempRowRing(const AxisWeights& yWeights, uint64_t destRowBe
 
 	_firstNeededRow = firstNeededRow;
 	_rowCount = rowCount;
-	_rows = std::make_unique_for_overwrite<float[]>(rowCount * rowStride);
+	_rows = makeAlignedFloats(rowCount * rowStride);
 }
 
 // Each thread's temp-row ring gets half of its L2 share: the source floats, weights and dest rows need the rest.

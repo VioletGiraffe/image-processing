@@ -976,7 +976,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 		assert(FourTapXRuns == (xWeights.everyRunHasFourTaps && Channels != 2));
 		const size_t sourceFloatsCapacity = SourceRowPair::capacityFor(xWeights.longestRun());
-		const auto sourceFloats = std::make_unique_for_overwrite<float[]>(2 * sourceFloatsCapacity * floatsPerPixel);
+		const AlignedFloats sourceFloats = makeAlignedFloats(2 * sourceFloatsCapacity * floatsPerPixel);
 		float* const sourceFloatsA = sourceFloats.get();
 		float* const sourceFloatsB = sourceFloatsA + sourceFloatsCapacity * floatsPerPixel;
 		const uint64_t firstPixelOffset = srcRect.left * pixelStride;
