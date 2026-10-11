@@ -150,6 +150,23 @@ columns' runs, without the run lookup. ms, MSVC / clang-cl.
 - The P-core's figures move 5-13% with the placement of code and buffers: the H lines read 13% lower after the other
   sections than alone, and clang-cl's ranking of the loop and the steps reversed between two builds.
 
+Other ratios, where every other run or two runs of four start at an odd pixel offset: the kernel's form is 16 bytes off
+a 32-byte boundary there, the interleaved form never. 3x: 1280 columns of 18 taps. 1.5x: 2560 columns of 9 taps.
+ms, MSVC / clang-cl, from a later build whose 2x lines read up to 8% off the table above.
+
+| Ratio, core | The kernel's | 4 chains, broadcast | In steps, broadcast | 4 chains, lanes | In steps, lanes |
+|---|---:|---:|---:|---:|---:|
+| 3x, 8500T | 16.30 / 17.28 | 16.46 / 16.75 | 17.32 / 15.48 | 15.52 / 16.77 | 16.19 / 15.60 |
+| 3x, P-core | 9.84 / 9.42 | 7.61 / 8.14 | 8.14 / 7.68 | 7.81 / 8.14 | 8.23 / 7.33 |
+| 3x, E-core | 25.02 / 24.15 | 18.86 / 19.70 | 19.87 / 17.78 | 19.82 / 19.68 | 19.00 / 18.04 |
+| 1.5x, 8500T | 22.40 / 24.69 | 19.36 / 19.91 | 21.52 / 19.87 | 19.69 / 19.96 | 19.87 / 19.88 |
+| 1.5x, P-core | 11.32 / 11.80 | 9.19 / 10.09 | 9.47 / 8.59 | 9.04 / 10.09 | 8.67 / 8.88 |
+| 1.5x, E-core | 27.99 / 28.17 | 23.36 / 24.13 | 25.20 / 21.59 | 24.21 / 24.23 | 22.89 / 21.57 |
+
+- Under MSVC the best interleaved variant takes 23% off the P-core's pass at both ratios, against 13% at 2x; 5% and 14%
+  off the 8500T's; 25% and 18% off the E-core's.
+- At 3x on the 8500T the broadcast variants do not gain under MSVC: 18-tap runs, two loads per tap.
+
 ### The conversion that interleaves
 
 A 4K RGB32 image in chunks of 128 pixels, ms, MSVC / clang-cl.

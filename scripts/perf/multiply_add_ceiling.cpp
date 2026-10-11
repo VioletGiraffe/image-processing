@@ -581,13 +581,13 @@ namespace
 	// Form: kernelFormColumn (0) or interleavedFormColumn<Form>. Conversion: convertRowPair's Layout, 0 with Form 0 only.
 	template <int Form, int Conversion>
 	NOINLINE void horizontalPassRowPair(const uint8_t* rowA, const uint8_t* rowB, size_t sourceWidth, float* floatsA, float* floatsB, float* interleaved, size_t capacity,
-		const float* columnWeights, const uint32_t* tapCounts, size_t weightStride, size_t stepQ8, float* outA, float* outB)
+		const float* columnWeights, const uint32_t* tapCounts, size_t weightStride, size_t stepQ8, size_t columns, float* outA, float* outB)
 	{
 		static_assert((Form == 0) == (Conversion == 0));
 		constexpr size_t backMargin = 8, conversionChunk = 128;
 		[[maybe_unused]] const SpreadIndices indices;
 		size_t base = 0, converted = 0;
-		for (size_t column = 0; column < destWidth;)
+		for (size_t column = 0; column < columns;)
 		{
 			// SlidingSourceFloats::prepareRun
 			const size_t first = column * stepQ8 >> 8, end = first + tapCounts[column];
@@ -619,7 +619,7 @@ namespace
 			}
 
 			// filterBufferedRuns
-			for (; column < destWidth; ++column)
+			for (; column < columns; ++column)
 			{
 				const size_t firstPixel = column * stepQ8 >> 8, tapCount = tapCounts[column];
 				if (firstPixel < base || firstPixel + tapCount > converted)
@@ -802,27 +802,27 @@ namespace
 		return seconds;
 	}
 
-	// horizontalPassRowPair<Form, Conversion> over a 4K RGB32 image, 12 taps at a step of 2.
+	// horizontalPassRowPair<Form, Conversion> over a 4K RGB32 image: columns runs of passTaps taps, stepQ8 / 256 pixels apart.
 	// spanOffsetFloats: the span's start past a 64-byte boundary, in floats.
 	template <int Form, int Conversion>
-	double passSeconds(const std::vector<uint8_t>& image, size_t spanOffsetFloats, int repeats)
+	double passSeconds(const std::vector<uint8_t>& image, size_t spanOffsetFloats, int repeats, size_t passTaps = taps, size_t stepQ8 = 2 * 256, size_t columns = destWidth)
 	{
-		constexpr size_t capacity = 2 * taps + 136;
+		const size_t capacity = 2 * passTaps + 136;
 		float* floatsA = alignedFloats(capacity * 4 + 64);
 		float* floatsB = alignedFloats(capacity * 4 + 64);
 		float* interleaved = alignedFloats(capacity * 8 + 128);
-		float* weights = alignedFloats(destWidth * taps + 64);
-		for (size_t i = 0; i < destWidth * taps + 64; ++i)
-			weights[i] = 1.0f / taps;
-		float* outA = alignedFloats(destWidth * 3 + 64);
-		float* outB = alignedFloats(destWidth * 3 + 64);
-		const std::vector<uint32_t> tapCounts(destWidth, static_cast<uint32_t>(taps));
+		float* weights = alignedFloats(columns * passTaps + 64);
+		for (size_t i = 0; i < columns * passTaps + 64; ++i)
+			weights[i] = 1.0f / static_cast<float>(passTaps);
+		float* outA = alignedFloats(columns * 3 + 64);
+		float* outB = alignedFloats(columns * 3 + 64);
+		const std::vector<uint32_t> tapCounts(columns, static_cast<uint32_t>(passTaps));
 		const double seconds = bestSeconds([&] {
 			for (size_t pair = 0; pair < rowPairs; ++pair)
 			{
 				const uint8_t* rowA = image.data() + pair * 2 * sourceRowBytes;
 				horizontalPassRowPair<Form, Conversion>(rowA, rowA + sourceRowBytes, sourceRowPixels, floatsA + spanOffsetFloats, floatsB + spanOffsetFloats, interleaved + spanOffsetFloats,
-					capacity, weights, tapCounts.data(), taps, 2 * 256, outA, outB);
+					capacity, weights, tapCounts.data(), passTaps, stepQ8, columns, outA, outB);
 			}
 		}, repeats);
 		volatile float sink = outA[100] + outB[200];
@@ -1135,6 +1135,23 @@ int main(int argc, char** argv)
 			report("P8 as P2, the taps in steps", passSeconds<8, 1>(image, 0, repeats), horizontalWork);
 			report("P9 as P6, lane weights", passSeconds<14, 1>(image, 0, repeats), horizontalWork);
 			report("P10 as P8, lane weights", passSeconds<18, 1>(image, 0, repeats), horizontalWork);
+
+			// Runs at odd pixel offsets: every other one where the step is 3 pixels, two of every four at 1.5
+			struct Ratio { const char* name; size_t taps, stepQ8, columns; };
+			for (const Ratio& ratio : { Ratio{ "3x, 18 taps", 18, 3 * 256, 1280 }, Ratio{ "1.5x, 9 taps", 9, 384, 2560 } })
+			{
+				const double work = static_cast<double>(sourceHeight) * ratio.columns * ratio.taps * 4;
+				const auto reportRatio = [&](const char* form, double seconds) {
+					char name[64];
+					std::snprintf(name, sizeof(name), "R  %s, %s", ratio.name, form);
+					report(name, seconds, work);
+				};
+				reportRatio("the kernel's form", passSeconds<0, 0>(image, 0, repeats, ratio.taps, ratio.stepQ8, ratio.columns));
+				reportRatio("interleaved, 4 chains", passSeconds<4, 1>(image, 0, repeats, ratio.taps, ratio.stepQ8, ratio.columns));
+				reportRatio("interleaved, in steps", passSeconds<8, 1>(image, 0, repeats, ratio.taps, ratio.stepQ8, ratio.columns));
+				reportRatio("interleaved, 4 chains, lanes", passSeconds<14, 1>(image, 0, repeats, ratio.taps, ratio.stepQ8, ratio.columns));
+				reportRatio("interleaved, in steps, lanes", passSeconds<18, 1>(image, 0, repeats, ratio.taps, ratio.stepQ8, ratio.columns));
+			}
 		}
 	}
 
