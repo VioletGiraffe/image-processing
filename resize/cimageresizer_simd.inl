@@ -968,7 +968,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		const size_t destWidth = static_cast<size_t>(dest.width);
 		const size_t tempRowStride = stripWidth * Channels;
 
-		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2 };
+		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2, tempRingStartOffset };
 		// ListedTaps' arrays, for the longest y run
 		const size_t listedTapCapacity = verticalTapsListed ? yWeights.longestRun() : 0;
 		const auto listedTapRows = std::make_unique_for_overwrite<const float*[]>(listedTapCapacity);

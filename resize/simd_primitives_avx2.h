@@ -36,6 +36,8 @@ namespace ImageProcessing::Detail::Avx2
 	inline constexpr size_t verticalBlocksPerStep = 2;
 	// The vertical pass reads a dest row's nonzero taps from a list, not from the ring's rows in order: a third fewer instructions in the tap loop
 	inline constexpr bool verticalTapsListed = true;
+	// As at SSE4.1. On the boundary: off a 32-byte one, half of this level's 32-byte loads span two cache lines
+	inline constexpr size_t tempRingStartOffset = 0;
 
 	// The code after the kernel is legacy-SSE encoded, and stalls while the upper YMM state is dirty
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept { SimdSupport::clearAvxUpperState(); }

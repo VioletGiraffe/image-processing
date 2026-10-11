@@ -120,7 +120,8 @@ namespace ImageProcessing::Detail
 	{
 	public:
 		// batchRows: the most rows produced at once, so production can pass a window's end by batchRows - 1
-		TempRowRing(const AxisWeights& yWeights, uint64_t destRowBegin, uint64_t destRowEnd, size_t rowStride, size_t batchRows);
+		// startOffset: the first row's start, in floats past a 64-byte boundary
+		TempRowRing(const AxisWeights& yWeights, uint64_t destRowBegin, uint64_t destRowEnd, size_t rowStride, size_t batchRows, size_t startOffset);
 
 		// The first source row the band's windows read
 		[[nodiscard]] uint64_t firstNeededRow() const noexcept { return _firstNeededRow; }
@@ -128,7 +129,7 @@ namespace ImageProcessing::Detail
 
 		[[nodiscard]] float* row(uint64_t sourceRow) const noexcept
 		{
-			return _rows.get() + static_cast<size_t>(sourceRow % _rowCount) * _rowStride;
+			return _firstRow + static_cast<size_t>(sourceRow % _rowCount) * _rowStride;
 		}
 
 		// A window is contiguous in the ring except across the wrap, which splits it at most once
@@ -137,11 +138,12 @@ namespace ImageProcessing::Detail
 			assert(rowCount <= _rowCount);
 			const size_t firstSlot = static_cast<size_t>(firstRow % _rowCount);
 			const size_t rowsToRingEnd = std::min(rowCount, _rowCount - firstSlot);
-			return { { { _rows.get() + firstSlot * _rowStride, rowsToRingEnd }, { _rows.get(), rowCount - rowsToRingEnd } } };
+			return { { { _firstRow + firstSlot * _rowStride, rowsToRingEnd }, { _firstRow, rowCount - rowsToRingEnd } } };
 		}
 
 	private:
 		AlignedFloats _rows;
+		float* _firstRow;
 		size_t _rowStride;
 		size_t _rowCount;
 		uint64_t _firstNeededRow;

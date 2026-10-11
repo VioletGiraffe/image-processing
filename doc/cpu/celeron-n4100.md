@@ -493,3 +493,109 @@ horizontal loop, per iteration of that loop; its time as a ratio to that loop's,
 | First tap assigned, no list | 1.191 | 94.7 | 1.971 |
 
 The committed form was not timed here: the machine was in its slow state again, from the first of four local builds.
+
+### The float buffers on a 64-byte boundary (2577296)
+
+MSVC, SSE4.1, against 4edb9e5, six rounds, both builds made on the 12600K. A cell is the median of same-round ratios /
+minimum to minimum.
+
+| Scenario | 4edb9e5, min ms | 2577296 |
+|---|---:|---:|
+| 24 MP -> 1080p RGB32 | 201.32 | +1.8% / +1.7% |
+| 4K -> 1080p RGB32, its two rows | 85.29, 85.12 | +2.2% / +2.4%, +1.2% / +2.1% |
+| 4K -> 1080p RGB24 | 87.16 | -0.1% / +0.7% |
+| 4K -> 1080p RGBA32 | 106.28 | -2.0% / -1.7% |
+| 4K -> 1080p Grayscale8 | 42.11 | +1.5% / +2.7% |
+| 720p -> 4K RGBA32 | 54.81 | +1.0% / +0.1% |
+| 720p -> 4K RGB32 | 47.39 | -2.4% / -2.2% |
+| 720p -> 4K RGB24 | 42.65 | +1.7% / +3.0% |
+| 720p -> 4K Grayscale8 | 18.12 | +2.0% / +3.0% |
+| 1080p -> 1440p RGB32 | 32.97 | +0.8% / +2.5% |
+| 1080p -> 240p RGB32 | 17.92 | +2.1% / +1.8% |
+| Native size, the control: no filter runs | 3.99 | -0.1% / +0.2% |
+
+- Within 3% either way: this level's loads are 16 bytes, and the heap's own starts were already on a 16-byte boundary.
+- Nine of the twelve filtering rows read slower, by up to 3%. The kernels are not padded here and the change moved their
+  code; the buffers' starts did not move (below).
+- Three rounds earlier the same day ran in the slow state, 390 ms for 4K -> 1080p RGB32: not used.
+
+One binary that places the temp ring's and the source span's starts by the executable's name (an experiment at 4edb9e5,
+not committed), five rounds, against both starts on a 64-byte boundary:
+
+| Scenario | On a 64-byte boundary, ms | Both 16 bytes past | Both 8 bytes past | The allocations' own starts |
+|---|---:|---:|---:|---:|
+| 24 MP -> 1080p RGB32 | 201.79 | -0.1% / -0.0% | +4.9% / +4.7% | -0.1% / -0.1% |
+| 4K -> 1080p RGB32, its two rows | 85.27, 85.07 | -1.0% / -1.2%, -3.1% / -1.0% | +5.3% / +4.8%, +3.7% / +5.6% | +0.4% / -0.0%, -0.6% / +0.5% |
+| 4K -> 1080p RGB24 | 87.38 | -2.4% / -1.9% | +4.0% / +4.1% | -0.3% / -0.2% |
+| 4K -> 1080p RGBA32 | 105.61 | -5.8% / -5.2% | +1.9% / +2.3% | -0.8% / +0.4% |
+| 4K -> 1080p Grayscale8 | 42.82 | -3.3% / -2.1% | +0.3% / +1.2% | -1.9% / -1.8% |
+| 720p -> 4K RGBA32 | 54.91 | -6.1% / -6.1% | +8.9% / +8.1% | +0.9% / -0.4% |
+| 720p -> 4K RGB32 | 46.81 | -3.4% / -3.4% | +5.9% / +7.0% | -1.1% / -1.5% |
+| 720p -> 4K RGB24 | 43.70 | -2.6% / -2.8% | +5.5% / +6.8% | +2.5% / +0.2% |
+| 720p -> 4K Grayscale8 | 18.61 | -2.4% / -3.1% | +3.4% / +4.0% | -3.3% / -3.0% |
+| 1080p -> 1440p RGB32 | 34.13 | -1.3% / -3.5% | +6.0% / +5.9% | -0.0% / -3.0% |
+| 1080p -> 240p RGB32 | 17.90 | +0.1% / +0.1% | +2.8% / +2.3% | +0.3% / +0.2% |
+
+- The allocations' own starts were on a 64-byte boundary in every call of every process: the committed change moves
+  nothing on this machine, and the table above compares two builds' code.
+- Off a 16-byte boundary costs 2-9%.
+- 16 bytes past a 64-byte boundary is 1-6% faster than on it on ten of the twelve rows. Not explained. The 12600K's
+  E-core has a state of this size on two layouts (its log).
+- A second session after a cold boot, five rounds, repeats it: the RGBA32 rows -5.6% / -5.7% (4K -> 1080p) and
+  -7.5% / -6.2% (720p -> 4K), the Grayscale8 rows -2.5% and -3.8%, 720p -> 4K RGB32 and RGB24 and 1080p -> 1440p
+  -1.9% to -2.7%, 4K -> 1080p RGB32 and RGB24, 24 MP and 1080p -> 240p within 1.6%.
+- On 4K -> 1080p RGBA32 at SSE4.1 the same 16 bytes are worth 1% on the 12600K's two core types and nothing on the
+  8500T (their logs).
+- The ring's start decides it. Four rounds, the two starts placed separately, against both on the boundary:
+
+| Scenario | Both 16 bytes past | The ring alone | The span alone |
+|---|---:|---:|---:|
+| 4K -> 1080p RGBA32 | -3.3% / -5.3% | -5.4% / -5.5% | +1.2% / +1.0% |
+| 720p -> 4K RGBA32 | -5.4% / -6.1% | -6.2% / -6.0% | -0.0% / +0.0% |
+| 4K -> 1080p Grayscale8 | -2.4% / -3.3% | -2.9% / -3.1% | -0.7% / -0.8% |
+| 720p -> 4K Grayscale8 | -4.2% / -4.4% | -4.8% / -4.2% | -1.7% / -0.8% |
+| 720p -> 4K RGB24 | -2.4% / -2.6% | -2.9% / -2.7% | -0.0% / +0.1% |
+| 1080p -> 1440p RGB32 | -2.2% / -2.2% | -2.4% / -2.1% | -0.1% / +0.6% |
+| 4K -> 1080p RGB32, its two rows | -0.6% / -0.7%, +0.5% / -0.7% | -1.7% / -1.5%, -1.0% / -1.6% | +0.2% / -0.0%, +1.1% / +1.0% |
+| 4K -> 1080p RGB24 | +0.2% / -0.3% | -1.4% / -1.4% | +0.6% / -0.1% |
+
+- 16 bytes is the best of the ring's offsets on every row. Two rounds, the span on the boundary, run in the slow state
+  (4.5x, every run 54-55 s): its 16-byte column matches the normal state's above.
+
+| Scenario | The ring 16 bytes past | 32 bytes past | 48 bytes past |
+|---|---:|---:|---:|
+| 4K -> 1080p RGBA32 | -6.7% / -6.2% | -5.7% / -5.1% | -4.4% / -3.9% |
+| 720p -> 4K RGBA32 | -6.3% / -6.3% | -4.7% / -4.8% | -3.3% / -3.3% |
+| 4K -> 1080p Grayscale8 | -2.8% / -2.8% | -1.2% / -1.4% | -0.5% / -0.7% |
+| 720p -> 4K Grayscale8 | -3.9% / -3.9% | -2.8% / -2.6% | -1.9% / -2.2% |
+| 720p -> 4K RGB24 | -3.0% / -3.0% | -0.2% / -0.2% | -2.7% / -2.7% |
+| 720p -> 4K RGB32 | -2.4% / -2.1% | -0.4% / -0.1% | -1.9% / -1.6% |
+| 1080p -> 1440p RGB32 | -2.1% / -2.1% | +0.3% / +0.3% | -2.3% / -2.3% |
+| 4K -> 1080p RGB32, its two rows | -2.7% / -2.4%, -1.9% / -1.3% | -0.2% / -0.2%, +0.5% / +0.9% | -2.3% / -2.4%, -1.4% / -1.3% |
+| 4K -> 1080p RGB24 | -1.9% / -1.3% | +0.8% / +1.3% | -1.2% / -1.0% |
+
+- RGBA32 and Grayscale8 gain from any of the three, the less the further past. The 3-channel layouts gain from 16 and 48
+  and not from 32: for them it is a 32-byte boundary that costs.
+- The native-size control, which filters nothing, read 2-10% slower for the first variant than for the other three.
+
+### The temp ring 16 bytes past a 64-byte boundary at SSE4.1
+
+The committed form against 2577296, MSVC, six rounds in the normal state, both builds made on the 12600K. Median of
+same-round ratios / minimum to minimum.
+
+| Scenario | 2577296, min ms | The ring 16 bytes past |
+|---|---:|---:|
+| 24 MP -> 1080p RGB32 | 204.77 | +0.0% / +0.0% |
+| 4K -> 1080p RGB32, its two rows | 86.74, 87.57 | -1.7% / -1.3%, -1.8% / -2.5% |
+| 4K -> 1080p RGB24 | 88.37 | -2.1% / -1.9% |
+| 4K -> 1080p RGBA32 | 104.60 | -3.3% / -3.5% |
+| 4K -> 1080p Grayscale8 | 43.40 | -3.3% / -2.3% |
+| 720p -> 4K RGBA32 | 54.72 | -8.1% / -5.6% |
+| 720p -> 4K RGB32 | 45.88 | -2.4% / -1.7% |
+| 720p -> 4K RGB24 | 43.95 | -3.1% / -3.1% |
+| 720p -> 4K Grayscale8 | 18.64 | -3.5% / -4.0% |
+| 1080p -> 1440p RGB32 | 33.75 | -2.5% / -2.4% |
+| 1080p -> 240p RGB32 | 18.13 | -0.1% / -0.0% |
+| Native size, the control: no filter runs | 3.76 | +3.8% / +1.5% |
+
+As the experiment above had it, 4K -> 1080p RGBA32 aside: -3.4% here against -5% to -6% there. Two builds' code differs here.

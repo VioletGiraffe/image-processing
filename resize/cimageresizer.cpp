@@ -451,7 +451,7 @@ namespace
 	}
 }
 
-Detail::TempRowRing::TempRowRing(const AxisWeights& yWeights, uint64_t destRowBegin, uint64_t destRowEnd, size_t rowStride, size_t batchRows) :
+Detail::TempRowRing::TempRowRing(const AxisWeights& yWeights, uint64_t destRowBegin, uint64_t destRowEnd, size_t rowStride, size_t batchRows, size_t startOffset) :
 	_rowStride{ rowStride }
 {
 	assert(destRowBegin < destRowEnd);
@@ -471,7 +471,8 @@ Detail::TempRowRing::TempRowRing(const AxisWeights& yWeights, uint64_t destRowBe
 
 	_firstNeededRow = firstNeededRow;
 	_rowCount = rowCount;
-	_rows = makeAlignedFloats(rowCount * rowStride);
+	_rows = makeAlignedFloats(startOffset + rowCount * rowStride);
+	_firstRow = _rows.get() + startOffset;
 }
 
 // Each thread's temp-row ring gets half of its L2 share: the source floats, weights and dest rows need the rest.

@@ -35,6 +35,8 @@ namespace ImageProcessing::Detail::Neon
 	inline constexpr size_t verticalBlocksPerStep = 1;
 	// Not listed: a list's load per tap costs Cortex-A72 3-7% under Clang, at any stored weight size
 	inline constexpr bool verticalTapsListed = false;
+	// As at SSE4.1. On the boundary: no other start is measured at NEON
+	inline constexpr size_t tempRingStartOffset = 0;
 
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 

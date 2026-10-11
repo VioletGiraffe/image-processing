@@ -41,6 +41,8 @@ namespace ImageProcessing::Detail::Sse41
 	inline constexpr size_t verticalBlocksPerStep = 1;
 	// As at AVX2. A list costs a load per tap: Goldmont Plus pays 2-4% for it on downscales, Sandy Bridge nothing.
 	inline constexpr bool verticalTapsListed = true;
+	// The temp ring's start, in floats past a 64-byte boundary. 16 bytes past: Goldmont Plus is 2-6% slower from the boundary, other cores within 1%
+	inline constexpr size_t tempRingStartOffset = 4;
 
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 

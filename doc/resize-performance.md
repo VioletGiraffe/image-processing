@@ -614,15 +614,28 @@ into strips whose per-strip costs exceed those of the larger ring.
   Pi, with threads too; no difference under Clang on the Pi.
 - The ring is then 64 columns times the y window: 276 KB per thread for 4K -> 64x64, against a budget of 128 KB.
 
-### The float buffers start on a cache line
+### Where the float buffers start
 
-The temp ring and the source span are allocated on a 64-byte boundary. The AVX2 kernels load 32 bytes at a time from
-both, and from a start 16 bytes off a 32-byte boundary every other load spans two cache lines.
+The source span is allocated on a 64-byte boundary. So is the temp ring at AVX2 and NEON; at SSE4.1 it starts 16 bytes
+past one (`tempRingStartOffset`).
+
+On the boundary: the AVX2 kernels load 32 bytes at a time from both buffers, and from a start 16 bytes off a 32-byte
+boundary every other load spans two cache lines.
 
 - Left to the heap, the starts took all four 16-byte offsets, by process and by allocation.
 - Both starts 16 bytes off, against both on a boundary, in an experiment that placed them (the PC's and the 8500T's
   logs): the 8500T +3% to +12%, the 12600K's P-core +4% to +10% and +20% on 4K -> 64x64, its E-core within 2%.
 - The heap's own starts cost the 8500T and the P-core 5-7% on 4K -> 1080p.
+
+16 bytes past at SSE4.1 (the N4100's log): the same experiment on Goldmont Plus, in three sessions.
+
+- The ring 16 bytes past a boundary, against on it: RGBA32 -5% to -7%, Grayscale8 -2% to -5%, the 3-channel upscales
+  -2% to -3%, the 3-channel downscales up to -2%.
+- The ring's start decides: the span's changes nothing.
+- 16 is the best offset on every row. RGBA32 and Grayscale8 also gain from 32 and 48, less; the 3-channel layouts from
+  48 and not from 32.
+- 4K -> 1080p RGBA32 at SSE4.1 elsewhere, both starts 16 bytes past: -1% on the 12600K's two core types, nothing on
+  the 8500T.
 
 ## Experiments that lost
 
@@ -786,7 +799,8 @@ both, and from a start 16 bytes off a 32-byte boundary every other load spans tw
     horizontal arithmetic alone at a fixed 12 taps, against the kernel's form, is +3% to +17% on the 8500T, +17% to +29%
     on the 12600K's P-cores and +61% to +73% on its E-cores. Untried in the kernel.
     - With the tap count read per column and the conversion included, under MSVC: 4% off the pass on the 8500T, 13% on
-      the P-core, 22% on the E-core, without the run lookup.
+      the P-core, 22% on the E-core, without the run lookup. At 3x and 1.5x, where the kernel's form meets odd pixel
+      offsets: 5% and 14%, 23%, 25% and 18%.
     - No weight source suits every core: broadcast from memory loses to the kernel's form on the 8500T's long runs,
       weights permuted in-lane on the P-core's.
     - Four-tap runs gain 12-16% of their arithmetic under MSVC on all three cores.
@@ -807,3 +821,6 @@ both, and from a start 16 bytes off a 32-byte boundary every other load spans tw
       width is not a multiple of the vertical block's pixels.
 22. **The 12600K's E-core on 4K -> 1080p RGB32 and RGB24** has a state of 4-8% that follows the process's heap layout,
     not the buffers' alignment (the PC's log). Not explained.
+23. **Why Goldmont Plus prefers the temp ring 16 bytes past a cache line** is not known. Unmeasured: the committed
+    form anywhere but the N4100, rows other than 4K -> 1080p RGBA32 on the 8500T at SSE4.1, and any start but the
+    boundary at NEON.

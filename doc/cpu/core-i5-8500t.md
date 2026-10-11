@@ -652,6 +652,16 @@ minimum to minimum:
 - The allocations' own starts land on a boundary in some rounds: their minimum matches the 64-byte boundary's on most
   rows, their median does not.
 
+4K -> 1080p RGBA32 alone, both starts 16 bytes past a 64-byte boundary against both on it: ten pinned processes of 20
+samples each way, alternating, median / minimum of the per-process means, ms. The N4100 gains 5-6% from the 16 bytes
+on this row at SSE4.1 (its log).
+
+| | On the boundary | 16 bytes past | |
+|---|---:|---:|---:|
+| AVX2 | 25.92 / 25.44 | 29.08 / 28.58 | +12.2% / +12.3% |
+| SSE4.1 | 42.79 / 42.66 | 42.75 / 42.56 | -0.1% / -0.2% |
+| QImage, the control | 28.93 / 28.58 | 29.42 / 28.74 | +1.7% / +0.6% |
+
 A second state that placement does not explain: 9 of 24 processes with both buffers on a 64-byte boundary gave 15.2-16.8.
 
 | Tested against it | Result |
