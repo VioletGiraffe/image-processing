@@ -94,7 +94,7 @@ In `scripts/perf/`, each with `--help`:
 | `count_boundary_jumps.py` | Counts the kernels' jumps that cross or end on a 32-byte boundary in a `dumpbin` or `objdump` listing. A padded build counts under 1%, a plain one 15-25%. |
 | `extract_kernels.py` | Prints a listing's kernels in a form two builds diff in: padding dropped, a jump's target as its distance in instructions. `--loops` prints each kernel's loops with their sizes and stack references. |
 | `annotate_vtune_hotspots.py` | Sums a VTune by-address hotspots report over the kernels' loops of a listing, or over each instruction. |
-| `multiply_add_ceiling.cpp` | A standalone program: the two passes' multiply-adds without the kernel's bookkeeping, and other forms of the horizontal pass. Its header has the build commands. |
+| `multiply_add_ceiling.cpp` | A standalone program: the two passes' multiply-adds without the kernel's bookkeeping, and other forms of the horizontal pass, by section. Builds for AVX2, plain x64 and ARM64. Its header has the build commands. |
 
 The builds to compare are made by hand, the toolchain paths differing per machine:
 
@@ -783,9 +783,15 @@ both, and from a start 16 bytes off a 32-byte boundary every other load spans tw
     - NEON stores a 3-float temp pixel through the stack, a 16-byte store then 8 and 4 bytes copied out (GCC's listing
       on the Pi): untried.
 19. **A tap per multiply-add with the row pair's pixels interleaved** ([throughput-ceiling.md](throughput-ceiling.md)): the
-    horizontal arithmetic alone, against the kernel's form, is +3% to +17% on the 8500T, +17% to +29% on the 12600K's
-    P-cores and +61% to +73% on its E-cores. Untried in the kernel, where a third of the loop is bookkeeping it keeps and
-    the conversion would write the pair's pixels alternately.
+    horizontal arithmetic alone at a fixed 12 taps, against the kernel's form, is +3% to +17% on the 8500T, +17% to +29%
+    on the 12600K's P-cores and +61% to +73% on its E-cores. Untried in the kernel.
+    - With the tap count read per column and the conversion included, under MSVC: 4% off the pass on the 8500T, 13% on
+      the P-core, 22% on the E-core, without the run lookup.
+    - No weight source suits every core: broadcast from memory loses to the kernel's form on the 8500T's long runs,
+      weights permuted in-lane on the P-core's.
+    - Four-tap runs gain 12-16% of their arithmetic under MSVC on all three cores.
+    - The 128-bit levels' form is already a tap per multiply-add, and an interleaved span costs them nothing: one
+      outline for every level is possible.
 20. **An AVX level for CPUs with AVX and no AVX2** (Sandy Bridge, Ivy Bridge). A prototype with 256-bit floats and
     128-bit integer steps, in the SSE4.1 level's place: the i3-2310M's log has its shape and figures.
     - The i3-2310M: 24 MP -> 1080p, 1080p -> 240p, 4K -> 64x64 and 101 MP -> 720p -16% to -29%; upscales and Grayscale8

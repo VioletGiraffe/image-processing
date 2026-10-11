@@ -98,19 +98,122 @@ Cycles per column pair; the multiply-adds alone need 6:
 - The kernel's vertical pass on the 8500T, 15.3 G/s, has the tap list's construction, RGB32's byte layout and the strip
   loop on top of this arithmetic.
 
+## The interleaved form closer to the kernel
+
+The program's sections T, F, C, P and N, at 4edb9e5. MSVC 19.51 and clang-cl 22.1 on the x64 machines, pinned to one
+core. Interleaved: a tap per multiply-add over the row pair's pixels in one buffer, as in the table above.
+
+### A tap count read per column
+
+G/s, MSVC. Kernel's: `filterRun`'s steps of 8, 4, 2 and 1 taps. The interleaved columns take the same steps, with each
+weight broadcast from memory, or four weights loaded into both lanes and permuted in-lane.
+
+| Taps | 8500T: kernel's | broadcast | lanes | P-core: kernel's | broadcast | lanes | E-core: kernel's | broadcast | lanes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 8.1 | 9.2 | 9.2 | 16.5 | 19.4 | 18.7 | 7.5 | 7.9 | 7.7 |
+| 5 | 7.7 | 11.5 | 11.4 | 16.5 | 23.3 | 23.1 | 8.0 | 9.3 | 8.9 |
+| 8 | 12.6 | 13.6 | 13.1 | 26.3 | 30.9 | 29.4 | 9.0 | 11.2 | 10.7 |
+| 12 | 16.1 | 15.0 | 16.6 | 33.0 | 36.9 | 35.6 | 9.8 | 13.5 | 12.7 |
+| 16 | 17.8 | 16.6 | 18.9 | 35.2 | 40.2 | 37.9 | 10.0 | 15.2 | 14.2 |
+| 24 | 21.8 | 18.1 | 22.3 | 40.7 | 38.9 | 38.0 | 10.6 | 15.7 | 16.0 |
+| 48 | 24.4 | 20.6 | 25.1 | 43.8 | 43.7 | 38.6 | 11.0 | 17.2 | 17.0 |
+| 12 or 11, unpredictably | 14.5 | 14.6 | 15.7 | 30.0 | 34.2 | 32.8 | 9.7 | 11.0 | 11.9 |
+
+- **The fixed 12 taps overstated the gain:** +16% on the P-core under MSVC with the count fixed, +12% with it read.
+- **Neither weight source wins on every core.** Broadcast loses 7-17% to the kernel's form on the 8500T from 12 taps
+  up, two loads per tap on a core with two load ports. Lanes are level or ahead there, and lose 7-12% on the P-core
+  from 24 taps up.
+- **The E-core gains with either,** 30-56% from 12 taps up.
+- **A plain loop of 4 chains, broadcast,** in place of the steps: 16.3 and 20.9 on the 8500T at 12 and 48 taps, 35.5
+  and 44.1 on the P-core, 13.1 and 17.2 on the E-core.
+- **clang-cl** at 12 taps, kernel's against interleaved in steps: 14.9 and 17.0 on the 8500T, 29.6 and 37.5 on the
+  P-core, 9.3 and 13.8 on the E-core. It compiles both weight sources to the same code.
+- **A tap indexed from the run's start costs MSVC a shift per tap,** a pixel pair being 32 bytes: the loops of 3 and 4
+  chains read 26-29 G/s at 12 taps on the P-core, against 35 with pointers stepped per tap.
+
+### The whole pass
+
+12 taps at a step of 2 over a 4K RGB32 image: conversion in chunks of 128 pixels into the sliding span, then the
+columns' runs, without the run lookup. ms, MSVC / clang-cl.
+
+| Form | 8500T | P-core | E-core |
+|---|---:|---:|---:|
+| The kernel's | 17.63 / 18.15 | 8.92 / 8.65 | 26.04 / 25.80 |
+| Interleaved, a loop of 4 chains, broadcast | 16.98 / 17.19 | 7.72 / 8.24 | 20.23 / 20.10 |
+| Interleaved, in steps, broadcast | 18.74 / 15.24 | 8.07 / 6.88 | 22.22 / 18.44 |
+| Interleaved, a loop of 4 chains, lanes | 18.04 / 17.14 | 8.07 / 8.21 | 21.15 / 20.10 |
+| Interleaved, in steps, lanes | 17.52 / 15.29 | 8.11 / 6.82 | 20.85 / 18.47 |
+| The kernel's, the span 16 bytes off a 32-byte boundary | 18.95 / 18.91 | 9.47 / 8.86 | 26.09 / 25.91 |
+| Interleaved, 3 chains, the span on a boundary and 16 bytes off | 17.51, 18.20 / 17.67, 17.80 | 7.86, 8.81 / 9.04, 9.12 | 20.53, 20.68 / 20.89, 20.92 |
+
+- Under MSVC the best interleaved variant takes 4% off the pass on the 8500T, 13% on the P-core, 22% on the E-core.
+- The P-core's figures move 5-13% with the placement of code and buffers: the H lines read 13% lower after the other
+  sections than alone, and clang-cl's ranking of the loop and the steps reversed between two builds.
+
+### The conversion that interleaves
+
+A 4K RGB32 image in chunks of 128 pixels, ms, MSVC / clang-cl.
+
+| Conversion | 8500T | P-core | E-core |
+|---|---:|---:|---:|
+| The kernel's: each row to its own floats | 2.99 / 2.33 | 1.25 / 1.03 | 3.54 / 2.75 |
+| The rows' bytes unpacked into pixel pairs, then widened | 3.04 / 3.04 | 1.13 / 1.12 | 3.06 / 2.74 |
+| Each row widened, lanes permuted into pixel pairs | 3.54 / 2.99 | 1.80 / 1.78 | 4.88 / 3.75 |
+| Each row widened, each pixel stored as 16 bytes | 3.29 / 3.06 | 1.46 / 1.78 | 3.82 / 3.75 |
+
+Unpacking the bytes costs MSVC 2% at most. On the 8500T clang-cl's interleaving conversions are 28-31% slower than its
+code for the kernel's.
+
+### Four-tap runs
+
+An upscale's arithmetic, 720p -> 4K, ms, MSVC / clang-cl.
+
+| Form | 8500T | P-core | E-core |
+|---|---:|---:|---:|
+| `filterFourTapRun`'s: weights spread over a pixel pair, halves summed | 3.63 / 3.11 | 2.02 / 1.53 | 4.01 / 4.50 |
+| Interleaved, one chain, broadcast | 3.21 / 2.83 | 1.78 / 1.30 | 3.36 / 2.88 |
+| Interleaved, two chains, broadcast | 3.24 / 2.83 | 1.72 / 1.31 | 3.55 / 3.07 |
+| Interleaved, two chains, lanes | 3.59 / 2.83 | 1.71 / 1.31 | 3.74 / 3.07 |
+
+### The 128-bit levels
+
+At SSE4.1 and NEON the kernel's form is already a tap per multiply-add: a register is one pixel, and the spread gives
+each tap's weight to one register. Section N is that form at the level's chain count, a tap count read per column, with
+the rows in a buffer each or interleaved, and each weight from its lane or broadcast from memory. G/s at 12 and 48 taps.
+
+| | A buffer per row, lanes: the level's form | A buffer per row, broadcast | Interleaved, lanes | Interleaved, broadcast |
+|---|---:|---:|---:|---:|
+| 12600K P-core, MSVC | 18.9, 21.6 | 18.6, 19.7 | 18.7, 21.3 | 18.8, 19.6 |
+| 12600K P-core, clang-cl | 19.2, 22.0 | 19.0, 21.8 | 19.3, 22.0 | 19.3, 21.9 |
+| 12600K E-core, MSVC | 8.9, 10.5 | 8.9, 10.5 | 8.8, 10.4 | 9.0, 10.5 |
+| 12600K E-core, clang-cl | 9.2, 11.2 | 9.1, 11.2 | 9.2, 11.2 | 9.2, 11.2 |
+| N4100, MSVC | 4.1, 4.8 | 4.0, 4.7 | 4.1, 4.8 | 4.0, 4.8 |
+| N4100, clang-cl | 4.1, 4.7 | 3.8, 4.6 | 3.9, 4.7 | 4.0, 4.7 |
+| Pi 4, GCC 14.2 | 2.7, 3.9 | 2.7, 3.5 | 2.6, 3.8 | 2.7, 3.5 |
+| Pi 4, Clang 22 | 2.7, 3.9 | 2.5, 3.6 | 2.7, 3.8 | 2.6, 3.6 |
+
+- Interleaving the buffer changes nothing at 128 bits: within 3% of the level's form, the N4100 under clang-cl aside (5%).
+- Broadcast weights cost the Pi 8-10% at 48 taps and the P-core 9% under MSVC.
+
 ## What follows
 
 - More multiply-add throughput, wider vectors or more chains, would gain little on the Skylake family: its FMA units
   are idle three quarters of the time.
 - The room is in the work per multiply-add. Trimming the per-column bookkeeping has not gained (experiments 18 to 20, 22 and 23
   of the main doc); the horizontal form itself is the larger term.
-- **Untried in the kernel: the interleaved form** for the 4-float layouts' row pairs. The conversion would write a row
-  pair's pixels alternately into one buffer. The figures above bound its gain from above: a third of the real loop is
-  bookkeeping that it keeps, and the conversion gains work.
+- **Untried in the kernel: the interleaved form** for the 4-float layouts' row pairs. The figures above bound its gain
+  from above: the real loop keeps its run lookup.
+  - One outline could serve every level: the span interleaved everywhere, a row pair as one register at AVX2 and two at
+    128 bits, the weight source chosen per level.
+  - Every 32-byte load of it is aligned once the span is: a pixel pair is 32 bytes. The kernel's form is 16 bytes off
+    at every odd pixel offset.
+  - The 1- and 2-float layouts keep the kernel's form: a pixel pair would fill 2 or 4 of a register's 8 floats.
 
 ## Limits of these figures
 
 - One scenario: a 2x downscale with 12-tap runs. An upscale's 4-tap runs have their own passes.
 - The kernel's rates are MSVC's on the 8500T only. No kernel profile exists for the 12600K.
 - The program's vertical variant packs 64 floats to 64 bytes, not RGB32's 3 floats to 4 bytes.
-- SSE4.1 and NEON are not covered: their peak is 8 floats per cycle on a core with two 128-bit units.
+- At SSE4.1 and NEON only the horizontal forms of section N are measured, not the levels' ceilings: their peak is 8
+  floats per cycle on a core with two 128-bit units.
+- The interleaved form's sections have no run lookup, no straight alpha and no RGB24 source.
