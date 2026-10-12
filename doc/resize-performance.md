@@ -464,6 +464,22 @@ also stay in registers through the strip's loop, where the column loop's chains 
 - A layout without a fixed pixel stride converts every pixel in this loop, now scalar under Clang: unmeasured.
 - The Grayscale8 upscale's loss is open lead 14.
 
+### The conversion's block loop steps pointers to an end pointer
+
+`convertPixelsToFloats`' block loop steps a source and a destination pointer and ends at a pointer computed before it.
+With a pixel index and a bound of `pixel + loadedPixels <= pixelCount` MSVC keeps a second counter, doubles a copy of
+the index for the stores and indexes them: 15 instructions per 16 bytes of RGB32 at AVX2, 12 now. GCC compiles the
+indexed form to stepped pointers by itself; its kernels and Clang's are untimed.
+
+| Core, MSVC | Result |
+|---|---|
+| 8500T, 8 rounds | 4K -> 1080p RGB32 -3.4% to -4.1%, 24 MP -> 1080p -2.9%, 1080p -> 240p -2.1%, 101 MP -> 720p -1%; RGBA32, RGB24, Grayscale8 and the upscales within 1%; 1080p at native size +2% to +3% |
+| 12600K P-core, five placements of the code after the loop | 4K -> 1080p RGB32 -4% to -5% with no overlap, RGB24 -2%; Grayscale8 and 24 MP -> 1080p level |
+| 12600K E-core | The conversion loops' own time -16% on 4K -> 1080p Grayscale8 (VTune); whole rows move by 10% either way with where the column loop lies (open lead 22) |
+
+- Grayscale8's loop had 13 instructions: one fewer now.
+- RGBA32's loop premultiplies, and RGB24's shuffles its bytes first: neither gained on the 8500T.
+
 ### Output bytes packed without a clamp
 
 The vertical pass capped its sums at 255 before converting them: `packus_epi16` reads its input as signed, so a word past
@@ -792,6 +808,8 @@ boundary every other load spans two cache lines.
     - About 78 instructions per column pair for about 28 of arithmetic: run lookup, range check, offsets, tap-count
       branches, four permutation constants reloaded, four stack reloads.
     - Experiments 18 to 20, 22 and 23 each took a few of those instructions out or moved them: none gained.
+    - GCC's code for this loop's model in `multiply_add_ceiling` is 73 instructions per 12-tap column pair against
+      MSVC's 82, and its pass 7% faster: the spread constants stay in registers, where MSVC reloads all four per column.
     - The vertical pass reads no state through a structure in its tap loop: nothing to take by value there.
     - NEON stores a 3-float temp pixel through the stack, a 16-byte store then 8 and 4 bytes copied out (GCC's listing
       on the Pi): untried.
@@ -821,8 +839,18 @@ boundary every other load spans two cache lines.
     - The horizontal pass, a run at an odd pixel offset: 16 bytes off for 4-float pixels.
     - The vertical pass, a temp row stride that is not a multiple of 32 bytes: a strip as wide as a destination whose
       width is not a multiple of the vertical block's pixels.
-22. **The 12600K's E-core on 4K -> 1080p RGB32 and RGB24** has a state of 4-8% that follows the process's heap layout,
-    not the buffers' alignment (the PC's log). Not explained.
+22. **The 12600K's E-core loses up to 10% of a row by where the horizontal column loop lies** (the PC's log).
+    - 4K -> 1080p Grayscale8, two builds with the same column loop, 155 instructions and 754 bytes at the same offset
+      within a 64-byte line, 960 bytes apart: 64.8 G and 73.0 G cycles for the same 236 G instructions.
+    - The whole difference is front-end slots lost to predecode, 46 G and 83 G of them. Mispredicted branches are
+      level; there are no machine clears, blocked or split loads, or L1 misses.
+    - The stalls fall on different stretches of the loop in the two builds, and the faster one still loses 14% of the
+      loop's time to them.
+    - 24 MP -> 1080p RGB32 takes 84 or 93 ms by 4 to 24 bytes of padding ahead of the loop.
+    - An A/B of two binaries on this core is unreliable by about 10% on a row whose column loop moved.
+    - Not found: the rule that decides which addresses stall. Unmeasured: other rows, and the P-core.
+    - 4K -> 1080p RGB32 and RGB24 also have a state of 4-8% that follows the process's heap layout, not the buffers'
+      alignment. Not shown to be this effect.
 23. **Why Goldmont Plus prefers the temp ring 16 bytes past a cache line** is not known. Unmeasured: the committed
     form anywhere but the N4100, rows other than 4K -> 1080p RGBA32 on the 8500T at SSE4.1, and any start but the
     boundary at NEON.

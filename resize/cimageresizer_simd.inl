@@ -51,22 +51,32 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			{
 				constexpr size_t blockPixels = 16 / floatsPerPixel;
 				constexpr size_t loadedPixels = (16 + PixelStride - 1) / PixelStride;
-				for (; pixel + loadedPixels <= pixelCount; pixel += blockPixels)
+				if (pixelCount >= loadedPixels)
 				{
-					Floats8 first, second;
-					if constexpr (PixelStride == 3)
-						loadFourRgbPixelsAsFloats(pixels + pixel * 3, first, second);
-					else
-						loadSixteenBytesAsFloats(pixels + pixel * PixelStride, first, second);
-
-					if constexpr (PremultiplyAlpha)
+					const size_t blockCount = (pixelCount - loadedPixels) / blockPixels + 1;
+					// Stepped pointers and an end pointer: for an index bound MSVC keeps a second counter and indexes the stores
+					const uint8_t* blockBytes = pixels;
+					float* blockFloats = floats;
+					float* const blockFloatsEnd = floats + blockCount * 16;
+					for (; blockFloats != blockFloatsEnd; blockBytes += blockPixels * PixelStride, blockFloats += 16)
 					{
-						first = premultiplyPixels<floatsPerPixel>(first);
-						second = premultiplyPixels<floatsPerPixel>(second);
+						Floats8 first, second;
+						if constexpr (PixelStride == 3)
+							loadFourRgbPixelsAsFloats(blockBytes, first, second);
+						else
+							loadSixteenBytesAsFloats(blockBytes, first, second);
+
+						if constexpr (PremultiplyAlpha)
+						{
+							first = premultiplyPixels<floatsPerPixel>(first);
+							second = premultiplyPixels<floatsPerPixel>(second);
+						}
+
+						storeFloats8(blockFloats, first);
+						storeFloats8(blockFloats + 8, second);
 					}
 
-					storeFloats8(floats + pixel * floatsPerPixel, first);
-					storeFloats8(floats + pixel * floatsPerPixel + 8, second);
+					pixel = blockCount * blockPixels;
 				}
 			}
 

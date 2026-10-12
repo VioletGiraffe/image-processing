@@ -254,6 +254,24 @@ loop over dest pixels with `prepareRun`, less the chunked conversion. clang-cl r
 - The stepping figure is 1.2-3 ns per dest pixel for one source logic, by layout and compiler: it measures that loop's
   code, and bounds the stepping's cost inside the filter loop from above only.
 
+## The conversion's block loop with stepped pointers (against a8dd837)
+
+MSVC, eight alternating rounds pinned to core 2, single-threaded rows: median of same-round ratios / minimum to minimum.
+
+| Scenario | a8dd837, min ms | Stepped pointers |
+|---|---:|---:|
+| 24 MP -> 1080p RGB32 | 52.84 | -2.9% / -2.9% |
+| 4K image -> 1080p RGB32 | 24.43 | -4.1% / -6.1% |
+| 4K -> 1080p RGB32 | 23.98 | -3.4% / -3.5% |
+| 1080p -> 240p RGB32 | 4.19 | -2.1% / -1.9% |
+| 101 MP -> 720p RGB32 | 177.30 | -0.9% / -1.1% |
+| 4K -> 64x64 RGB32 | 11.69 | -0.3% / -0.4% |
+| 4K -> 1080p RGBA32 | 25.72 | +1.0% / 0.0% |
+| 4K -> 1080p RGB24 | 23.06 | 0.0% / -0.3% |
+| 4K -> 1080p Grayscale8 | 14.09 | +0.7% / +0.4% |
+| 1080p at native size RGB32 | 1.80 | +1.9% / +3.2% |
+| The five upscales | | -1.3% to +0.5% |
+
 ## The source buffers' range by value in the horizontal filter
 
 Median of same-round ratios over twenty alternating rounds (sixteen in WSL), against 93b1b79 with the same benchmark
