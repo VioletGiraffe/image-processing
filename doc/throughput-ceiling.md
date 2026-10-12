@@ -100,72 +100,126 @@ Cycles per column pair; the multiply-adds alone need 6:
 
 ## The interleaved form closer to the kernel
 
-The program's sections T, F, C, P and N, at 4edb9e5. MSVC 19.51 and clang-cl 22.1 on the x64 machines, pinned to one
-core. Interleaved: a tap per multiply-add over the row pair's pixels in one buffer, as in the table above.
+The program's sections T, F, C, P and N, pinned to one core. MSVC 19.51 and clang-cl 22.1 on the x64 machines; GCC 14.3
+on the 8500T, under WSL 2. Interleaved: a tap per multiply-add over the row pair's pixels in one buffer, as in the table
+above.
+
+- Sections T and P are built with the kernels' jump-alignment options (`/QIntel-jcc-erratum`,
+  `-mbranches-within-32B-boundaries`), GCC's build aside. Without them single lines differ by up to 14% between two
+  builds of one source on the 8500T, and by nothing on the 12600K.
+- The 8500T ran T and P with the hypervisor on: within 2% of its lines measured without.
+- clang-cl on Windows and Clang in WSL agree within 1% on the same source, so GCC's figures compare with the others.
+
+### What the compilers make of the forms
+
+From the listings of all three:
+
+- **The tap itself is the same code everywhere:** one weight instruction and one multiply-add with a memory operand.
+- **Clang rewrites three things once it knows the values.** The program hides each behind an empty `asm` statement, as
+  the kernels' `spreadIndices` does; `-DNO_CLANG_BARRIERS` builds without.
+  - A `vpermps` with known indices becomes `vshufps` + `vpermpd`: the kernel's form is 6% slower in the pass and 15%
+    slower at 48 taps on the 8500T.
+  - Lane permutes of a loaded weight block become broadcasts from memory: no lane weights at all. 21.7 against 24.4 G/s
+    at 48 taps on the 8500T.
+  - A pixel pointer and a weight pointer stepped together become one index scaled by 8: every multiply-add of the loop
+    is indexed, with 7 bookkeeping instructions an iteration.
+- **MSVC keeps a second counter for a bound written `w + n <= end`.** With the loop's end pointer computed before it,
+  the bookkeeping is 3 instructions and the interleaved loops gain 9-20% at 12 to 24 taps on the 8500T.
+- **GCC derives the end pointer and steps the per-column pointers by itself,** at about 10 instructions per column.
 
 ### A tap count read per column
 
-G/s, MSVC. Kernel's: `filterRun`'s steps of 8, 4, 2 and 1 taps. The interleaved columns take the same steps, with each
-weight broadcast from memory, or four weights loaded into both lanes and permuted in-lane.
+G/s. Kernel's: `filterRun`'s steps of 8, 4, 2 and 1 taps. The interleaved columns take the same steps, with each weight
+broadcast from memory, or four weights loaded into both lanes and permuted in-lane.
+
+MSVC:
 
 | Taps | 8500T: kernel's | broadcast | lanes | P-core: kernel's | broadcast | lanes | E-core: kernel's | broadcast | lanes |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 4 | 8.1 | 9.2 | 9.2 | 16.5 | 19.4 | 18.7 | 7.5 | 7.9 | 7.7 |
-| 5 | 7.7 | 11.5 | 11.4 | 16.5 | 23.3 | 23.1 | 8.0 | 9.3 | 8.9 |
-| 8 | 12.6 | 13.6 | 13.1 | 26.3 | 30.9 | 29.4 | 9.0 | 11.2 | 10.7 |
-| 12 | 16.1 | 15.0 | 16.6 | 33.0 | 36.9 | 35.6 | 9.8 | 13.5 | 12.7 |
-| 16 | 17.8 | 16.6 | 18.9 | 35.2 | 40.2 | 37.9 | 10.0 | 15.2 | 14.2 |
-| 24 | 21.8 | 18.1 | 22.3 | 40.7 | 38.9 | 38.0 | 10.6 | 15.7 | 16.0 |
-| 48 | 24.4 | 20.6 | 25.1 | 43.8 | 43.7 | 38.6 | 11.0 | 17.2 | 17.0 |
-| 12 or 11, unpredictably | 14.5 | 14.6 | 15.7 | 30.0 | 34.2 | 32.8 | 9.7 | 11.0 | 11.9 |
+| 4 | 8.8 | 10.0 | 9.7 | 16.5 | 20.5 | 20.6 | 7.9 | 8.4 | 7.2 |
+| 5 | 8.9 | 12.4 | 12.2 | 16.9 | 24.8 | 25.1 | 8.4 | 9.7 | 9.3 |
+| 8 | 13.3 | 14.6 | 13.8 | 27.9 | 31.0 | 31.0 | 9.2 | 11.5 | 10.9 |
+| 12 | 16.8 | 16.5 | 16.9 | 35.5 | 37.8 | 36.2 | 9.8 | 13.8 | 13.0 |
+| 16 | 18.2 | 19.4 | 19.3 | 37.7 | 43.6 | 38.6 | 10.0 | 15.7 | 14.7 |
+| 24 | 22.1 | 20.2 | 21.8 | 41.2 | 43.2 | 38.8 | 10.6 | 15.8 | 16.1 |
+| 48 | 24.2 | 21.1 | 25.3 | 45.3 | 45.5 | 38.6 | 11.0 | 17.2 | 17.0 |
+| 12 or 11, unpredictably | 15.4 | 16.3 | 16.3 | 32.6 | 37.3 | 35.2 | 9.8 | 12.9 | 12.3 |
 
-- **The fixed 12 taps overstated the gain:** +16% on the P-core under MSVC with the count fixed, +12% with it read.
-- **Neither weight source wins on every core.** Broadcast loses 7-17% to the kernel's form on the 8500T from 12 taps
-  up, two loads per tap on a core with two load ports. Lanes are level or ahead there, and lose 7-12% on the P-core
-  from 24 taps up.
-- **The E-core gains with either,** 30-56% from 12 taps up.
-- **A plain loop of 4 chains, broadcast,** in place of the steps: 16.3 and 20.9 on the 8500T at 12 and 48 taps, 35.5
-  and 44.1 on the P-core, 13.1 and 17.2 on the E-core.
-- **clang-cl** at 12 taps, kernel's against interleaved in steps: 14.9 and 17.0 on the 8500T, 29.6 and 37.5 on the
-  P-core, 9.3 and 13.8 on the E-core. It compiles both weight sources to the same code.
+clang-cl, and GCC on the 8500T:
+
+| Taps | 8500T: kernel's | broadcast | lanes | P-core: kernel's | broadcast | lanes | E-core: kernel's | broadcast | lanes | GCC: kernel's | broadcast | lanes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 8.7 | 10.5 | 10.0 | 17.2 | 21.8 | 20.6 | 7.8 | 8.2 | 5.7 | 6.5 | 10.0 | 9.4 |
+| 5 | 8.6 | 12.2 | 11.7 | 16.3 | 25.6 | 24.2 | 7.8 | 9.6 | 7.2 | 7.3 | 12.5 | 10.7 |
+| 8 | 13.1 | 15.6 | 14.7 | 27.9 | 32.1 | 30.5 | 9.3 | 11.5 | 10.8 | 11.7 | 14.6 | 13.9 |
+| 12 | 16.5 | 17.9 | 17.9 | 36.0 | 40.2 | 37.0 | 9.8 | 14.2 | 13.2 | 15.1 | 17.0 | 17.3 |
+| 16 | 17.6 | 21.1 | 20.2 | 36.9 | 42.4 | 42.0 | 10.7 | 15.3 | 14.2 | 17.7 | 20.1 | 19.1 |
+| 24 | 22.6 | 21.4 | 23.1 | 41.4 | 43.7 | 47.7 | 11.1 | 17.5 | 16.1 | 22.1 | 20.9 | 22.5 |
+| 48 | 25.1 | 22.0 | 24.4 | 46.3 | 47.5 | 48.7 | 11.5 | 18.5 | 17.0 | 26.3 | 22.2 | 24.7 |
+| 12 or 11, unpredictably | 15.1 | 17.5 | 17.0 | 31.2 | 37.9 | 35.2 | 9.9 | 13.2 | 12.3 | 14.3 | 16.0 | 16.4 |
+
+- **The E-core gains with either weight source,** 33-61% from 12 taps up. Under clang-cl broadcast is 8-9% ahead of lanes there.
+- **On the 8500T broadcast falls behind from 24 taps up** under every compiler, below the kernel's form: two loads per
+  tap on a core with two load ports. Lanes stay level with the kernel's form or ahead.
+- **On the P-core MSVC's lanes stop at 38.6 G/s from 16 taps up; clang-cl's reach 48.7,** the best of any form there.
+- **A plain loop of 4 chains** in place of the steps, broadcast and lanes, at 12 and 48 taps. MSVC: 18.0, 17.6 and 21.9,
+  24.8 on the 8500T; 38.3, 37.7 and 45.7, 38.7 on the P-core; 13.6, 13.1 and 17.3, 17.2 on the E-core. clang-cl: 18.8,
+  16.8 and 22.3, 24.0; 38.7, 33.1 and 46.0, 48.3; 13.6, 12.1 and 18.5, 17.1.
 - **A tap indexed from the run's start costs MSVC a shift per tap,** a pixel pair being 32 bytes: the loops of 3 and 4
   chains read 26-29 G/s at 12 taps on the P-core, against 35 with pointers stepped per tap.
 
 ### The whole pass
 
-12 taps at a step of 2 over a 4K RGB32 image: conversion in chunks of 128 pixels into the sliding span, then the
-columns' runs, without the run lookup. ms, MSVC / clang-cl.
+A 4K RGB32 image: conversion in chunks of 128 pixels into the sliding span, then the columns' runs, without the run
+lookup. 2x: 1920 columns of 12 taps. 3x: 1280 of 18. 1.5x: 2560 of 9. 4x: 958 of 24. At 3x every other run starts at
+an odd pixel offset, at 1.5x two of every four: the kernel's form is 16 bytes off a 32-byte boundary there, the
+interleaved form never. ms.
 
-| Form | 8500T | P-core | E-core |
-|---|---:|---:|---:|
-| The kernel's | 17.63 / 18.15 | 8.92 / 8.65 | 26.04 / 25.80 |
-| Interleaved, a loop of 4 chains, broadcast | 16.98 / 17.19 | 7.72 / 8.24 | 20.23 / 20.10 |
-| Interleaved, in steps, broadcast | 18.74 / 15.24 | 8.07 / 6.88 | 22.22 / 18.44 |
-| Interleaved, a loop of 4 chains, lanes | 18.04 / 17.14 | 8.07 / 8.21 | 21.15 / 20.10 |
-| Interleaved, in steps, lanes | 17.52 / 15.29 | 8.11 / 6.82 | 20.85 / 18.47 |
-| The kernel's, the span 16 bytes off a 32-byte boundary | 18.95 / 18.91 | 9.47 / 8.86 | 26.09 / 25.91 |
-| Interleaved, 3 chains, the span on a boundary and 16 bytes off | 17.51, 18.20 / 17.67, 17.80 | 7.86, 8.81 / 9.04, 9.12 | 20.53, 20.68 / 20.89, 20.92 |
+| Ratio | Form | 8500T: MSVC | clang-cl | GCC | P-core: MSVC | clang-cl | E-core: MSVC | clang-cl |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 2x | The kernel's | 17.02 | 16.59 | 15.81 | 7.81 | 7.79 | 25.05 | 24.87 |
+| | A loop of 4 chains, broadcast | 17.02 | 15.15 | 15.58 | 7.67 | 6.89 | 20.01 | 19.03 |
+| | In steps, broadcast | 18.94 | 15.22 | 15.95 | 7.91 | 6.56 | 20.16 | 18.69 |
+| | A loop of 4 chains, lanes | 16.17 | 14.96 | 16.44 | 7.40 | 6.96 | 20.79 | 19.25 |
+| | In steps, lanes | 16.65 | 14.63 | 18.75 | 7.68 | 6.82 | 20.83 | 19.47 |
+| 3x | The kernel's | 15.46 | 15.51 | 15.19 | 7.23 | 7.38 | 24.94 | 24.00 |
+| | A loop of 4 chains, broadcast | 16.42 | 14.37 | 14.95 | 7.50 | 6.67 | 18.48 | 17.72 |
+| | In steps, broadcast | 16.63 | 14.27 | 15.54 | 7.78 | 6.29 | 18.01 | 16.91 |
+| | A loop of 4 chains, lanes | 14.87 | 14.04 | 15.49 | 7.07 | 6.62 | 19.26 | 18.30 |
+| | In steps, lanes | 14.48 | 13.38 | 15.86 | 7.15 | 6.23 | 18.79 | 18.21 |
+| 1.5x | The kernel's | 20.71 | 20.91 | 19.84 | 9.63 | 10.12 | 27.04 | 26.77 |
+| | A loop of 4 chains, broadcast | 19.10 | 16.88 | 17.68 | 8.62 | 7.98 | 23.30 | 21.82 |
+| | In steps, broadcast | 20.06 | 16.28 | 18.92 | 8.50 | 7.43 | 23.85 | 21.01 |
+| | A loop of 4 chains, lanes | 18.83 | 17.29 | 18.49 | 8.66 | 8.07 | 24.08 | 22.02 |
+| | In steps, lanes | 18.22 | 16.49 | 20.66 | 8.33 | 7.83 | 23.13 | 21.91 |
+| 4x | The kernel's | 13.11 | 13.16 | 13.46 | 6.58 | 6.59 | 23.08 | 21.97 |
+| | A loop of 4 chains, broadcast | 14.95 | 13.02 | 13.81 | 6.95 | 6.08 | 16.48 | 15.73 |
+| | In steps, broadcast | 15.04 | 13.05 | 13.38 | 6.91 | 5.96 | 16.78 | 15.24 |
+| | A loop of 4 chains, lanes | 13.12 | 12.30 | 14.28 | 6.85 | 5.84 | 17.12 | 16.56 |
+| | In steps, lanes | 12.79 | 11.88 | 14.12 | 6.74 | 5.54 | 16.59 | 16.25 |
 
-- Under MSVC the best interleaved variant takes 4% off the pass on the 8500T, 13% on the P-core, 22% on the E-core.
-- The P-core's figures move 5-13% with the placement of code and buffers: the H lines read 13% lower after the other
-  sections than alone, and clang-cl's ranking of the loop and the steps reversed between two builds.
+The best interleaved form against the same compiler's kernel's form:
 
-Other ratios, where every other run or two runs of four start at an odd pixel offset: the kernel's form is 16 bytes off
-a 32-byte boundary there, the interleaved form never. 3x: 1280 columns of 18 taps. 1.5x: 2560 columns of 9 taps.
-ms, MSVC / clang-cl, from a later build whose 2x lines read up to 8% off the table above.
+| Ratio | 8500T: MSVC | clang-cl | GCC | P-core: MSVC | clang-cl | E-core: MSVC | clang-cl |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2x | -5% | -12% | -1% | -5% | -16% | -20% | -25% |
+| 3x | -6% | -14% | -2% | -2% | -16% | -28% | -30% |
+| 1.5x | -12% | -22% | -11% | -13% | -27% | -14% | -22% |
+| 4x | -2% | -10% | -1% | +2% | -16% | -29% | -31% |
 
-| Ratio, core | The kernel's | 4 chains, broadcast | In steps, broadcast | 4 chains, lanes | In steps, lanes |
-|---|---:|---:|---:|---:|---:|
-| 3x, 8500T | 16.30 / 17.28 | 16.46 / 16.75 | 17.32 / 15.48 | 15.52 / 16.77 | 16.19 / 15.60 |
-| 3x, P-core | 9.84 / 9.42 | 7.61 / 8.14 | 8.14 / 7.68 | 7.81 / 8.14 | 8.23 / 7.33 |
-| 3x, E-core | 25.02 / 24.15 | 18.86 / 19.70 | 19.87 / 17.78 | 19.82 / 19.68 | 19.00 / 18.04 |
-| 1.5x, 8500T | 22.40 / 24.69 | 19.36 / 19.91 | 21.52 / 19.87 | 19.69 / 19.96 | 19.87 / 19.88 |
-| 1.5x, P-core | 11.32 / 11.80 | 9.19 / 10.09 | 9.47 / 8.59 | 9.04 / 10.09 | 8.67 / 8.88 |
-| 1.5x, E-core | 27.99 / 28.17 | 23.36 / 24.13 | 25.20 / 21.59 | 24.21 / 24.23 | 22.89 / 21.57 |
-
-- Under MSVC the best interleaved variant takes 23% off the P-core's pass at both ratios, against 13% at 2x; 5% and 14%
-  off the 8500T's; 25% and 18% off the E-core's.
-- At 3x on the 8500T the broadcast variants do not gain under MSVC: 18-tap runs, two loads per tap.
+- **clang-cl's interleaved forms are the fastest code in every row.** Of the kernel's forms GCC's is the fastest on the
+  8500T at 2x, 3x and 1.5x.
+- **Under clang-cl the steps are the shape, and the weight source divides the cores:**
+  - E-core: broadcast at every ratio, lanes 4-8% behind.
+  - P-core: broadcast at 2x and 1.5x, level at 3x, lanes 7% ahead at 4x.
+  - 8500T: lanes at 2x, 3x and 4x by 4-10%, broadcast 1% ahead at 1.5x.
+- **MSVC's interleaved passes are 6-24% behind clang-cl's on the 8500T and the P-core** with the same tap code, and
+  section T within 6%. The difference is outside the taps, in code only this program has: the interleaving conversion
+  loop, with indexed stores, and the pass function's per-column bookkeeping, about 10 reloads from the stack.
+- **The span 16 bytes off a 32-byte boundary,** 2x, MSVC: the kernel's form +6% on the 8500T and +9% on the P-core; the
+  interleaved loop of 3 chains +14% and +10%. Nothing on the E-core.
+- **The program's overhead per column weighs on the forms unequally.** A multiply by the column index per run, which
+  the kernel does not have, cost MSVC's kernel's form 11% on the P-core and its interleaved forms 2%.
 
 ### The conversion that interleaves
 
@@ -225,6 +279,12 @@ the rows in a buffer each or interleaved, and each weight from its lane or broad
   - Every 32-byte load of it is aligned once the span is: a pixel pair is 32 bytes. The kernel's form is 16 bytes off
     at every odd pixel offset.
   - The 1- and 2-float layouts keep the kernel's form: a pixel pair would fill 2 or 4 of a register's 8 floats.
+  - The steps are the shape. No weight source is best on all three cores: broadcast suits the E-core, lanes the 8500T,
+    and the P-core changes sides with the run length.
+  - The E-core gains under every compiler. On the 8500T and the P-core the gain is clang-cl's; MSVC's is small in this
+    program, in code the kernel does not share.
+- **Untried in the kernel: stepped pointers in `filterRun`.** It indexes pixels by tap, and 86% of the multiply-adds'
+  memory operands in MSVC's listing of the AVX2 kernel are indexed, 81% in Clang's, 30% in GCC's.
 
 ## Limits of these figures
 

@@ -798,11 +798,13 @@ boundary every other load spans two cache lines.
 19. **A tap per multiply-add with the row pair's pixels interleaved** ([throughput-ceiling.md](throughput-ceiling.md)): the
     horizontal arithmetic alone at a fixed 12 taps, against the kernel's form, is +3% to +17% on the 8500T, +17% to +29%
     on the 12600K's P-cores and +61% to +73% on its E-cores. Untried in the kernel.
-    - With the tap count read per column and the conversion included, under MSVC: 4% off the pass on the 8500T, 13% on
-      the P-core, 22% on the E-core, without the run lookup. At 3x and 1.5x, where the kernel's form meets odd pixel
-      offsets: 5% and 14%, 23%, 25% and 18%.
-    - No weight source suits every core: broadcast from memory loses to the kernel's form on the 8500T's long runs,
-      weights permuted in-lane on the P-core's.
+    - With the tap count read per column and the conversion included, without the run lookup, at 2x, 3x, 1.5x and 4x:
+      - E-core: 14-29% off the pass under MSVC, 22-31% under clang-cl.
+      - P-core: -5%, -2%, -13%, +2% under MSVC; 16-27% off under clang-cl.
+      - 8500T: 2-12% off under MSVC, 10-22% under clang-cl, 1-11% under GCC.
+    - MSVC's shortfall against clang-cl is outside the taps, in code only the benchmark has: the kernel may differ.
+    - The taps in `filterRun`'s steps are the shape. No weight source suits every core: broadcast from memory is best
+      on the E-core, weights permuted in-lane on the 8500T, and the P-core changes sides with the run length.
     - Four-tap runs gain 12-16% of their arithmetic under MSVC on all three cores.
     - The 128-bit levels' form is already a tap per multiply-add, and an interleaved span costs them nothing: one
       outline for every level is possible.

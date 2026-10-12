@@ -1,8 +1,10 @@
 // The multiply-adds of the resizer's two passes at the sizes of 4K -> 1080p RGB32, without the kernel's bookkeeping:
 // the ceilings doc/throughput-ceiling.md compares the kernels against, and the horizontal forms it ranks.
 // Standalone. AVX2 + FMA:
-//   cl /O2 /MT /arch:AVX2 /std:c++20 /EHsc multiply_add_ceiling.cpp
-//   clang-cl /O2 /MT /arch:AVX2 -mfma /std:c++20 /EHsc multiply_add_ceiling.cpp
+//   cl /O2 /MT /arch:AVX2 /QIntel-jcc-erratum /std:c++20 /EHsc multiply_add_ceiling.cpp
+//   clang-cl /O2 /MT /arch:AVX2 -mfma /clang:-mbranches-within-32B-boundaries /std:c++20 /EHsc multiply_add_ceiling.cpp
+//   g++ -O2 -mavx2 -mfma -std=c++20 multiply_add_ceiling.cpp
+// The jump-alignment options are the kernels': without them lines differ by up to 14% between builds on the Skylake family.
 // Without /arch:AVX2, or for ARM64 (g++ -O2 -std=c++20), only section N exists: the 128-bit levels' horizontal form.
 // Run: multiply_add_ceiling [repeats, default 30] [sections, default HVTFCPN]; each line is the best repeat.
 // Pinned to a logical processor by mask: start /b /wait /affinity 4 multiply_add_ceiling.exe
@@ -28,6 +30,17 @@
 #else
 	#define NOINLINE __attribute__((noinline))
 	#define FORCEINLINE inline __attribute__((always_inline))
+#endif
+
+// Hide a value from Clang's optimizer, as the kernels' spreadIndices does. With the value known, Clang rewrites:
+//   a vpermps as vshufps + vpermpd; lane permutes of a loaded weight block as broadcasts from memory; two stepped pointers as one index.
+// -DNO_CLANG_BARRIERS builds without them.
+#if defined(__clang__) && !defined(NO_CLANG_BARRIERS)
+	#define OPAQUE_VECTOR(v) __asm__ volatile("" : "+x"(v))
+	#define OPAQUE_POINTER(p) __asm__ volatile("" : "+r"(p))
+#else
+	#define OPAQUE_VECTOR(v) (void)0
+	#define OPAQUE_POINTER(p) (void)0
 #endif
 
 namespace
@@ -200,6 +213,8 @@ namespace
 
 	struct SpreadIndices
 	{
+		SpreadIndices() { OPAQUE_VECTOR(i0); OPAQUE_VECTOR(i1); OPAQUE_VECTOR(i2); OPAQUE_VECTOR(i3); }
+
 		__m256i i0 = _mm256_setr_epi32(0, 0, 0, 0, 1, 1, 1, 1), i1 = _mm256_setr_epi32(2, 2, 2, 2, 3, 3, 3, 3);
 		__m256i i2 = _mm256_setr_epi32(4, 4, 4, 4, 5, 5, 5, 5), i3 = _mm256_setr_epi32(6, 6, 6, 6, 7, 7, 7, 7);
 	};
@@ -281,8 +296,10 @@ namespace
 			if constexpr (Chains == 4)
 				s3 = product(p + 24, w + 3);
 
-			for (p += Chains * 8, w += Chains; w + Chains <= weightsEnd; p += Chains * 8, w += Chains)
+			const float* const groupsEnd = w + tapCount / Chains * Chains;
+			for (p += Chains * 8, w += Chains; w != groupsEnd; p += Chains * 8, w += Chains)
 			{
+				OPAQUE_POINTER(p);
 				s0 = addTap(p, w, s0); s1 = addTap(p + 8, w + 1, s1);
 				if constexpr (Chains >= 3)
 					s2 = addTap(p + 16, w + 2, s2);
@@ -312,7 +329,10 @@ namespace
 		explicit PairWeights(const float* w) : weights(w)
 		{
 			if constexpr (Weights == 0)
+			{
 				loaded = _mm256_broadcast_ps(reinterpret_cast<const __m128*>(w));
+				OPAQUE_VECTOR(loaded);
+			}
 		}
 
 		template <int Tap>
@@ -338,8 +358,10 @@ namespace
 			const PairWeights<0> firstWeights{ w };
 			__m256 s0 = _mm256_mul_ps(_mm256_loadu_ps(p), firstWeights.tap<0>()), s1 = _mm256_mul_ps(_mm256_loadu_ps(p + 8), firstWeights.tap<1>());
 			__m256 s2 = _mm256_mul_ps(_mm256_loadu_ps(p + 16), firstWeights.tap<2>()), s3 = _mm256_mul_ps(_mm256_loadu_ps(p + 24), firstWeights.tap<3>());
-			for (p += 32, w += 4; w + 4 <= weightsEnd; p += 32, w += 4)
+			const float* const groupsEnd = w + (tapCount & ~size_t{ 3 });
+			for (p += 32, w += 4; w != groupsEnd; p += 32, w += 4)
 			{
+				OPAQUE_POINTER(p);
 				const PairWeights<0> weights{ w };
 				s0 = _mm256_fmadd_ps(_mm256_loadu_ps(p), weights.tap<0>(), s0); s1 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 8), weights.tap<1>(), s1);
 				s2 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 16), weights.tap<2>(), s2); s3 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 24), weights.tap<3>(), s3);
@@ -370,8 +392,10 @@ namespace
 			__m256 s2 = product(p + 16, firstLow.template tap<2>()), s3 = product(p + 24, firstLow.template tap<3>());
 			s0 = addTap(p + 32, firstHigh.template tap<0>(), s0); s1 = addTap(p + 40, firstHigh.template tap<1>(), s1);
 			s2 = addTap(p + 48, firstHigh.template tap<2>(), s2); s3 = addTap(p + 56, firstHigh.template tap<3>(), s3);
-			for (p += 64, w += 8; w + 8 <= weightsEnd; p += 64, w += 8)
+			const float* const blocksEnd = w + (tapCount & ~size_t{ 7 });
+			for (p += 64, w += 8; w != blocksEnd; p += 64, w += 8)
 			{
+				OPAQUE_POINTER(p);
 				const PairWeights<Weights> low{ w }, high{ w + 4 };
 				s0 = addTap(p, low.template tap<0>(), s0); s1 = addTap(p + 8, low.template tap<1>(), s1);
 				s2 = addTap(p + 16, low.template tap<2>(), s2); s3 = addTap(p + 24, low.template tap<3>(), s3);
@@ -426,15 +450,16 @@ namespace
 	{
 		[[maybe_unused]] const SpreadIndices indices;
 		size_t positionQ8 = 0;
-		for (size_t column = 0; column < destWidth; ++column)
+		// Stepped per column, not multiplied by it: the kernel has no multiply per run
+		const float* w = columnWeights;
+		for (size_t column = 0; column < destWidth; ++column, w += weightStride, outA += 3, outB += 3)
 		{
 			const size_t tapCount = tapCounts[column];
 			const size_t pixel = positionQ8 >> 8;
-			const float* w = columnWeights + column * weightStride;
 			if constexpr (Form == 0)
-				kernelFormColumn(indices, a + pixel * 4, b + pixel * 4, w, tapCount, outA + column * 3, outB + column * 3);
+				kernelFormColumn(indices, a + pixel * 4, b + pixel * 4, w, tapCount, outA, outB);
 			else
-				interleavedFormColumn<Form>(interleaved + pixel * 8, w, tapCount, outA + column * 3, outB + column * 3);
+				interleavedFormColumn<Form>(interleaved + pixel * 8, w, tapCount, outA, outB);
 
 			positionQ8 += stepQ8;
 			if ((positionQ8 >> 8) + weightStride > capacityPixels)
@@ -587,10 +612,13 @@ namespace
 		constexpr size_t backMargin = 8, conversionChunk = 128;
 		[[maybe_unused]] const SpreadIndices indices;
 		size_t base = 0, converted = 0;
+		// Stepped per column, not multiplied by it: the kernel has no multiply per run
+		size_t positionQ8 = 0;
+		const float* w = columnWeights;
 		for (size_t column = 0; column < columns;)
 		{
 			// SlidingSourceFloats::prepareRun
-			const size_t first = column * stepQ8 >> 8, end = first + tapCounts[column];
+			const size_t first = positionQ8 >> 8, end = first + tapCounts[column];
 			if (end > base + capacity)
 			{
 				const size_t newBase = first > backMargin ? first - backMargin : 0;
@@ -619,18 +647,17 @@ namespace
 			}
 
 			// filterBufferedRuns
-			for (; column < columns; ++column)
+			for (; column < columns; ++column, positionQ8 += stepQ8, w += weightStride, outA += 3, outB += 3)
 			{
-				const size_t firstPixel = column * stepQ8 >> 8, tapCount = tapCounts[column];
+				const size_t firstPixel = positionQ8 >> 8, tapCount = tapCounts[column];
 				if (firstPixel < base || firstPixel + tapCount > converted)
 					break;
 
 				const size_t bufferPixel = firstPixel - base;
-				const float* w = columnWeights + column * weightStride;
 				if constexpr (Form == 0)
-					kernelFormColumn(indices, floatsA + bufferPixel * 4, floatsB + bufferPixel * 4, w, tapCount, outA + column * 3, outB + column * 3);
+					kernelFormColumn(indices, floatsA + bufferPixel * 4, floatsB + bufferPixel * 4, w, tapCount, outA, outB);
 				else
-					interleavedFormColumn<Form>(interleaved + bufferPixel * 8, w, tapCount, outA + column * 3, outB + column * 3);
+					interleavedFormColumn<Form>(interleaved + bufferPixel * 8, w, tapCount, outA, outB);
 			}
 		}
 	}
@@ -1136,9 +1163,9 @@ int main(int argc, char** argv)
 			report("P9 as P6, lane weights", passSeconds<14, 1>(image, 0, repeats), horizontalWork);
 			report("P10 as P8, lane weights", passSeconds<18, 1>(image, 0, repeats), horizontalWork);
 
-			// Runs at odd pixel offsets: every other one where the step is 3 pixels, two of every four at 1.5
+			// Runs at odd pixel offsets: every other one where the step is 3 pixels, two of every four at 1.5, none at 4
 			struct Ratio { const char* name; size_t taps, stepQ8, columns; };
-			for (const Ratio& ratio : { Ratio{ "3x, 18 taps", 18, 3 * 256, 1280 }, Ratio{ "1.5x, 9 taps", 9, 384, 2560 } })
+			for (const Ratio& ratio : { Ratio{ "3x, 18 taps", 18, 3 * 256, 1280 }, Ratio{ "1.5x, 9 taps", 9, 384, 2560 }, Ratio{ "4x, 24 taps", 24, 4 * 256, 958 } })
 			{
 				const double work = static_cast<double>(sourceHeight) * ratio.columns * ratio.taps * 4;
 				const auto reportRatio = [&](const char* form, double seconds) {
