@@ -732,6 +732,35 @@ MSVC and clang-cl 22 alike, against d77c79c; eight rounds on the 8500T, five on 
 - Nine instructions fewer of 81 gave 5%, not the 11% of "1.2% an instruction" (experiment 27): loads and address
   arithmetic cost less than branches.
 
+### The upscale passes: stepped for 4-float pixels, a short-circuit range check for one channel
+
+`filterBufferedFourTapRuns` steps its run and temp pixels as the general pass does. `filterBufferedFourTapRunGroups`
+keeps its column index and tests its four runs' ranges with `||`.
+
+Against 7a873c8, eight rounds on the 8500T and five on the 12600K (the one-channel row: eight everywhere):
+
+| Row | Compiler | 8500T | P-core | E-core |
+|---|---|---:|---:|---:|
+| 720p -> 4K RGB32 | MSVC | -3.6% | -5.0% | level |
+| 720p -> 4K RGB24 | MSVC | -3.1% | -3.6% | -1.7% |
+| 1080p -> 1440p | MSVC | -3.8% | -5.2% | +1.6% |
+| 720p -> 4K RGBA32 | MSVC | level | +0.9% | level |
+| The four colour rows | clang-cl | -3.1% to -0.1% | -3.6% to -1.6% | -1.7% to 0 |
+| 720p -> 4K Grayscale8 | MSVC | -7% | -6% | -3% |
+| 720p -> 4K Grayscale8 | clang-cl | level | level | level |
+
+- The colour rows' figures are from a build with the one-channel pass stepped too; the 4-float pass is the same code.
+- MSVC's 4-float column: 25 instructions from 26, and row B's base now loaded from the stack. The gain is larger
+  than that count suggests, and RGBA32 has none. Not explained.
+- `|` between the four range comparisons: MSVC sets a register per comparison and ORs them, 15 instructions; with
+  `||`, four compares and branches, 8. Clang emits the branches for either.
+- The one-channel pass with stepped pointers as well: MSVC 49 instructions a group from 62, -11%, -6% and -7% on
+  the three cores. clang-cl 57 from 53: its own code already steps a run pointer, and the two temp pointers make
+  it rotate three registers around the multiplies, six moves a group. +5% on the E-core, 0 to +3.5% on the 8500T,
+  level on the P-core, whose renamer drops the moves. Not taken.
+- The largest of the four offsets compared once: clang-cl +5% and +3% on the 8500T and the P-core.
+- No row that does not run these passes moved by more than 2.6%.
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -985,8 +1014,10 @@ MSVC and clang-cl 22 alike, against d77c79c; eight rounds on the 8500T, five on 
     - Lead: fewer live values per column. Output pointers stepped per column in place of base and offset, as the
       model benchmark of `throughput-ceiling.md` has them, remove two bases, the offset and the address arithmetic.
     - Done for `filterBufferedRuns` ("The general pass steps its run and temp pixels"): 72 instructions, 1 load.
-    - Not yet: the four-tap passes of the upscales, which keep a column index and the same bases.
-    - Left in the general pass: the weights' base loaded from the stack, the spread constants reloaded.
+    - Done for the upscales' 4-float pass; their one-channel pass keeps its index ("The upscale passes").
+    - Left: the spread constants reloaded every column in the general and the 4-float pass (2 of the latter's 25
+      instructions); the weights' base in the general pass and row B's base in both upscale passes loaded from the
+      stack. The one-channel pass is as short of registers under Clang as under MSVC.
 27. **A batch API for a caller that knows it has many resizes in a row** (not designed), a folder's thumbnails for one.
     Each `resize()` call builds both axes' weights and allocates the source float buffers and the temp ring per band;
     a 1080p -> 120 px thumbnail is under 2 ms in all, so that setup may be a visible share. Unmeasured.
