@@ -702,7 +702,8 @@ Eight alternating rounds against the loops, the weights aligned in both builds (
 
 - The other rows, with the test: the E-core's 4K -> 1080p RGB24 and RGB32 -3.5%, the 8500T's thumbnail -3% and 24 MP
   photo -2%; the rest within 1% on x64 and within 2% on the Pi, but its native size at +3%, a row that swings 9%.
-- Not read: MSVC's code with the test. Its gain on the P-core and the 8500T is larger than the instructions saved.
+- MSVC's code with taps left, per row: two pointers formed, a compare and branch per step. The test for none skips
+  about 11 instructions and 4 branches of a 12-tap Grayscale8 column's 75.
 
 ## Experiments that lost
 
@@ -785,6 +786,20 @@ Eight alternating rounds against the loops, the weights aligned in both builds (
     Equal to `float` at AVX2 (best of six processes 16.17, 16.25 and 16.18 ms on 720p -> 4K RGBA32, 16.72 without a
     list) and on the i3-2310M; 32 bytes cost the N4100's downscales up to 1.5 points more and the Pi's GCC build up to
     19%.
+27. **Stepped pointers in `filterRun`** (against 5e3c797, not committed), in two forms. MSVC, eight rounds; the Pi five.
+    - Every step from three stepped pointers, each step decided by a bit of the tap count: no indexed operand left,
+      but a 12-tap RGB32 column takes 89 instructions against 81 (the block loop's end pointer, the pointers
+      re-derived after the first block, a loop bound moved to the stack). 4K -> 1080p +3% to +8% on the 8500T, +1% to
+      +11% on the 12600K's E-core; 4K -> 64x64 -19% and 101 MP -> 720p -3% on the 8500T. Pi, GCC: 4K -> 1080p
+      Grayscale8 -5%, the rest within 2%, 4K -> 64x64 level.
+    - Stepped only in the block loop, entered where a second block exists: 4K -> 64x64 -13.5% on the 8500T, but
+      4K -> 1080p +2% to +5% on all three x64 cores (Grayscale8 +11% on the E-core), the thumbnail +4% and +12%.
+      A 12-tap column takes 84 instructions: `tap` has two sources, and MSVC tests each later step with a move more.
+    - A row pair's pointers in an array: MSVC keeps the array in memory and steps it with a vector add.
+    - GCC steps the block loop's pointers itself and MSVC does not: the long runs' gain is MSVC's alone. AArch64 has
+      no base + index + offset operand and pairs loads only from a base: there the steps after the loop gain.
+    - On these columns one instruction is about 1.2% of the 4K -> 1080p rows: short runs and long runs want
+      different code (open lead 25).
 
 ## Open leads
 
@@ -916,4 +931,18 @@ Eight alternating rounds against the loops, the weights aligned in both builds (
     boundary at NEON.
 24. **Two timing levels the weights do not explain** (8500T): 720p -> 4K Grayscale8 at 5.25 and 5.54 ms and native size
     at 1.96 and 2.2 ms, by launch, before and after "Where the weights start". Not investigated. Also unmeasured: the
-    larger weight table on the N4100 and the i3-2310M.
+    larger weight table on the i3-2310M.
+25. **A horizontal pass per run length** (untried). The column loop for runs under two blocks is bound by its
+    instruction count, about 1.2% of 4K -> 1080p each under MSVC, and the block loop for long runs gains 13-19% on
+    4K -> 64x64 from stepped pointers (experiment 27) that cost the short runs 3-8 instructions. An axis's longest
+    run is known before the pass: a template parameter, as `FourTapXRuns` is, could give short runs a `filterRun`
+    with no block loop and long runs the stepped one.
+26. **The x64 column loop holds more live values than registers** (MSVC, untried). Of a 12-tap RGB32 column's 81
+    instructions 25 are arithmetic. Per column, outside it:
+    - 5-6 loads of loop constants from the stack: the weights' base, row B's base, both temp rows' bases, the
+      destination offset; for Grayscale8 the loop bound too.
+    - 7 instructions to form the temp store's address from the column index and those bases.
+    - The spread constants reloaded, two of them inside the first block.
+    - A change that adds a live value costs a reload: experiment 27's end pointer moved the loop bound to the stack.
+    - Lead: fewer live values per column. Output pointers stepped per column in place of base and offset, as the
+      model benchmark of `throughput-ceiling.md` has them, remove two bases, the offset and the address arithmetic.

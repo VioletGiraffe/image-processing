@@ -189,6 +189,15 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
+		// Adds one tap of a 1- or 2-float pixel to its channel sums. Not a lambda: one would not carry the SIMD level's target attribute.
+		template <size_t FloatsPerPixel>
+		IMAGE_PROCESSING_SIMD_INLINE void addTap(float& sum0, [[maybe_unused]] float& sum1, const float* sourcePixel, float weight) noexcept
+		{
+			sum0 = mulAdd(sourcePixel[0], weight, sum0);
+			if constexpr (FloatsPerPixel == 2)
+				sum1 = mulAdd(sourcePixel[1], weight, sum1);
+		}
+
 		// Adds the last taps of a 1- or 2-float pixel channel by channel, then stores it. At most 3 taps.
 		template <size_t FloatsPerPixel>
 		IMAGE_PROCESSING_SIMD_INLINE void storeTempPixelWithTaps(float* outPixel, Floats4 partialSums, const float* sourcePixels, const float* weights, size_t tapCount) noexcept
@@ -201,20 +210,14 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				sum1 = lane<1>(pixelSums);
 
 			assert(tapCount <= 3);
-			const auto addTap = [&](size_t tap) {
-				sum0 = mulAdd(sourcePixels[tap * FloatsPerPixel], weights[tap], sum0);
-				if constexpr (FloatsPerPixel == 2)
-					sum1 = mulAdd(sourcePixels[tap * FloatsPerPixel + 1], weights[tap], sum1);
-			};
-
 			// Steps, not a loop: MSVC unrolls a loop by four, and that code never runs for 3 taps or fewer
 			if (tapCount >= 2)
 			{
-				addTap(0);
-				addTap(1);
+				addTap<FloatsPerPixel>(sum0, sum1, sourcePixels, weights[0]);
+				addTap<FloatsPerPixel>(sum0, sum1, sourcePixels + FloatsPerPixel, weights[1]);
 			}
 			if (tapCount & 1)
-				addTap(tapCount - 1);
+				addTap<FloatsPerPixel>(sum0, sum1, sourcePixels + (tapCount - 1) * FloatsPerPixel, weights[tapCount - 1]);
 
 			outPixel[0] = sum0;
 			if constexpr (FloatsPerPixel == 2)
