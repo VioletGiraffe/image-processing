@@ -191,7 +191,7 @@ namespace
 		std::vector<int64_t> windowEnds;
 		windowEnds.reserve(dstSize);
 
-		result.weights.reserve(std::min(dstSize, 2 * period) * (static_cast<size_t>(2.0 * support) + 2));
+		result.weights.reserve(std::min(dstSize, 2 * period) * (static_cast<size_t>(2.0 * support) + 2 + AxisWeights::runAlignment - 1));
 		std::vector<double> foldedWeights;
 
 		for (uint64_t d = 0; d < dstSize; ++d)
@@ -234,6 +234,7 @@ namespace
 			while (runBegin < runEnd && foldedWeights[runEnd - 1] == 0.0)
 				--runEnd;
 
+			result.weights.resize((result.weights.size() + AxisWeights::runAlignment - 1) / AxisWeights::runAlignment * AxisWeights::runAlignment);
 			const size_t firstWeight = result.weights.size();
 
 			if (runBegin == runEnd) [[unlikely]] // no nonzero weights in the window; fall back to the nearest pixel
@@ -283,8 +284,11 @@ namespace
 		if (srcSize < paddedCount || axis.longestRun() > paddedCount)
 			return;
 
-		std::vector<float> paddedWeights;
-		paddedWeights.reserve(axis.weights.size() * paddedCount);
+		// The horizontal kernels load 8 weights for a run's 4
+		constexpr size_t storedCount = AxisWeights::runAlignment;
+		static_assert(storedCount >= 8);
+		AxisWeights::WeightVector paddedWeights;
+		paddedWeights.reserve(axis.weights.size());
 		// Runs that shared their weights still do: indexed by a run's old first weight, for runs with no leading zeros
 		constexpr size_t notPlaced = SIZE_MAX;
 		std::vector<size_t> paddedFirstWeight(axis.weights.size(), notPlaced);
@@ -300,7 +304,7 @@ namespace
 				const auto runWeights = axis.weights.begin() + static_cast<ptrdiff_t>(run.firstWeight);
 				paddedWeights.insert(paddedWeights.end(), leadingZeros, 0.0f);
 				paddedWeights.insert(paddedWeights.end(), runWeights, runWeights + static_cast<ptrdiff_t>(run.weightCount));
-				paddedWeights.insert(paddedWeights.end(), paddedCount - run.weightCount - leadingZeros, 0.0f);
+				paddedWeights.insert(paddedWeights.end(), storedCount - run.weightCount - leadingZeros, 0.0f);
 				if (leadingZeros == 0)
 					paddedFirstWeight[run.firstWeight] = firstWeight;
 			}
@@ -308,8 +312,6 @@ namespace
 			run = TapRun{ run.firstSource - leadingZeros, firstWeight, paddedCount };
 		}
 
-		// The horizontal kernels load 8 weights for a run's 4
-		paddedWeights.resize(paddedWeights.size() + paddedCount);
 		axis.weights = std::move(paddedWeights);
 		axis.everyRunHasFourTaps = true;
 	}

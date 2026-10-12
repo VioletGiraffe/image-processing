@@ -26,8 +26,30 @@ namespace ImageProcessing::Detail
 		size_t weightCount;
 	};
 
+	// std::allocator on a 64-byte boundary
+	template <class T>
+	struct CacheLineAllocator
+	{
+		using value_type = T;
+
+		CacheLineAllocator() = default;
+		template <class U>
+		constexpr CacheLineAllocator(const CacheLineAllocator<U>&) noexcept {}
+
+		[[nodiscard]] T* allocate(size_t count) { return static_cast<T*>(::operator new(count * sizeof(T), std::align_val_t{ 64 })); }
+		void deallocate(T* items, size_t) noexcept { ::operator delete(items, std::align_val_t{ 64 }); }
+
+		template <class U>
+		[[nodiscard]] bool operator==(const CacheLineAllocator<U>&) const noexcept { return true; }
+	};
+
 	struct AxisWeights
 	{
+		// Every run's weights start at a multiple of this in the array: the horizontal kernels load 8 weights at offsets
+		// of 8 into a run, and off a 32-byte boundary such a load can span two cache lines
+		static constexpr size_t runAlignment = 8;
+		using WeightVector = std::vector<float, CacheLineAllocator<float>>;
+
 		struct Run
 		{
 			size_t firstSource;
@@ -87,7 +109,7 @@ namespace ImageProcessing::Detail
 			return longest;
 		}
 
-		std::vector<float> weights;
+		WeightVector weights;
 		std::vector<TapRun> runs;
 		// Set by padShortRunsToFourTaps: the horizontal passes for such runs load 4 source pixels per run unconditionally
 		bool everyRunHasFourTaps = false;

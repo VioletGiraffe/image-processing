@@ -272,6 +272,57 @@ MSVC, eight alternating rounds pinned to core 2, single-threaded rows: median of
 | 1080p at native size RGB32 | 1.80 | +1.9% / +3.2% |
 | The five upscales | | -1.3% to +0.5% |
 
+## `filterRun`'s last taps as explicit steps (against cbbd718, not committed)
+
+MSVC, eight alternating rounds pinned to core 2, single-threaded rows: median of same-round ratios / minimum to minimum.
+
+| Scenario | cbbd718, min ms | Explicit steps |
+|---|---:|---:|
+| 4K image -> 1080p RGB32 | 23.13 | -3.6% / -1.0% |
+| 1080p -> 240p RGB32 | 4.11 | -3.6% / -3.0% |
+| 1080p at native size RGB32 | 1.83 | -3.0% / -0.4% |
+| 101 MP -> 720p RGB32 | 175.49 | -1.6% / -1.6% |
+| 4K -> 1080p RGB24 | 22.99 | +6.0% / 0.0% |
+| 4K -> 1080p RGB32 | 23.22 | +5.7% / -1.2% |
+| 4K -> 1080p RGBA32 | 25.75 | +3.4% / -0.4% |
+| The other eight rows | | within 1% |
+
+- The three 4K -> 1080p rows have two levels in both builds, 23.3 and 24.7 ms for RGB32. Round 1 is on the other
+  level from rounds 2 to 8 in both: cbbd718 26.36 then 23.22-23.46, the steps 22.95 then 24.47-25.03.
+- "4K image -> 1080p RGB32" is the same resize in another test case of the same process: the steps are faster there in
+  seven rounds of eight.
+
+4K -> 1080p RGB32 under VTune, hardware-sampled hotspots, three launches each: 23.86-24.02 ms and 25.34-25.47 ms.
+
+| | cbbd718 | Explicit steps |
+|---|---:|---:|
+| Kernel | 8.96-9.02 s, 93.0-93.1 G instructions | 9.36-9.45 s, 90.4-90.6 G |
+| Horizontal column loop | 5.81-5.88 s, 70.5-70.8 G | 6.32-6.35 s, 68.5-69.1 G |
+| Conversion loops, vertical pass | 1.40-1.42 s, 1.41-1.44 s | 1.30-1.34 s, 1.40-1.44 s |
+
+The column loop retires 3% fewer instructions and takes 9% longer: the level of these launches, not the steps.
+
+The same binary on both levels, microarchitecture exploration (VTune 2024.3: it ran here without a crash), the
+explicit-steps build, 400 samples, over the column loop:
+
+| | Fast, two launches | Slow |
+|---|---:|---:|
+| The resize, ms | 23.87, 23.96 | 25.63 |
+| Cycles | 20.8 G, 20.9 G | 23.1 G |
+| Instructions retired | 71.6 G, 72.3 G | 72.9 G |
+| Cycles with 1 or 2 ports busy | 2.7 G, 2.7 G | 5.0 G |
+| Split loads at the 8-tap block's weight load | 0 | 984 M |
+| Split loads at the 4-tap step's weight load | 851 M, 910 M | 67 M |
+| Loads blocked by a 4K alias | 775 M, 790 M | 756 M |
+| Mispredicted branches, machine clears, loads blocked on a store | 0 | 0 |
+| Uops not delivered by the front end | 1.6 G | 1.5 G |
+
+- About one weight load per column spans two cache lines on either level; on the slow one it is the load at the head
+  of the column's chain.
+- Unprofiled afterwards, both builds fast: 40 launches of 23.2-23.7 ms, memory allocated and freed between half of
+  them; 16 fresh copies of the two binaries, each at its own load address, three launches each, 23.2-23.6 ms.
+- About one load per column is blocked by a 4K alias on both levels: not followed.
+
 ## The source buffers' range by value in the horizontal filter
 
 Median of same-round ratios over twenty alternating rounds (sixteen in WSL), against 93b1b79 with the same benchmark

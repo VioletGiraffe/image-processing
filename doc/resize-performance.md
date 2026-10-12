@@ -653,6 +653,32 @@ boundary every other load spans two cache lines.
 - 4K -> 1080p RGBA32 at SSE4.1 elsewhere, both starts 16 bytes past: -1% on the 12600K's two core types, nothing on
   the 8500T.
 
+### Where the weights start
+
+`AxisWeights::weights` is allocated on a 64-byte boundary, and every run starts at a multiple of 8 floats
+(`AxisWeights::runAlignment`): the AVX2 horizontal kernels load 8 weights at offsets of 8 into a run, so no such load
+spans two cache lines. A four-tap run takes 8 floats, a 12-tap run 16.
+
+Before, in a `std::vector` with the runs back to back, 4K -> 1080p RGB32 (one 12-tap run shared by every column):
+
+- One of the run's two loads spanned a line, by the heap's choice per process: the 4-tap step's or the 8-tap block's.
+  The block's load heads the column's longest chain.
+- On the 8500T the block's case took 10% more cycles in the column loop for the same instructions, with 984-1024 M
+  split loads at that instruction and no other counter different (its log). After: none there.
+- A process kept its level, and so did most launches of one binary in a row: it read as a state of the build.
+
+Eight alternating rounds against cbbd718, the old form's slow and fast launches against the new form's range:
+
+- 12600K E-core, 4K -> 1080p RGB32: 53.6-56.7 and 35.3-37.5 ms against 34.5-36.8, five launches of eight slow. RGB24
+  and RGBA32 alike.
+- 8500T: 4K -> 1080p RGBA32 27.7-27.9 and 25.9-26.6 against 25.8-26.4; the 4K image -> 1080p 24.1-24.2 and
+  23.3-23.6 against 23.2-23.6. The 24 MP photo -4%, 101 MP -> 720p -4%, the thumbnail -2%, in every round.
+- 12600K P-core: 4K -> 1080p RGB24, RGB32 and RGBA32 -3% to -4%, in every round but the old form's first.
+- Level within the rounds' spread on all three: the upscales and 4K -> 1080p Grayscale8.
+- SSE4.1 and NEON load 16 bytes at a time: no weight load there spanned a line before either. The larger table costs
+  them nothing measured: the N4100 within 2% on every row in eight rounds; the Pi within 2% single-threaded in five,
+  its multithreaded 1080p -> 1440p +5% with a spread as wide.
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -734,6 +760,16 @@ boundary every other load spans two cache lines.
     Equal to `float` at AVX2 (best of six processes 16.17, 16.25 and 16.18 ms on 720p -> 4K RGBA32, 16.72 without a
     list) and on the i3-2310M; 32 bytes cost the N4100's downscales up to 1.5 points more and the Pi's GCC build up to
     19%.
+27. **`filterRun`'s last taps as explicit steps** (against cbbd718, not committed): one tap for 4-float pixels, two then
+    one for the others, in place of loops that MSVC unrolls by four although at most 3 taps reach them. The column loop
+    loses 22 instructions for Grayscale8 and 32 for RGB32. The tests pass at AVX2, SSE4.1 and NEON.
+    - 12600K E-core: 4K -> 1080p Grayscale8 -11%, the predecode stalls of open lead 22 down from 23% of the column
+      loop's cycles to 4%.
+    - 8500T: the thumbnail -3.6%, 4K image -> 1080p RGB32 -3.6%. 4K -> 1080p RGB24, RGB32 and RGBA32 read +3% to +6% in
+      seven rounds of eight: the weights' place in their cache line, not the steps ("Where the weights start"). With both builds on
+      the fast level, eight alternating launches: 23.28-23.46 ms against 23.39-23.62.
+    - Pi, GCC: 4K -> 1080p Grayscale8 +6.5%, the thumbnail +3%, the rest within 1%. GCC's code for the steps is unread.
+    - 12600K P-core: -8% to +4% by row, the two statistics disagreeing.
 
 ## Open leads
 
@@ -848,9 +884,21 @@ boundary every other load spans two cache lines.
       loop's time to them.
     - 24 MP -> 1080p RGB32 takes 84 or 93 ms by 4 to 24 bytes of padding ahead of the loop.
     - An A/B of two binaries on this core is unreliable by about 10% on a row whose column loop moved.
-    - Not found: the rule that decides which addresses stall. Unmeasured: other rows, and the P-core.
-    - 4K -> 1080p RGB32 and RGB24 also have a state of 4-8% that follows the process's heap layout, not the buffers'
-      alignment. Not shown to be this effect.
+    - The cause: bytes inside the loop that are never decoded. The core marks instruction ends per byte of its
+      instruction cache as it decodes them, and a small table holds the lines that still have unmarked stretches
+      (Intel's patent US 12,353,881); fetch through such a line takes the slow path. With 12-tap runs the 16-tap block
+      loop and the unrolled tail loops are skipped every column, and the tail loops' unrolled copies can never run.
+    - Shown by two variants: without the tail loops' dead copies the stalls fall from 23% of the column loop's cycles
+      to 4% (experiment 27); with one run per row pair that takes every step, to 0.3%. That run costs 8% more
+      instructions and brings predecode stalls to RGB32, which had none: a probe, not a fix.
+    - 4K -> 1080p RGB32's column loop has no predecode stalls: the back end bounds it.
+    - Not found: which lines keep a table entry at a given address. Unmeasured: other rows, the N4100, a single resize
+      after other code, where every line of the kernel is newly loaded.
+    - The state of 4K -> 1080p RGB32 and RGB24 that followed the process's heap layout was not this effect: "Where the
+      weights start".
 23. **Why Goldmont Plus prefers the temp ring 16 bytes past a cache line** is not known. Unmeasured: the committed
     form anywhere but the N4100, rows other than 4K -> 1080p RGBA32 on the 8500T at SSE4.1, and any start but the
     boundary at NEON.
+24. **Two timing levels the weights do not explain** (8500T): 720p -> 4K Grayscale8 at 5.25 and 5.54 ms and native size
+    at 1.96 and 2.2 ms, by launch, before and after "Where the weights start". Not investigated. Also unmeasured: the
+    larger weight table on the N4100 and the i3-2310M.

@@ -441,6 +441,20 @@ Clang, eight alternating rounds without the controls against 17d2fa0: median of 
 
 The kernels' instructions, all nine functions: 29184 -> 19660. `vcgencmd get_throttled` printed `0x0` after the run.
 
+## `filterRun`'s last taps as explicit steps (against cbbd718, not committed)
+
+GCC 14.2, five alternating rounds pinned to one core, 81 s a run: median of same-round ratios / minimum to minimum.
+
+| Scenario | cbbd718, min ms | Explicit steps |
+|---|---:|---:|
+| 4K -> 1080p Grayscale8 | 67.65 | +6.5% / +6.4% |
+| 1080p -> 240p RGB32 | 34.69 | +3.2% / +2.4% |
+| 24 MP -> 1080p RGB32 | 399.81 | +1.1% / +2.3% |
+| 4K -> 64x64 RGB32 | 108.39 | +0.4% / -3.7% |
+| The other eleven rows | | within 1% |
+
+Both builds pass the tests.
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing
