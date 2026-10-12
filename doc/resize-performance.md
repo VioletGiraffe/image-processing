@@ -796,6 +796,13 @@ Eight alternating rounds against the loops, the weights aligned in both builds (
       4K -> 1080p +2% to +5% on all three x64 cores (Grayscale8 +11% on the E-core), the thumbnail +4% and +12%.
       A 12-tap column takes 84 instructions: `tap` has two sources, and MSVC tests each later step with a move more.
     - A row pair's pointers in an array: MSVC keeps the array in memory and steps it with a vector add.
+    - clang-cl 22, same rounds: every step stepped, 4K -> 1080p +2% to +4% on the 8500T and level on the 12600K,
+      4K -> 64x64 -6%; the block loop alone, within 3% everywhere and 4K -> 64x64 +4%. Its build of 3d1717b leads
+      MSVC's by 11.5% on 4K -> 64x64, 4% on 101 MP -> 720p and 9% on 720p -> 4K Grayscale8 (8500T).
+    - The thumbnail rows (16x and 32x), MSVC with the block loop stepped against MSVC: -11% and -13% on the 8500T,
+      as 4K -> 64x64; within 3% on both of the 12600K's cores, 4K -> 64x64 included. clang-cl's build of the
+      current code against MSVC's: the same, -12% on the 8500T's three rows and level on the 12600K.
+      The long runs' loss under MSVC is Skylake's.
     - GCC steps the block loop's pointers itself and MSVC does not: the long runs' gain is MSVC's alone. AArch64 has
       no base + index + offset operand and pairs loads only from a base: there the steps after the loop gain.
     - On these columns one instruction is about 1.2% of the 4K -> 1080p rows: short runs and long runs want
@@ -932,11 +939,15 @@ Eight alternating rounds against the loops, the weights aligned in both builds (
 24. **Two timing levels the weights do not explain** (8500T): 720p -> 4K Grayscale8 at 5.25 and 5.54 ms and native size
     at 1.96 and 2.2 ms, by launch, before and after "Where the weights start". Not investigated. Also unmeasured: the
     larger weight table on the i3-2310M.
-25. **A horizontal pass per run length** (untried). The column loop for runs under two blocks is bound by its
-    instruction count, about 1.2% of 4K -> 1080p each under MSVC, and the block loop for long runs gains 13-19% on
-    4K -> 64x64 from stepped pointers (experiment 27) that cost the short runs 3-8 instructions. An axis's longest
-    run is known before the pass: a template parameter, as `FourTapXRuns` is, could give short runs a `filterRun`
-    with no block loop and long runs the stepped one.
+25. **MSVC's block loop costs Skylake 11-14% on downscales of 16x and more** (experiment 27): the thumbnail rows
+    and 4K -> 64x64 on the 8500T. Not on the 12600K, and not under clang-cl, whose build of the same source has the
+    gain on the 8500T with no row worse than +3% against MSVC's (the 8500T's log).
+    - The cause is not confirmed with counters. MSVC addresses the loop's 8 multiply-adds by base and index and
+      keeps a second counter for the bound; stepped pointers written by hand remove both.
+    - Hand-stepped, the loop costs MSVC's short runs 3-8 instructions a column, each about 1.2% of 4K -> 1080p.
+    - Not taken: a horizontal pass per run length (a template parameter as `FourTapXRuns` is, the stepped loop for
+      long runs and no block loop for short ones). It would buy MSVC what clang-cl has without it.
+    - Open: a form of the loop MSVC compiles well that leaves the short runs' column as it is.
 26. **The x64 column loop holds more live values than registers** (MSVC, untried). Of a 12-tap RGB32 column's 81
     instructions 25 are arithmetic. Per column, outside it:
     - 5-6 loads of loop constants from the stack: the weights' base, row B's base, both temp rows' bases, the
@@ -946,3 +957,8 @@ Eight alternating rounds against the loops, the weights aligned in both builds (
     - A change that adds a live value costs a reload: experiment 27's end pointer moved the loop bound to the stack.
     - Lead: fewer live values per column. Output pointers stepped per column in place of base and offset, as the
       model benchmark of `throughput-ceiling.md` has them, remove two bases, the offset and the address arithmetic.
+27. **A batch API for a caller that knows it has many resizes in a row** (not designed), a folder's thumbnails for one.
+    Each `resize()` call builds both axes' weights and allocates the source float buffers and the temp ring per band;
+    a 1080p -> 120 px thumbnail is under 2 ms in all, so that setup may be a visible share. Unmeasured.
+    - At least the allocations can be kept between calls.
+    - Sources of one size to one target size share their weights whole.

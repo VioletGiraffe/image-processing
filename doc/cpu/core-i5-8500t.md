@@ -323,6 +323,29 @@ explicit-steps build, 400 samples, over the column loop:
   them; 16 fresh copies of the two binaries, each at its own load address, three launches each, 23.2-23.6 ms.
 - About one load per column is blocked by a 4K alias on both levels: not followed.
 
+## clang-cl 22 against MSVC at 3d1717b
+
+Eight alternating rounds, clang-cl's time against MSVC's, median of the rounds' ratios. The thumbnail rows, 4K -> 64x64
+and the display rows from one session, the rest from another.
+
+| Scenario | clang-cl / MSVC |
+|---|---:|
+| 24 MP photo -> 1080p viewport | +0.5% |
+| 4K image -> 1080p RGB32 | +1.2% |
+| 720p image -> 4K RGBA32, RGB32 | +0.5%, -0.2% |
+| 1080p -> 1440p | -1.6% |
+| 1080p -> 240p thumbnail | +0.7% |
+| 1080p -> 120 px wide thumbnail (16x) | -11.6% |
+| 21 MP photo -> 175 px wide thumbnail (32x) | -11.6% |
+| 4K -> 64x64 | -12.1% |
+| 101 MP -> 720p | -4% |
+| 4K -> 1080p Grayscale8, RGB24, RGB32, RGBA32 | -0.7%, +2.9%, +0.4%, -1.6% |
+| 720p -> 4K Grayscale8, RGB24 | -9%, -1.7% |
+
+- MSVC with the block loop's pointers stepped by hand reaches clang-cl on the three 16x-60x rows (-11% to -14%)
+  and loses 4-7% on 2x to 4.5x (`resize-performance.md`, experiment 27 and open lead 25).
+- On the 12600K the two compilers are within 3% on those rows, on both core types.
+
 ## The source buffers' range by value in the horizontal filter
 
 Median of same-round ratios over twenty alternating rounds (sixteen in WSL), against 93b1b79 with the same benchmark

@@ -212,6 +212,8 @@ TEST_CASE("Common display resize scenarios", "[!benchmark][resize]")
 	benchmarkResize("720p image to 4K - RGB32", 1280, 720, 3840, 2160, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("1080p image to 1440p - RGB32", 1920, 1080, 2560, 1440, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("1080p to 240p thumbnail - RGB32", 1920, 1080, 426, 240, 3, 4, QImage::Format_RGB32);
+	benchmarkResize("1080p to 120 px wide thumbnail - RGB32", 1920, 1080, 120, 68, 3, 4, QImage::Format_RGB32);
+	benchmarkResize("21 MP photo to 175 px wide thumbnail - RGB32", 5600, 3744, 175, 117, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("1080p image at native size - RGB32", 1920, 1080, 1920, 1080, 3, 4, QImage::Format_RGB32);
 }
 
