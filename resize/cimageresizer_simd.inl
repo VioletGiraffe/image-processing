@@ -189,7 +189,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
-		// Adds the last taps of a 1- or 2-float pixel channel by channel, then stores it
+		// Adds the last taps of a 1- or 2-float pixel channel by channel, then stores it. At most 3 taps.
 		template <size_t FloatsPerPixel>
 		IMAGE_PROCESSING_SIMD_INLINE void storeTempPixelWithTaps(float* outPixel, Floats4 partialSums, const float* sourcePixels, const float* weights, size_t tapCount) noexcept
 		{
@@ -200,12 +200,21 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			if constexpr (FloatsPerPixel == 2)
 				sum1 = lane<1>(pixelSums);
 
-			for (size_t tap = 0; tap < tapCount; ++tap)
-			{
+			assert(tapCount <= 3);
+			const auto addTap = [&](size_t tap) {
 				sum0 = mulAdd(sourcePixels[tap * FloatsPerPixel], weights[tap], sum0);
 				if constexpr (FloatsPerPixel == 2)
 					sum1 = mulAdd(sourcePixels[tap * FloatsPerPixel + 1], weights[tap], sum1);
+			};
+
+			// Steps, not a loop: MSVC unrolls a loop by four, and that code never runs for 3 taps or fewer
+			if (tapCount >= 2)
+			{
+				addTap(0);
+				addTap(1);
 			}
+			if (tapCount & 1)
+				addTap(tapCount - 1);
 
 			outPixel[0] = sum0;
 			if constexpr (FloatsPerPixel == 2)
@@ -392,7 +401,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 			if constexpr (floatsPerPixel == 4)
 			{
-				for (; tap < tapCount; ++tap)
+				// One tap at most, as a step: see storeTempPixelWithTaps
+				assert(tapCount - tap <= 1);
+				if (tap < tapCount)
 				{
 					const Floats4 weight = broadcastFloats4(weights[tap]);
 					for (size_t row = 0; row < Rows; ++row)
@@ -405,7 +416,17 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			else
 			{
 				const size_t remainingTaps = tapCount - tap;
-				// Not a loop over the rows: its body holds a loop, and GCC leaves such an outer loop rolled, with the rows' state in memory
+				// One test for both rows where no taps remain: the constant 0 folds the tap steps away
+				if (remainingTaps == 0)
+				{
+					storeTempPixelWithTaps<floatsPerPixel>(tempRows[0] + tempOffset, accum[0], runPixels[0], weights.data(), 0);
+					if constexpr (Rows == 2)
+						storeTempPixelWithTaps<floatsPerPixel>(tempRows[1] + tempOffset, accum[1], runPixels[1], weights.data(), 0);
+					return;
+				}
+
+				// Not a loop over the rows: when the body held a loop, GCC left such an outer loop rolled, with the rows' state in memory.
+				// Not retried with the tap steps.
 				storeTempPixelWithTaps<floatsPerPixel>(tempRows[0] + tempOffset, accum[0], runPixels[0] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
 				if constexpr (Rows == 2)
 					storeTempPixelWithTaps<floatsPerPixel>(tempRows[1] + tempOffset, accum[1], runPixels[1] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);

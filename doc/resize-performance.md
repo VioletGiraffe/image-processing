@@ -679,6 +679,31 @@ Eight alternating rounds against cbbd718, the old form's slow and fast launches 
   them nothing measured: the N4100 within 2% on every row in eight rounds; the Pi within 2% single-threaded in five,
   its multithreaded 1080p -> 1440p +5% with a spread as wide.
 
+### `filterRun`'s last taps are steps, behind one test for none
+
+After the 4-tap steps at most 3 taps remain (1 for 4-float pixels). They are explicit steps: two taps, then one. For 1-
+and 2-float pixels a test for no taps left comes first, once for both rows.
+
+- Steps, not loops: MSVC unrolls such a loop by four, code that at most 3 taps never enter. The column loop loses 22
+  instructions for Grayscale8 and 32 for RGB32, and the 12600K E-core's predecode stalls on 4K -> 1080p Grayscale8
+  fall from 23% of the loop's cycles to 4% (open lead 22).
+- The test for none: under GCC at NEON the steps alone cost a 12-tap Grayscale8 column 73 instructions against the
+  loops' 68. Each row's call tested its two steps, 4 branches where the two loops' zero-trip tests had merged into 1.
+  GCC also keeps three pointers stepped through the tap steps for the last taps' paired loads; the test leaves that.
+
+Eight alternating rounds against the loops, the weights aligned in both builds (five rounds on the Pi, against cbbd718):
+
+| 4K -> 1080p Grayscale8 | Steps | Steps behind the test |
+|---|---:|---:|
+| 12600K E-core | -12.5% | -21% |
+| 12600K P-core | -6% | -14% |
+| 8500T | 0% | -9% |
+| Pi, GCC | +4.4% | +0.3% |
+
+- The other rows, with the test: the E-core's 4K -> 1080p RGB24 and RGB32 -3.5%, the 8500T's thumbnail -3% and 24 MP
+  photo -2%; the rest within 1% on x64 and within 2% on the Pi, but its native size at +3%, a row that swings 9%.
+- Not read: MSVC's code with the test. Its gain on the P-core and the 8500T is larger than the instructions saved.
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -760,16 +785,6 @@ Eight alternating rounds against cbbd718, the old form's slow and fast launches 
     Equal to `float` at AVX2 (best of six processes 16.17, 16.25 and 16.18 ms on 720p -> 4K RGBA32, 16.72 without a
     list) and on the i3-2310M; 32 bytes cost the N4100's downscales up to 1.5 points more and the Pi's GCC build up to
     19%.
-27. **`filterRun`'s last taps as explicit steps** (against cbbd718, not committed): one tap for 4-float pixels, two then
-    one for the others, in place of loops that MSVC unrolls by four although at most 3 taps reach them. The column loop
-    loses 22 instructions for Grayscale8 and 32 for RGB32. The tests pass at AVX2, SSE4.1 and NEON.
-    - 12600K E-core: 4K -> 1080p Grayscale8 -11%, the predecode stalls of open lead 22 down from 23% of the column
-      loop's cycles to 4%.
-    - 8500T: the thumbnail -3.6%, 4K image -> 1080p RGB32 -3.6%. 4K -> 1080p RGB24, RGB32 and RGBA32 read +3% to +6% in
-      seven rounds of eight: the weights' place in their cache line, not the steps ("Where the weights start"). With both builds on
-      the fast level, eight alternating launches: 23.28-23.46 ms against 23.39-23.62.
-    - Pi, GCC: 4K -> 1080p Grayscale8 +6.5%, the thumbnail +3%, the rest within 1%. GCC's code for the steps is unread.
-    - 12600K P-core: -8% to +4% by row, the two statistics disagreeing.
 
 ## Open leads
 
@@ -889,7 +904,7 @@ Eight alternating rounds against cbbd718, the old form's slow and fast launches 
       (Intel's patent US 12,353,881); fetch through such a line takes the slow path. With 12-tap runs the 16-tap block
       loop and the unrolled tail loops are skipped every column, and the tail loops' unrolled copies can never run.
     - Shown by two variants: without the tail loops' dead copies the stalls fall from 23% of the column loop's cycles
-      to 4% (experiment 27); with one run per row pair that takes every step, to 0.3%. That run costs 8% more
+      to 4% (the last taps as steps); with one run per row pair that takes every step, to 0.3%. That run costs 8% more
       instructions and brings predecode stalls to RGB32, which had none: a probe, not a fix.
     - 4K -> 1080p RGB32's column loop has no predecode stalls: the back end bounds it.
     - Not found: which lines keep a table entry at a given address. Unmeasured: other rows, the N4100, a single resize
