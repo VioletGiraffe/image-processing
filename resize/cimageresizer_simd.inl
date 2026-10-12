@@ -303,15 +303,16 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		// its exact single-row arithmetic. Two rows is the register budget: the spread constants plus a row pair's
 		// chains nearly fill the file, a third row would spill inside the hottest loop.
 		// Rows are passed as individual pointers: a pair of temp rows may straddle the ring's wrap.
-		// Filters one dest column: the run of weights.size() pixels at runFloatOffset in each row's floats, into each temp row at tempOffset.
+		// Filters one dest column: each row's run of weights.size() pixels, at pixelsA and pixelsB, into its temp pixel, at outA and outB.
+		// The second row's pointers are unused for one row.
 		template <size_t Channels, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void filterRun(
-			float* const (&sourceFloats)[Rows],
-			size_t runFloatOffset,
+			const float* pixelsA,
+			[[maybe_unused]] const float* pixelsB,
 			std::span<const float> weights,
 			const WeightSpreader<sourceFloatsPerPixel(Channels)>& weightSpreader,
-			float* const (&tempRows)[Rows],
-			size_t tempOffset) noexcept
+			float* outA,
+			[[maybe_unused]] float* outB) noexcept
 		{
 			static_assert(Rows == 1 || Rows == 2);
 
@@ -321,13 +322,19 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			const size_t tapCount = weights.size();
 
 			const float* runPixels[Rows];
+			float* outPixels[Rows];
+			runPixels[0] = pixelsA;
+			outPixels[0] = outA;
+			if constexpr (Rows == 2)
+			{
+				runPixels[1] = pixelsB;
+				outPixels[1] = outB;
+			}
+
 			// Lanes hold partial sums of 8 / floatsPerPixel pixels until the reductions below the blocks
 			Floats8 accumPairs[Rows];
 			for (size_t row = 0; row < Rows; ++row)
-			{
-				runPixels[row] = sourceFloats[row] + runFloatOffset;
 				accumPairs[row] = zeroFloats8();
-			}
 
 			size_t tap = 0;
 
@@ -414,7 +421,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 
 				for (size_t row = 0; row < Rows; ++row)
-					storeTempPixel<Channels>(tempRows[row] + tempOffset, accum[row]);
+					storeTempPixel<Channels>(outPixels[row], accum[row]);
 			}
 			else
 			{
@@ -422,17 +429,17 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				// One test for both rows where no taps remain: the constant 0 folds the tap steps away
 				if (remainingTaps == 0)
 				{
-					storeTempPixelWithTaps<floatsPerPixel>(tempRows[0] + tempOffset, accum[0], runPixels[0], weights.data(), 0);
+					storeTempPixelWithTaps<floatsPerPixel>(outA, accum[0], runPixels[0], weights.data(), 0);
 					if constexpr (Rows == 2)
-						storeTempPixelWithTaps<floatsPerPixel>(tempRows[1] + tempOffset, accum[1], runPixels[1], weights.data(), 0);
+						storeTempPixelWithTaps<floatsPerPixel>(outB, accum[1], runPixels[1], weights.data(), 0);
 					return;
 				}
 
 				// Not a loop over the rows: when the body held a loop, GCC left such an outer loop rolled, with the rows' state in memory.
 				// Not retried with the tap steps.
-				storeTempPixelWithTaps<floatsPerPixel>(tempRows[0] + tempOffset, accum[0], runPixels[0] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
+				storeTempPixelWithTaps<floatsPerPixel>(outA, accum[0], runPixels[0] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
 				if constexpr (Rows == 2)
-					storeTempPixelWithTaps<floatsPerPixel>(tempRows[1] + tempOffset, accum[1], runPixels[1] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
+					storeTempPixelWithTaps<floatsPerPixel>(outB, accum[1], runPixels[1] + tap * floatsPerPixel, weights.data() + tap, remainingTaps);
 			}
 		}
 
@@ -454,17 +461,30 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
 			const WeightSpreader<floatsPerPixel> weightSpreader{};
 
-			size_t dx = firstColumn;
-			for (; dx < destEnd; ++dx) IMAGE_PROCESSING_FORCE_INLINE_CALLS
+			assert(firstColumn <= destEnd);
+			// No column index: the run and the temp pixels are stepped, where an index makes every column form them from bases kept across the loop.
+			// The rows' floats as if they began at source pixel 0: a run's pixels are one scaled add away.
+			// Before the allocation unless bufferBegin is 0, and never read below bufferBegin.
+			const float* const originA = sourceFloats[0] - bufferBegin * floatsPerPixel;
+			const float* const originB = sourceFloats[Rows - 1] - bufferBegin * floatsPerPixel;
+			float* outA = tempRows[0] + (firstColumn - destBegin) * Channels;
+			float* outB = tempRows[Rows - 1] + (firstColumn - destBegin) * Channels;
+			const TapRun* run = xRunLookup.runs + firstColumn;
+			const TapRun* const runsEnd = xRunLookup.runs + destEnd;
+			for (; run != runsEnd; ++run) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
-				const auto [firstPixel, weights] = xRunLookup.runFor(dx);
-				if (firstPixel < bufferBegin || firstPixel + weights.size() > bufferEnd)
+				const size_t firstPixel = run->firstSource;
+				if (firstPixel < bufferBegin || firstPixel + run->weightCount > bufferEnd)
 					break;
 
-				filterRun<Channels>(sourceFloats, (firstPixel - bufferBegin) * floatsPerPixel, weights, weightSpreader, tempRows, (dx - destBegin) * Channels);
+				const size_t floatOffset = firstPixel * floatsPerPixel;
+				filterRun<Channels, Rows>(originA + floatOffset, originB + floatOffset, { xRunLookup.weights + run->firstWeight, run->weightCount }, weightSpreader, outA, outB);
+				outA += Channels;
+				if constexpr (Rows == 2)
+					outB += Channels;
 			}
 
-			return dx;
+			return static_cast<size_t>(run - xRunLookup.runs);
 		}
 
 		// Filters dest columns [destBegin, destEnd) into the temp rows' start

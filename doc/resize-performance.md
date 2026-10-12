@@ -705,6 +705,33 @@ Eight alternating rounds against the loops, the weights aligned in both builds (
 - MSVC's code with taps left, per row: two pointers formed, a compare and branch per step. The test for none skips
   about 11 instructions and 4 branches of a 12-tap Grayscale8 column's 75.
 
+### The general pass steps its run and temp pixels
+
+`filterBufferedRuns` has no column index. Per column it steps a pointer into the run table and one temp pixel
+pointer per row, and takes a run's pixels from row pointers biased to source pixel 0.
+
+- With an index, each column formed the temp address from the index, the destination's start and the temp rows'
+  bases (7 instructions, 3 of them loads from the stack under MSVC), and the pixel address from the buffer's start
+  and the rows' bases: open lead 26.
+- A 12-tap RGB32 column under MSVC: 72 instructions and 1 stack load, from 81 and 5.
+- The biased pointers lie before the allocation where the buffer does not start at pixel 0. They are never read
+  below the buffer's first pixel: the range check comes first. Without the bias MSVC forms the offset from the
+  buffer's start twice: 78 instructions.
+
+MSVC and clang-cl 22 alike, against d77c79c; eight rounds on the 8500T, five on the 12600K:
+
+| Row | 8500T | 12600K P-core | 12600K E-core |
+|---|---:|---:|---:|
+| 4K -> 1080p RGB24, RGB32, RGBA32 | -5% | -2.4% to -5% | 0 to -2% |
+| 4K -> 1080p Grayscale8 | -2% (MSVC), -4% (clang-cl) | -8% to -9% | -3% |
+| 24 MP -> 1080p | -3% to -4.5% | -4% | level |
+| 1080p -> 240p thumbnail | -2% | -3% to -6% | level |
+| Upscales, 16x and 32x thumbnails, 4K -> 64x64 | within 2% | within 1.2% | within 1% |
+
+- Pi, GCC, five rounds: within 2% on every single-threaded row.
+- Nine instructions fewer of 81 gave 5%, not the 11% of "1.2% an instruction" (experiment 27): loads and address
+  arithmetic cost less than branches.
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -948,8 +975,8 @@ Eight alternating rounds against the loops, the weights aligned in both builds (
     - Not taken: a horizontal pass per run length (a template parameter as `FourTapXRuns` is, the stepped loop for
       long runs and no block loop for short ones). It would buy MSVC what clang-cl has without it.
     - Open: a form of the loop MSVC compiles well that leaves the short runs' column as it is.
-26. **The x64 column loop holds more live values than registers** (MSVC, untried). Of a 12-tap RGB32 column's 81
-    instructions 25 are arithmetic. Per column, outside it:
+26. **The x64 column loop holds more live values than registers** (MSVC). Of a 12-tap RGB32 column's 81
+    instructions at d77c79c, 25 are arithmetic. Per column, outside it:
     - 5-6 loads of loop constants from the stack: the weights' base, row B's base, both temp rows' bases, the
       destination offset; for Grayscale8 the loop bound too.
     - 7 instructions to form the temp store's address from the column index and those bases.
@@ -957,6 +984,9 @@ Eight alternating rounds against the loops, the weights aligned in both builds (
     - A change that adds a live value costs a reload: experiment 27's end pointer moved the loop bound to the stack.
     - Lead: fewer live values per column. Output pointers stepped per column in place of base and offset, as the
       model benchmark of `throughput-ceiling.md` has them, remove two bases, the offset and the address arithmetic.
+    - Done for `filterBufferedRuns` ("The general pass steps its run and temp pixels"): 72 instructions, 1 load.
+    - Not yet: the four-tap passes of the upscales, which keep a column index and the same bases.
+    - Left in the general pass: the weights' base loaded from the stack, the spread constants reloaded.
 27. **A batch API for a caller that knows it has many resizes in a row** (not designed), a folder's thumbnails for one.
     Each `resize()` call builds both axes' weights and allocates the source float buffers and the temp ring per band;
     a 1080p -> 120 px thumbnail is under 2 ms in all, so that setup may be a visible share. Unmeasured.
