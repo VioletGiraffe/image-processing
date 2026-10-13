@@ -1059,14 +1059,18 @@ With the y runs trimmed again and no room behind a run in the source buffers, ag
 19. **A tap per multiply-add with the row pair's pixels interleaved** ([throughput-ceiling.md](throughput-ceiling.md)): the
     horizontal arithmetic alone at a fixed 12 taps, against the kernel's form, is +3% to +17% on the 8500T, +17% to +29%
     on the 12600K's P-cores and +61% to +73% on its E-cores. Untried in the kernel.
-    - With the tap count read per column and the conversion included, without the run lookup, at 2x, 3x, 1.5x and 4x:
-      - E-core: 14-29% off the pass under MSVC, 22-31% under clang-cl.
-      - P-core: -5%, -2%, -13%, +2% under MSVC; 16-27% off under clang-cl.
-      - 8500T: 2-12% off under MSVC, 10-22% under clang-cl, 1-11% under GCC.
-    - MSVC's shortfall against clang-cl is outside the taps, in code only the benchmark has: the kernel may differ.
-    - The taps in `filterRun`'s steps are the shape. No weight source suits every core: broadcast from memory is best
-      on the E-core, weights permuted in-lane on the 8500T, and the P-core changes sides with the run length.
-    - Four-tap runs gain 12-16% of their arithmetic under MSVC on all three cores.
+    - The whole pass with the conversion and a run table as the kernel's, the count read, lane weights in the better of
+      their two shapes, against the kernel's form as of 32b0a2f, at 5, 7, 9, 12, 18 and 24 taps under MSVC:
+      - 8500T: -20%, -16%, -9%, -4%, -7%, -1%.
+      - P-core: -26%, -29%, -21%, -14%, -7%, 0%.
+      - E-core: -11%, -8%, -22%, -27%, -26%, -28%.
+    - From 24 taps up the kernel's form leads on the two big cores: the form would be chosen per resize, by the x
+      axis's longest run.
+    - A weight picked from its lane must be a `vshufps`, written `_mm256_shuffle_ps`: MSVC emits `vpermilps` for
+      `_mm256_permute_ps`, which the P-core runs at one per cycle.
+    - Lane weights for the big cores. Broadcast from memory is the E-core's best, by up to 10%, and loses 7-21% to
+      lanes on the big cores once the column has the run table's loads.
+    - Four-tap runs gain 11-20% of their arithmetic under MSVC on all three cores.
     - The 128-bit levels' form is already a tap per multiply-add, and an interleaved span costs them nothing: one
       outline for every level is possible.
 20. **An AVX level for CPUs with AVX and no AVX2** (Sandy Bridge, Ivy Bridge). A prototype with 256-bit floats and
@@ -1119,6 +1123,12 @@ With the y runs trimmed again and no room behind a run in the source buffers, ag
     is could give each its own `filterRun`. "The block loop steps its pointers where a level has four chains" got
     MSVC's long runs their gain without it.
     - Unexplained: on the 12600K's P-core the 16x thumbnail gained 9% and the 32x one 3%.
+    - Measured outside the kernel ([throughput-ceiling.md](throughput-ceiling.md)): with the count a template
+      parameter and every x run padded to it, the kernel's form's whole pass gains 8-21% up to 12 taps under MSVC on
+      the 8500T and the 12600K's P-core, 3-5% at 18, nothing at 24.
+    - At the 128-bit levels, arithmetic and run lookup only: 2-9% up to 12 taps at SSE4.1 on the N4100 and a loss
+      from 18; 3-19% up to 24 taps at NEON on the Pi.
+    - A fixed count must be written out per tap or block: MSVC keeps a loop over a known count as a loop.
 26. **The x64 column loop holds more live values than registers** (MSVC). Of a 12-tap RGB32 column's 81
     instructions at d77c79c, 25 are arithmetic. Per column, outside it:
     - 5-6 loads of loop constants from the stack: the weights' base, row B's base, both temp rows' bases, the

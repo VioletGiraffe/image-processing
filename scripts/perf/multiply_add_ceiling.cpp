@@ -5,8 +5,8 @@
 //   clang-cl /O2 /MT /arch:AVX2 -mfma /clang:-mbranches-within-32B-boundaries /std:c++20 /EHsc multiply_add_ceiling.cpp
 //   g++ -O2 -mavx2 -mfma -std=c++20 multiply_add_ceiling.cpp
 // The jump-alignment options are the kernels': without them lines differ by up to 14% between builds on the Skylake family.
-// Without /arch:AVX2, or for ARM64 (g++ -O2 -std=c++20), only section N exists: the 128-bit levels' horizontal form.
-// Run: multiply_add_ceiling [repeats, default 30] [sections, default HVTFCPN]; each line is the best repeat.
+// Without /arch:AVX2, or for ARM64 (g++ -O2 -std=c++20), only sections N and S exist: the 128-bit levels' horizontal form.
+// Run: multiply_add_ceiling [repeats, default 30] [sections, default HVTFCPRSN]; each line is the best repeat.
 // Pinned to a logical processor by mask: start /b /wait /affinity 4 multiply_add_ceiling.exe
 // Rates are float multiply-adds per second, counted as the kernel's are: 4 floats per horizontal tap, 3 per vertical tap.
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -41,6 +41,13 @@
 #else
 	#define OPAQUE_VECTOR(v) (void)0
 	#define OPAQUE_POINTER(p) (void)0
+#endif
+
+// Ahead of a loop: Clang neither vectorizes nor interleaves it, as the kernel's conversion tail
+#if defined(__clang__)
+	#define SCALAR_LOOP _Pragma("clang loop vectorize(disable) interleave(disable)")
+#else
+	#define SCALAR_LOOP
 #endif
 
 namespace
@@ -80,6 +87,32 @@ namespace
 			best = std::min(best, std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
 		}
 		return best;
+	}
+
+	// The floats from one run's weights to the next: the kernel's builder starts every run at a multiple of 8 in an array on a 64-byte boundary
+	constexpr size_t weightStrideFor(size_t maxTaps) { return (maxTaps + 7) / 8 * 8; }
+
+	// A column's run, as the kernel's TapRun
+	struct ColumnRun
+	{
+		size_t firstSource;
+		const float* weights;
+		size_t weightCount;
+	};
+
+	// Every column's tap count: maxTaps; mixed - maxTaps or one fewer, unpredictably
+	std::vector<uint32_t> columnTapCounts(size_t columns, size_t maxTaps, bool mixed)
+	{
+		std::vector<uint32_t> tapCounts(columns, static_cast<uint32_t>(maxTaps));
+		if (mixed)
+		{
+			for (size_t column = 0; column < columns; ++column)
+			{
+				if (((column * 2654435761u) >> 13 & 1) != 0)
+					--tapCounts[column];
+			}
+		}
+		return tapCounts;
 	}
 
 #ifdef __AVX2__
@@ -196,10 +229,10 @@ namespace
 			else
 			{
 				const __m256 w0 = _mm256_broadcast_ps(reinterpret_cast<const __m128*>(w)), w1 = _mm256_broadcast_ps(reinterpret_cast<const __m128*>(w + 4)), w2 = _mm256_broadcast_ps(reinterpret_cast<const __m128*>(w + 8));
-				s0 = _mm256_mul_ps(pixels(0), _mm256_permute_ps(w0, 0x00)); s1 = _mm256_mul_ps(pixels(1), _mm256_permute_ps(w0, 0x55)); s2 = _mm256_mul_ps(pixels(2), _mm256_permute_ps(w0, 0xAA));
-				s0 = _mm256_fmadd_ps(pixels(3), _mm256_permute_ps(w0, 0xFF), s0); s1 = _mm256_fmadd_ps(pixels(4), _mm256_permute_ps(w1, 0x00), s1); s2 = _mm256_fmadd_ps(pixels(5), _mm256_permute_ps(w1, 0x55), s2);
-				s0 = _mm256_fmadd_ps(pixels(6), _mm256_permute_ps(w1, 0xAA), s0); s1 = _mm256_fmadd_ps(pixels(7), _mm256_permute_ps(w1, 0xFF), s1); s2 = _mm256_fmadd_ps(pixels(8), _mm256_permute_ps(w2, 0x00), s2);
-				s0 = _mm256_fmadd_ps(pixels(9), _mm256_permute_ps(w2, 0x55), s0); s1 = _mm256_fmadd_ps(pixels(10), _mm256_permute_ps(w2, 0xAA), s1); s2 = _mm256_fmadd_ps(pixels(11), _mm256_permute_ps(w2, 0xFF), s2);
+				s0 = _mm256_mul_ps(pixels(0), _mm256_shuffle_ps(w0, w0, 0x00)); s1 = _mm256_mul_ps(pixels(1), _mm256_shuffle_ps(w0, w0, 0x55)); s2 = _mm256_mul_ps(pixels(2), _mm256_shuffle_ps(w0, w0, 0xAA));
+				s0 = _mm256_fmadd_ps(pixels(3), _mm256_shuffle_ps(w0, w0, 0xFF), s0); s1 = _mm256_fmadd_ps(pixels(4), _mm256_shuffle_ps(w1, w1, 0x00), s1); s2 = _mm256_fmadd_ps(pixels(5), _mm256_shuffle_ps(w1, w1, 0x55), s2);
+				s0 = _mm256_fmadd_ps(pixels(6), _mm256_shuffle_ps(w1, w1, 0xAA), s0); s1 = _mm256_fmadd_ps(pixels(7), _mm256_shuffle_ps(w1, w1, 0xFF), s1); s2 = _mm256_fmadd_ps(pixels(8), _mm256_shuffle_ps(w2, w2, 0x00), s2);
+				s0 = _mm256_fmadd_ps(pixels(9), _mm256_shuffle_ps(w2, w2, 0x55), s0); s1 = _mm256_fmadd_ps(pixels(10), _mm256_shuffle_ps(w2, w2, 0xAA), s1); s2 = _mm256_fmadd_ps(pixels(11), _mm256_shuffle_ps(w2, w2, 0xFF), s2);
 			}
 			const __m256 sum = _mm256_add_ps(_mm256_add_ps(s0, s1), s2);
 			_mm_storeu_ps(outA + column * 3, _mm256_castps256_ps128(sum));
@@ -219,37 +252,10 @@ namespace
 		__m256i i2 = _mm256_setr_epi32(4, 4, 4, 4, 5, 5, 5, 5), i3 = _mm256_setr_epi32(6, 6, 6, 6, 7, 7, 7, 7);
 	};
 
-	// One column of a row pair in the kernel's form, with filterRun's steps for 4-float pixels: blocks of 8 taps in 4 chains, 4 taps, 2 taps, single taps.
-	// Requires 8 readable floats at every weight.
-	FORCEINLINE void kernelFormColumn(const SpreadIndices& indices, const float* pa, const float* pb, const float* w, size_t tapCount, float* outA, float* outB)
+	// kernelFormColumn's taps from tap on, under 8 of them, added to the blocks' sums: filterRun's steps of 4 taps, 2 taps and a single tap
+	FORCEINLINE void kernelFormLastTaps(const SpreadIndices& indices, const float* pa, const float* pb, const float* w, size_t tap, size_t tapCount,
+		__m256 sumA, __m256 sumB, float* outA, float* outB)
 	{
-		__m256 sumA = _mm256_setzero_ps(), sumB = _mm256_setzero_ps();
-		size_t tap = 0;
-		if (tapCount >= 8)
-		{
-			__m256 weights = _mm256_loadu_ps(w);
-			__m256 w0 = _mm256_permutevar8x32_ps(weights, indices.i0), w1 = _mm256_permutevar8x32_ps(weights, indices.i1);
-			__m256 w2 = _mm256_permutevar8x32_ps(weights, indices.i2), w3 = _mm256_permutevar8x32_ps(weights, indices.i3);
-			__m256 a0 = _mm256_mul_ps(_mm256_loadu_ps(pa), w0), a1 = _mm256_mul_ps(_mm256_loadu_ps(pa + 8), w1);
-			__m256 a2 = _mm256_mul_ps(_mm256_loadu_ps(pa + 16), w2), a3 = _mm256_mul_ps(_mm256_loadu_ps(pa + 24), w3);
-			__m256 b0 = _mm256_mul_ps(_mm256_loadu_ps(pb), w0), b1 = _mm256_mul_ps(_mm256_loadu_ps(pb + 8), w1);
-			__m256 b2 = _mm256_mul_ps(_mm256_loadu_ps(pb + 16), w2), b3 = _mm256_mul_ps(_mm256_loadu_ps(pb + 24), w3);
-			for (tap = 8; tap + 8 <= tapCount; tap += 8)
-			{
-				weights = _mm256_loadu_ps(w + tap);
-				w0 = _mm256_permutevar8x32_ps(weights, indices.i0); w1 = _mm256_permutevar8x32_ps(weights, indices.i1);
-				w2 = _mm256_permutevar8x32_ps(weights, indices.i2); w3 = _mm256_permutevar8x32_ps(weights, indices.i3);
-				const float* blockA = pa + tap * 4;
-				const float* blockB = pb + tap * 4;
-				a0 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA), w0, a0); a1 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA + 8), w1, a1);
-				a2 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA + 16), w2, a2); a3 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA + 24), w3, a3);
-				b0 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB), w0, b0); b1 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB + 8), w1, b1);
-				b2 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB + 16), w2, b2); b3 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB + 24), w3, b3);
-			}
-			sumA = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
-			sumB = _mm256_add_ps(_mm256_add_ps(b0, b1), _mm256_add_ps(b2, b3));
-		}
-
 		if (tap + 4 <= tapCount)
 		{
 			const __m256 weights = _mm256_loadu_ps(w + tap);
@@ -268,7 +274,8 @@ namespace
 		}
 
 		__m128 pixelA = sumHalves(sumA), pixelB = sumHalves(sumB);
-		for (; tap < tapCount; ++tap)
+		// One tap at most is left
+		if (tap < tapCount)
 		{
 			const __m128 weight = _mm_broadcast_ss(w + tap);
 			pixelA = _mm_fmadd_ps(_mm_loadu_ps(pa + tap * 4), weight, pixelA);
@@ -276,6 +283,93 @@ namespace
 		}
 		_mm_storeu_ps(outA, pixelA);
 		_mm_storeu_ps(outB, pixelB);
+	}
+
+	// Blocks Block and later of kernelFormColumnFixed: 8 taps in 4 chains per row, the first block starting the chains.
+	// Written out per block: MSVC keeps a loop over a known count as a loop.
+	template <size_t Blocks, size_t Block = 0>
+	FORCEINLINE void addFixedBlocks(const SpreadIndices& indices, const float* pa, const float* pb, const float* w,
+		__m256& a0, __m256& a1, __m256& a2, __m256& a3, __m256& b0, __m256& b1, __m256& b2, __m256& b3)
+	{
+		if constexpr (Block < Blocks)
+		{
+			const __m256 weights = _mm256_loadu_ps(w + Block * 8);
+			const __m256 w0 = _mm256_permutevar8x32_ps(weights, indices.i0), w1 = _mm256_permutevar8x32_ps(weights, indices.i1);
+			const __m256 w2 = _mm256_permutevar8x32_ps(weights, indices.i2), w3 = _mm256_permutevar8x32_ps(weights, indices.i3);
+			const float* blockA = pa + Block * 32;
+			const float* blockB = pb + Block * 32;
+			if constexpr (Block == 0)
+			{
+				a0 = _mm256_mul_ps(_mm256_loadu_ps(blockA), w0); a1 = _mm256_mul_ps(_mm256_loadu_ps(blockA + 8), w1);
+				a2 = _mm256_mul_ps(_mm256_loadu_ps(blockA + 16), w2); a3 = _mm256_mul_ps(_mm256_loadu_ps(blockA + 24), w3);
+				b0 = _mm256_mul_ps(_mm256_loadu_ps(blockB), w0); b1 = _mm256_mul_ps(_mm256_loadu_ps(blockB + 8), w1);
+				b2 = _mm256_mul_ps(_mm256_loadu_ps(blockB + 16), w2); b3 = _mm256_mul_ps(_mm256_loadu_ps(blockB + 24), w3);
+			}
+			else
+			{
+				a0 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA), w0, a0); a1 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA + 8), w1, a1);
+				a2 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA + 16), w2, a2); a3 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA + 24), w3, a3);
+				b0 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB), w0, b0); b1 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB + 8), w1, b1);
+				b2 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB + 16), w2, b2); b3 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB + 24), w3, b3);
+			}
+
+			addFixedBlocks<Blocks, Block + 1>(indices, pa, pb, w, a0, a1, a2, a3, b0, b1, b2, b3);
+		}
+	}
+
+	// kernelFormColumn for a tap count known to the compiler: no block loop, and of the steps only those the count takes
+	template <size_t Taps>
+	FORCEINLINE void kernelFormColumnFixed(const SpreadIndices& indices, const float* pa, const float* pb, const float* w, float* outA, float* outB)
+	{
+		__m256 sumA = _mm256_setzero_ps(), sumB = _mm256_setzero_ps();
+		if constexpr (Taps >= 8)
+		{
+			__m256 a0, a1, a2, a3, b0, b1, b2, b3;
+			addFixedBlocks<Taps / 8>(indices, pa, pb, w, a0, a1, a2, a3, b0, b1, b2, b3);
+			sumA = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+			sumB = _mm256_add_ps(_mm256_add_ps(b0, b1), _mm256_add_ps(b2, b3));
+		}
+
+		kernelFormLastTaps(indices, pa, pb, w, Taps / 8 * 8, Taps, sumA, sumB, outA, outB);
+	}
+
+	// One column of a row pair in the kernel's form, with filterRun's steps for 4-float pixels: blocks of 8 taps in 4 chains, 4 taps, 2 taps, single taps.
+	// Requires 8 readable floats at every weight.
+	FORCEINLINE void kernelFormColumn(const SpreadIndices& indices, const float* pa, const float* pb, const float* w, size_t tapCount, float* outA, float* outB)
+	{
+		__m256 sumA = _mm256_setzero_ps(), sumB = _mm256_setzero_ps();
+		size_t tap = 0;
+		if (tapCount >= 8)
+		{
+			__m256 weights = _mm256_loadu_ps(w);
+			__m256 w0 = _mm256_permutevar8x32_ps(weights, indices.i0), w1 = _mm256_permutevar8x32_ps(weights, indices.i1);
+			__m256 w2 = _mm256_permutevar8x32_ps(weights, indices.i2), w3 = _mm256_permutevar8x32_ps(weights, indices.i3);
+			__m256 a0 = _mm256_mul_ps(_mm256_loadu_ps(pa), w0), a1 = _mm256_mul_ps(_mm256_loadu_ps(pa + 8), w1);
+			__m256 a2 = _mm256_mul_ps(_mm256_loadu_ps(pa + 16), w2), a3 = _mm256_mul_ps(_mm256_loadu_ps(pa + 24), w3);
+			__m256 b0 = _mm256_mul_ps(_mm256_loadu_ps(pb), w0), b1 = _mm256_mul_ps(_mm256_loadu_ps(pb + 8), w1);
+			__m256 b2 = _mm256_mul_ps(_mm256_loadu_ps(pb + 16), w2), b3 = _mm256_mul_ps(_mm256_loadu_ps(pb + 24), w3);
+			// Stepped pointers beside the tap count, as the kernel's block loop
+			const float* blockWeights = w + 8;
+			const float* blockA = pa + 32;
+			const float* blockB = pb + 32;
+			for (tap = 8; tap + 8 <= tapCount; tap += 8)
+			{
+				weights = _mm256_loadu_ps(blockWeights);
+				w0 = _mm256_permutevar8x32_ps(weights, indices.i0); w1 = _mm256_permutevar8x32_ps(weights, indices.i1);
+				w2 = _mm256_permutevar8x32_ps(weights, indices.i2); w3 = _mm256_permutevar8x32_ps(weights, indices.i3);
+				a0 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA), w0, a0); a1 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA + 8), w1, a1);
+				a2 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA + 16), w2, a2); a3 = _mm256_fmadd_ps(_mm256_loadu_ps(blockA + 24), w3, a3);
+				b0 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB), w0, b0); b1 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB + 8), w1, b1);
+				b2 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB + 16), w2, b2); b3 = _mm256_fmadd_ps(_mm256_loadu_ps(blockB + 24), w3, b3);
+				blockWeights += 8;
+				blockA += 32;
+				blockB += 32;
+			}
+			sumA = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+			sumB = _mm256_add_ps(_mm256_add_ps(b0, b1), _mm256_add_ps(b2, b3));
+		}
+
+		kernelFormLastTaps(indices, pa, pb, w, tap, tapCount, sumA, sumB, outA, outB);
 	}
 
 	// One column of a row pair, a tap per multiply-add over interleaved pixels, each weight broadcast from memory.
@@ -323,6 +417,8 @@ namespace
 
 	// The weights of 4 taps from w on, each for a pixel pair's 8 floats.
 	// Weights: 0 - the 4 loaded once into both lanes, a tap's permuted in-lane; 1 - a tap's broadcast from memory.
+	// The in-lane permutes of this file are _mm256_shuffle_ps of a register with itself, not _mm256_permute_ps: MSVC emits vpermilps for
+	// that one, which a 12600K P-core runs at one per cycle, where vshufps runs faster. Clang emits vshufps for either.
 	template <int Weights>
 	struct PairWeights
 	{
@@ -341,7 +437,7 @@ namespace
 			if constexpr (Weights == 1)
 				return _mm256_broadcast_ss(weights + Tap);
 			else
-				return _mm256_permute_ps(loaded, Tap * 0x55);
+				return _mm256_shuffle_ps(loaded, loaded, Tap * 0x55);
 		}
 
 		const float* weights;
@@ -430,6 +526,50 @@ namespace
 		_mm_storeu_ps(outB, _mm256_extractf128_ps(sum, 1));
 	}
 
+	// Taps Tap and later of interleavedColumnFixed: tap i goes to chain i % 4, the first four start the chains.
+	// Written out per tap: MSVC keeps a loop over a known count as a loop.
+	template <size_t Taps, int Weights, size_t Tap = 0>
+	FORCEINLINE void addFixedTaps(const float* p, const float* w, __m256& s0, __m256& s1, __m256& s2, __m256& s3, __m256 lanes = _mm256_setzero_ps())
+	{
+		if constexpr (Tap < Taps)
+		{
+			__m256 weight;
+			if constexpr (Weights == 1)
+				weight = _mm256_broadcast_ss(w + Tap);
+			else
+			{
+				if constexpr (Tap % 4 == 0)
+				{
+					lanes = _mm256_broadcast_ps(reinterpret_cast<const __m128*>(w + Tap));
+					OPAQUE_VECTOR(lanes);
+				}
+				weight = _mm256_shuffle_ps(lanes, lanes, (Tap % 4) * 0x55);
+			}
+
+			__m256& chain = Tap % 4 == 0 ? s0 : Tap % 4 == 1 ? s1 : Tap % 4 == 2 ? s2 : s3;
+			const __m256 pixels = _mm256_loadu_ps(p + Tap * 8);
+			if constexpr (Tap < 4)
+				chain = _mm256_mul_ps(pixels, weight);
+			else
+				chain = _mm256_fmadd_ps(pixels, weight, chain);
+
+			addFixedTaps<Taps, Weights, Tap + 1>(p, w, s0, s1, s2, s3, lanes);
+		}
+	}
+
+	// One column of a row pair over interleaved pixels, the tap count known to the compiler: 4 chains, no loop, no steps.
+	// Weights: PairWeights'. Requires 4 to 32 taps, and 4 readable floats at every weight.
+	template <size_t Taps, int Weights>
+	FORCEINLINE void interleavedColumnFixed(const float* p, const float* w, float* outA, float* outB)
+	{
+		static_assert(Taps >= 4 && Taps <= 32);
+		__m256 s0, s1, s2, s3;
+		addFixedTaps<Taps, Weights>(p, w, s0, s1, s2, s3);
+		const __m256 sum = _mm256_add_ps(_mm256_add_ps(s0, s1), _mm256_add_ps(s2, s3));
+		_mm_storeu_ps(outA, _mm256_castps256_ps128(sum));
+		_mm_storeu_ps(outB, _mm256_extractf128_ps(sum, 1));
+	}
+
 	// Form: 2, 3, 4 - interleavedColumn<Form>; 14 - interleavedColumnLaneWeights; 8, 18 - interleavedColumnInSteps, the weights broadcast or from lanes
 	template <int Form>
 	FORCEINLINE void interleavedFormColumn(const float* p, const float* w, size_t tapCount, float* outA, float* outB)
@@ -446,8 +586,9 @@ namespace
 	// Form: 0 - kernelFormColumn; otherwise interleavedFormColumn<Form>.
 	template <int Form>
 	NOINLINE void horizontalRowPairRuns(const float* a, const float* b, const float* interleaved, const float* columnWeights, const uint32_t* tapCounts,
-		size_t weightStride, size_t stepQ8, size_t capacityPixels, float* outA, float* outB)
+		size_t maxTaps, size_t stepQ8, size_t capacityPixels, float* outA, float* outB)
 	{
+		const size_t weightStride = weightStrideFor(maxTaps);
 		[[maybe_unused]] const SpreadIndices indices;
 		size_t positionQ8 = 0;
 		// Stepped per column, not multiplied by it: the kernel has no multiply per run
@@ -462,7 +603,7 @@ namespace
 				interleavedFormColumn<Form>(interleaved + pixel * 8, w, tapCount, outA, outB);
 
 			positionQ8 += stepQ8;
-			if ((positionQ8 >> 8) + weightStride > capacityPixels)
+			if ((positionQ8 >> 8) + maxTaps > capacityPixels)
 				positionQ8 = 0;
 		}
 	}
@@ -479,7 +620,7 @@ namespace
 		for (size_t column = 0; column < columns; ++column)
 		{
 			const size_t pixel = positionQ8 >> 8;
-			const float* w = columnWeights + column * 4;
+			const float* w = columnWeights + column * weightStrideFor(4);
 			if constexpr (Form == 0)
 			{
 				const __m256 weights = _mm256_loadu_ps(w);
@@ -509,8 +650,8 @@ namespace
 				else
 				{
 					const __m256 weights = _mm256_broadcast_ps(reinterpret_cast<const __m128*>(w));
-					__m256 s0 = _mm256_mul_ps(_mm256_loadu_ps(p), _mm256_permute_ps(weights, 0x00)), s1 = _mm256_mul_ps(_mm256_loadu_ps(p + 8), _mm256_permute_ps(weights, 0x55));
-					s0 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 16), _mm256_permute_ps(weights, 0xAA), s0); s1 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 24), _mm256_permute_ps(weights, 0xFF), s1);
+					__m256 s0 = _mm256_mul_ps(_mm256_loadu_ps(p), _mm256_shuffle_ps(weights, weights, 0x00)), s1 = _mm256_mul_ps(_mm256_loadu_ps(p + 8), _mm256_shuffle_ps(weights, weights, 0x55));
+					s0 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 16), _mm256_shuffle_ps(weights, weights, 0xAA), s0); s1 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 24), _mm256_shuffle_ps(weights, weights, 0xFF), s1);
 					sum = _mm256_add_ps(s0, s1);
 				}
 				_mm_storeu_ps(outA + column * 3, _mm256_castps256_ps128(sum));
@@ -529,15 +670,19 @@ namespace
 	// One row's RGB32 pixels to 4 floats each, as convertPixelsToFloats does: 4 pixels per 16-byte load, then single pixels
 	FORCEINLINE void convertRow(const uint8_t* row, float* floats, size_t pixelCount)
 	{
-		size_t pixel = 0;
-		for (; pixel + 4 <= pixelCount; pixel += 4)
+		// Stepped pointers and an end pointer, as the kernel's block loop
+		const uint8_t* blockBytes = row;
+		float* blockFloats = floats;
+		float* const blockFloatsEnd = floats + pixelCount / 4 * 16;
+		for (; blockFloats != blockFloatsEnd; blockBytes += 16, blockFloats += 16)
 		{
-			const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(row + pixel * 4));
-			_mm256_storeu_ps(floats + pixel * 4, widenBytes(bytes));
-			_mm256_storeu_ps(floats + pixel * 4 + 8, widenBytes(highHalf(bytes)));
+			const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(blockBytes));
+			_mm256_storeu_ps(blockFloats, widenBytes(bytes));
+			_mm256_storeu_ps(blockFloats + 8, widenBytes(highHalf(bytes)));
 		}
 
-		for (; pixel < pixelCount; ++pixel)
+		SCALAR_LOOP
+		for (size_t pixel = pixelCount / 4 * 4; pixel < pixelCount; ++pixel)
 		{
 			for (size_t channel = 0; channel < 4; ++channel)
 				floats[pixel * 4 + channel] = static_cast<float>(row[pixel * 4 + channel]);
@@ -559,12 +704,15 @@ namespace
 		}
 		else
 		{
-			size_t pixel = 0;
-			for (; pixel + 4 <= pixelCount; pixel += 4)
+			// Stepped as convertRow's
+			const uint8_t* blockBytesA = rowA;
+			const uint8_t* blockBytesB = rowB;
+			float* out = interleaved;
+			float* const outEnd = interleaved + pixelCount / 4 * 32;
+			for (; out != outEnd; blockBytesA += 16, blockBytesB += 16, out += 32)
 			{
-				const __m128i bytesA = _mm_loadu_si128(reinterpret_cast<const __m128i*>(rowA + pixel * 4));
-				const __m128i bytesB = _mm_loadu_si128(reinterpret_cast<const __m128i*>(rowB + pixel * 4));
-				float* out = interleaved + pixel * 8;
+				const __m128i bytesA = _mm_loadu_si128(reinterpret_cast<const __m128i*>(blockBytesA));
+				const __m128i bytesB = _mm_loadu_si128(reinterpret_cast<const __m128i*>(blockBytesB));
 				if constexpr (Layout == 1)
 				{
 					const __m128i pairs01 = _mm_unpacklo_epi32(bytesA, bytesB), pairs23 = _mm_unpackhi_epi32(bytesA, bytesB);
@@ -590,7 +738,8 @@ namespace
 				}
 			}
 
-			for (; pixel < pixelCount; ++pixel)
+			SCALAR_LOOP
+			for (size_t pixel = pixelCount / 4 * 4; pixel < pixelCount; ++pixel)
 			{
 				for (size_t channel = 0; channel < 4; ++channel)
 				{
@@ -602,40 +751,40 @@ namespace
 	}
 
 	// A row pair's whole horizontal pass: conversion in chunks into a sliding span of capacity pixels, and the columns' runs over it,
-	// alternating as filterHorizontalRowGroup does. A column's run starts at column * stepQ8 / 256; there is no run lookup.
+	// alternating as filterHorizontalRowGroup does. Each column's run is read from runs, as the kernel reads its run table.
 	// Form: kernelFormColumn (0) or interleavedFormColumn<Form>. Conversion: convertRowPair's Layout, 0 with Form 0 only.
-	template <int Form, int Conversion>
+	// FixedTaps: every column's tap count, known to the compiler; 0 - read from the run.
+	//   The kernel's form is kernelFormColumnFixed; an interleaved one is interleavedColumnFixed, broadcast weights for a Form under 10.
+	template <int Form, int Conversion, size_t FixedTaps = 0>
 	NOINLINE void horizontalPassRowPair(const uint8_t* rowA, const uint8_t* rowB, size_t sourceWidth, float* floatsA, float* floatsB, float* interleaved, size_t capacity,
-		const float* columnWeights, const uint32_t* tapCounts, size_t weightStride, size_t stepQ8, size_t columns, float* outA, float* outB)
+		const ColumnRun* runs, size_t columns, float* outA, float* outB)
 	{
 		static_assert((Form == 0) == (Conversion == 0));
-		constexpr size_t backMargin = 8, conversionChunk = 128;
+		constexpr size_t conversionChunk = 128;
 		[[maybe_unused]] const SpreadIndices indices;
 		size_t base = 0, converted = 0;
-		// Stepped per column, not multiplied by it: the kernel has no multiply per run
-		size_t positionQ8 = 0;
-		const float* w = columnWeights;
-		for (size_t column = 0; column < columns;)
+		const ColumnRun* run = runs;
+		const ColumnRun* const runsEnd = runs + columns;
+		while (run != runsEnd)
 		{
-			// SlidingSourceFloats::prepareRun
-			const size_t first = positionQ8 >> 8, end = first + tapCounts[column];
+			// SlidingSourceFloats::prepareRun: the span slides to the run's first pixel
+			const size_t first = run->firstSource, end = first + (FixedTaps != 0 ? FixedTaps : run->weightCount);
 			if (end > base + capacity)
 			{
-				const size_t newBase = first > backMargin ? first - backMargin : 0;
-				if (newBase < converted)
+				if (first < converted)
 				{
 					if constexpr (Form == 0)
 					{
-						std::memmove(floatsA, floatsA + (newBase - base) * 4, (converted - newBase) * 4 * sizeof(float));
-						std::memmove(floatsB, floatsB + (newBase - base) * 4, (converted - newBase) * 4 * sizeof(float));
+						std::memmove(floatsA, floatsA + (first - base) * 4, (converted - first) * 4 * sizeof(float));
+						std::memmove(floatsB, floatsB + (first - base) * 4, (converted - first) * 4 * sizeof(float));
 					}
 					else
-						std::memmove(interleaved, interleaved + (newBase - base) * 8, (converted - newBase) * 8 * sizeof(float));
+						std::memmove(interleaved, interleaved + (first - base) * 8, (converted - first) * 8 * sizeof(float));
 				}
 				else
-					converted = newBase;
+					converted = first;
 
-				base = newBase;
+				base = first;
 			}
 
 			if (end > converted)
@@ -646,18 +795,26 @@ namespace
 				converted = target;
 			}
 
-			// filterBufferedRuns
-			for (; column < columns; ++column, positionQ8 += stepQ8, w += weightStride, outA += 3, outB += 3)
+			// filterBufferedRuns: the runs start in order, so only a run's end is tested.
+			// The floats as if they began at source pixel 0, and the converted end by value: constants of the loop.
+			[[maybe_unused]] const float* const originA = floatsA - base * 4;
+			[[maybe_unused]] const float* const originB = floatsB - base * 4;
+			[[maybe_unused]] const float* const origin = interleaved - base * 8;
+			const size_t bufferEnd = converted;
+			for (; run != runsEnd; ++run, outA += 3, outB += 3)
 			{
-				const size_t firstPixel = positionQ8 >> 8, tapCount = tapCounts[column];
-				if (firstPixel < base || firstPixel + tapCount > converted)
+				const size_t firstPixel = run->firstSource, tapCount = FixedTaps != 0 ? FixedTaps : run->weightCount;
+				if (firstPixel + tapCount > bufferEnd)
 					break;
 
-				const size_t bufferPixel = firstPixel - base;
-				if constexpr (Form == 0)
-					kernelFormColumn(indices, floatsA + bufferPixel * 4, floatsB + bufferPixel * 4, w, tapCount, outA, outB);
+				if constexpr (Form == 0 && FixedTaps != 0)
+					kernelFormColumnFixed<FixedTaps>(indices, originA + firstPixel * 4, originB + firstPixel * 4, run->weights, outA, outB);
+				else if constexpr (Form == 0)
+					kernelFormColumn(indices, originA + firstPixel * 4, originB + firstPixel * 4, run->weights, tapCount, outA, outB);
+				else if constexpr (FixedTaps != 0)
+					interleavedColumnFixed<FixedTaps, Form < 10 ? 1 : 0>(origin + firstPixel * 8, run->weights, outA, outB);
 				else
-					interleavedFormColumn<Form>(interleaved + bufferPixel * 8, w, tapCount, outA, outB);
+					interleavedFormColumn<Form>(origin + firstPixel * 8, run->weights, tapCount, outA, outB);
 			}
 		}
 	}
@@ -776,12 +933,12 @@ namespace
 	template <int Form>
 	double fourTapSeconds(int repeats)
 	{
-		constexpr size_t columns = 3840, capacityPixels = 2 * 4 + 136;
+		constexpr size_t columns = 3840, capacityPixels = 2 * 4 + 128;
 		float* a = alignedFloats(capacityPixels * 4 + 64);
 		float* b = alignedFloats(capacityPixels * 4 + 64);
 		float* interleaved = alignedFloats(capacityPixels * 8 + 128);
-		float* weights = alignedFloats(columns * 4 + 64);
-		for (size_t i = 0; i < columns * 4 + 64; ++i)
+		float* weights = alignedFloats(columns * weightStrideFor(4) + 64);
+		for (size_t i = 0; i < columns * weightStrideFor(4) + 64; ++i)
 			weights[i] = 0.25f;
 		float* outA = alignedFloats(columns * 3 + 64);
 		float* outB = alignedFloats(columns * 3 + 64);
@@ -829,27 +986,35 @@ namespace
 		return seconds;
 	}
 
-	// horizontalPassRowPair<Form, Conversion> over a 4K RGB32 image: columns runs of passTaps taps, stepQ8 / 256 pixels apart.
-	// spanOffsetFloats: the span's start past a 64-byte boundary, in floats.
-	template <int Form, int Conversion>
-	double passSeconds(const std::vector<uint8_t>& image, size_t spanOffsetFloats, int repeats, size_t passTaps = taps, size_t stepQ8 = 2 * 256, size_t columns = destWidth)
+	// horizontalPassRowPair<Form, Conversion, FixedTaps> over a 4K RGB32 image: columns runs of passTaps taps, stepQ8 / 256 pixels apart.
+	// spanOffsetFloats: the span's start past a 64-byte boundary, in floats. mixed: see columnTapCounts; never with FixedTaps.
+	template <int Form, int Conversion, size_t FixedTaps = 0>
+	double passSeconds(const std::vector<uint8_t>& image, size_t spanOffsetFloats, int repeats, size_t passTaps = taps, size_t stepQ8 = 2 * 256, size_t columns = destWidth,
+		bool mixed = false)
 	{
-		const size_t capacity = 2 * passTaps + 136;
+		if (FixedTaps != 0 && (FixedTaps != passTaps || mixed))
+			std::abort();
+
+		const size_t capacity = 2 * passTaps + 128, weightStride = weightStrideFor(passTaps);
 		float* floatsA = alignedFloats(capacity * 4 + 64);
 		float* floatsB = alignedFloats(capacity * 4 + 64);
 		float* interleaved = alignedFloats(capacity * 8 + 128);
-		float* weights = alignedFloats(columns * passTaps + 64);
-		for (size_t i = 0; i < columns * passTaps + 64; ++i)
+		float* weights = alignedFloats(columns * weightStride + 64);
+		for (size_t i = 0; i < columns * weightStride + 64; ++i)
 			weights[i] = 1.0f / static_cast<float>(passTaps);
 		float* outA = alignedFloats(columns * 3 + 64);
 		float* outB = alignedFloats(columns * 3 + 64);
-		const std::vector<uint32_t> tapCounts(columns, static_cast<uint32_t>(passTaps));
+		const std::vector<uint32_t> tapCounts = columnTapCounts(columns, passTaps, mixed);
+		std::vector<ColumnRun> runs(columns);
+		for (size_t column = 0; column < columns; ++column)
+			runs[column] = { column * stepQ8 >> 8, weights + column * weightStride, tapCounts[column] };
+
 		const double seconds = bestSeconds([&] {
 			for (size_t pair = 0; pair < rowPairs; ++pair)
 			{
 				const uint8_t* rowA = image.data() + pair * 2 * sourceRowBytes;
-				horizontalPassRowPair<Form, Conversion>(rowA, rowA + sourceRowBytes, sourceRowPixels, floatsA + spanOffsetFloats, floatsB + spanOffsetFloats, interleaved + spanOffsetFloats,
-					capacity, weights, tapCounts.data(), passTaps, stepQ8, columns, outA, outB);
+				horizontalPassRowPair<Form, Conversion, FixedTaps>(rowA, rowA + sourceRowBytes, sourceRowPixels, floatsA + spanOffsetFloats, floatsB + spanOffsetFloats, interleaved + spanOffsetFloats,
+					capacity, runs.data(), columns, outA, outB);
 			}
 		}, repeats);
 		volatile float sink = outA[100] + outB[200];
@@ -975,24 +1140,13 @@ namespace
 			return { add4(chains.chain0.low, chains.chain1.low), add4(chains.chain0.high, chains.chain1.high) };
 	}
 
-	// One column of a row pair with filterRun's steps at the level's chain count. Requires 8 readable floats at every weight.
+	// A block's taps at the level's chain count
+	constexpr size_t blockTaps128 = levelChainCount * 2;
+
+	// column128's taps from tap on, under a block of them, added to the blocks' sums: filterRun's steps
 	template <int Layout, int Weights>
-	FORCEINLINE void column128(RowPairPixels<Layout> pixels, const float* w, size_t tapCount, float* outA, float* outB)
+	FORCEINLINE void column128LastTaps(RowPairPixels<Layout> pixels, const float* w, size_t tap, size_t tapCount, TapPair sumA, TapPair sumB, float* outA, float* outB)
 	{
-		constexpr size_t blockTaps = levelChainCount * 2;
-		TapPair sumA{ zero4(), zero4() }, sumB{ zero4(), zero4() };
-		size_t tap = 0;
-		if (tapCount >= blockTaps)
-		{
-			RowChains128 chainsA, chainsB;
-			block128<true, Layout, Weights>(w, pixels, 0, chainsA, chainsB);
-			for (tap = blockTaps; tap + blockTaps <= tapCount; tap += blockTaps)
-				block128<false, Layout, Weights>(w + tap, pixels, tap, chainsA, chainsB);
-
-			sumA = sumChains128(chainsA);
-			sumB = sumChains128(chainsB);
-		}
-
 		if constexpr (levelChainCount == 4)
 		{
 			if (tap + 4 <= tapCount)
@@ -1012,7 +1166,8 @@ namespace
 		}
 
 		Floats4 pixelA = add4(sumA.low, sumA.high), pixelB = add4(sumB.low, sumB.high);
-		for (; tap < tapCount; ++tap)
+		// One tap at most is left
+		if (tap < tapCount)
 		{
 			const Floats4 weight = broadcastLoad(w + tap);
 			pixelA = mulAdd4(pixels.rowA(tap), weight, pixelA);
@@ -1020,6 +1175,129 @@ namespace
 		}
 		store4(outA, pixelA);
 		store4(outB, pixelB);
+	}
+
+	// One column of a row pair with filterRun's steps at the level's chain count. Requires 8 readable floats at every weight.
+	template <int Layout, int Weights>
+	FORCEINLINE void column128(RowPairPixels<Layout> pixels, const float* w, size_t tapCount, float* outA, float* outB)
+	{
+		TapPair sumA{ zero4(), zero4() }, sumB{ zero4(), zero4() };
+		size_t tap = 0;
+		if (tapCount >= blockTaps128)
+		{
+			RowChains128 chainsA, chainsB;
+			block128<true, Layout, Weights>(w, pixels, 0, chainsA, chainsB);
+			for (tap = blockTaps128; tap + blockTaps128 <= tapCount; tap += blockTaps128)
+				block128<false, Layout, Weights>(w + tap, pixels, tap, chainsA, chainsB);
+
+			sumA = sumChains128(chainsA);
+			sumB = sumChains128(chainsB);
+		}
+
+		column128LastTaps<Layout, Weights>(pixels, w, tap, tapCount, sumA, sumB, outA, outB);
+	}
+
+	// Blocks Block and later of column128Fixed, written out per block: MSVC keeps a loop over a known count as a loop
+	template <size_t Blocks, int Layout, int Weights, size_t Block = 0>
+	FORCEINLINE void addFixedBlocks128(RowPairPixels<Layout> pixels, const float* w, RowChains128& chainsA, RowChains128& chainsB)
+	{
+		if constexpr (Block < Blocks)
+		{
+			block128<Block == 0, Layout, Weights>(w + Block * blockTaps128, pixels, Block * blockTaps128, chainsA, chainsB);
+			addFixedBlocks128<Blocks, Layout, Weights, Block + 1>(pixels, w, chainsA, chainsB);
+		}
+	}
+
+	// column128 for a tap count known to the compiler: no block loop, and of the steps only those the count takes
+	template <size_t Taps, int Layout, int Weights>
+	FORCEINLINE void column128Fixed(RowPairPixels<Layout> pixels, const float* w, float* outA, float* outB)
+	{
+		TapPair sumA{ zero4(), zero4() }, sumB{ zero4(), zero4() };
+		if constexpr (Taps >= blockTaps128)
+		{
+			RowChains128 chainsA, chainsB;
+			addFixedBlocks128<Taps / blockTaps128, Layout, Weights>(pixels, w, chainsA, chainsB);
+			sumA = sumChains128(chainsA);
+			sumB = sumChains128(chainsB);
+		}
+
+		column128LastTaps<Layout, Weights>(pixels, w, Taps / blockTaps128 * blockTaps128, Taps, sumA, sumB, outA, outB);
+	}
+
+	// One row pair, every column, each column's run read from runs as the kernel reads its run table; a run's firstSource is its pixel in the buffers.
+	// FixedTaps: every column's tap count, known to the compiler; 0 - read from the run.
+	template <int Layout, int Weights, size_t FixedTaps = 0>
+	NOINLINE void horizontalRunTable128(const float* a, const float* b, const float* interleaved, const ColumnRun* runs, size_t columns, float* outA, float* outB)
+	{
+		const ColumnRun* const runsEnd = runs + columns;
+		for (const ColumnRun* run = runs; run != runsEnd; ++run, outA += 3, outB += 3)
+		{
+			const size_t pixel = run->firstSource;
+			const RowPairPixels<Layout> pixels = Layout == 0 ? RowPairPixels<Layout>{ a + pixel * 4, b + pixel * 4 } : RowPairPixels<Layout>{ interleaved + pixel * 8, nullptr };
+			if constexpr (FixedTaps != 0)
+				column128Fixed<FixedTaps, Layout, Weights>(pixels, run->weights, outA, outB);
+			else
+				column128<Layout, Weights>(pixels, run->weights, run->weightCount, outA, outB);
+		}
+	}
+
+	// horizontalRunTable128 at 4K's row count: columns runs of maxTaps taps stepQ8 / 256 pixels apart, in a buffer in L1. mixed: see columnTapCounts.
+	template <int Layout, int Weights, size_t FixedTaps = 0>
+	double runTableSeconds128(size_t maxTaps, size_t stepQ8, size_t columns, bool mixed, int repeats)
+	{
+		if (FixedTaps != 0 && (FixedTaps != maxTaps || mixed))
+			std::abort();
+
+		const size_t capacityPixels = 2 * maxTaps + 128, weightStride = weightStrideFor(maxTaps);
+		float* a = alignedFloats(capacityPixels * 4 + 64);
+		float* b = alignedFloats(capacityPixels * 4 + 64);
+		float* interleaved = alignedFloats(capacityPixels * 8 + 128);
+		float* weights = alignedFloats(columns * weightStride + 64);
+		for (size_t i = 0; i < columns * weightStride + 64; ++i)
+			weights[i] = 1.0f / static_cast<float>(maxTaps);
+		float* outA = alignedFloats(columns * 3 + 64);
+		float* outB = alignedFloats(columns * 3 + 64);
+
+		const std::vector<uint32_t> tapCounts = columnTapCounts(columns, maxTaps, mixed);
+		std::vector<ColumnRun> runs(columns);
+		size_t positionQ8 = 0;
+		for (size_t column = 0; column < columns; ++column)
+		{
+			runs[column] = { positionQ8 >> 8, weights + column * weightStride, tapCounts[column] };
+			positionQ8 += stepQ8;
+			if ((positionQ8 >> 8) + maxTaps > capacityPixels)
+				positionQ8 = 0;
+		}
+
+		const double seconds = bestSeconds([&] {
+			for (size_t pair = 0; pair < rowPairs; ++pair)
+				horizontalRunTable128<Layout, Weights, FixedTaps>(a, b, interleaved, runs.data(), columns, outA, outB);
+		}, repeats);
+		volatile float sink = outA[100] + outB[200];
+		(void)sink;
+		freeFloats(a); freeFloats(b); freeFloats(interleaved); freeFloats(weights); freeFloats(outA); freeFloats(outB);
+		return seconds;
+	}
+
+	// The 128-bit arithmetic over a run table for runs of Taps taps, a form's count read, fixed and mixed: see reportRatio
+	template <int Layout, int Weights, size_t Taps>
+	void reportRunTable128Form(int repeats, const char* ratio, const char* form, size_t stepQ8, size_t columns)
+	{
+		const auto line = [ratio, form](const char* count, double seconds) {
+			std::printf("S  %s | %s | %s | %.2f ms\n", ratio, form, count, seconds * 1e3);
+		};
+		line("read", runTableSeconds128<Layout, Weights>(Taps, stepQ8, columns, false, repeats));
+		line("fixed", runTableSeconds128<Layout, Weights, Taps>(Taps, stepQ8, columns, false, repeats));
+		line("mixed", runTableSeconds128<Layout, Weights>(Taps, stepQ8, columns, true, repeats));
+	}
+
+	template <size_t Taps>
+	void reportRunTable128(int repeats, const char* ratio, size_t stepQ8, size_t columns)
+	{
+		reportRunTable128Form<0, 0, Taps>(repeats, ratio, "a buffer per row, lanes", stepQ8, columns);
+		reportRunTable128Form<0, 1, Taps>(repeats, ratio, "a buffer per row, broadcast", stepQ8, columns);
+		reportRunTable128Form<1, 0, Taps>(repeats, ratio, "interleaved, lanes", stepQ8, columns);
+		reportRunTable128Form<1, 1, Taps>(repeats, ratio, "interleaved, broadcast", stepQ8, columns);
 	}
 
 	// horizontalRowPairRuns for column128<Layout, Weights>
@@ -1046,25 +1324,21 @@ namespace
 	// Every column has maxTaps taps; mixed: maxTaps or one fewer, unpredictably. The source step is that of a 6-lobe-wide filter: maxTaps / 6 pixels.
 	double runsRate(RowPairRuns rowPairRuns, size_t maxTaps, bool mixed, int repeats)
 	{
-		const size_t capacityPixels = 2 * maxTaps + 136;
+		const size_t capacityPixels = 2 * maxTaps + 128;
 		float* a = alignedFloats(capacityPixels * 4 + 64);
 		float* b = alignedFloats(capacityPixels * 4 + 64);
 		float* interleaved = alignedFloats(capacityPixels * 8 + 128);
-		const size_t weightCount = destWidth * maxTaps + 64;
+		const size_t weightCount = destWidth * weightStrideFor(maxTaps) + 64;
 		float* weights = alignedFloats(weightCount);
 		for (size_t i = 0; i < weightCount; ++i)
 			weights[i] = 1.0f / static_cast<float>(maxTaps);
 		float* outA = alignedFloats(destWidth * 3 + 64);
 		float* outB = alignedFloats(destWidth * 3 + 64);
 
-		std::vector<uint32_t> tapCounts(destWidth, static_cast<uint32_t>(maxTaps));
+		const std::vector<uint32_t> tapCounts = columnTapCounts(destWidth, maxTaps, mixed);
 		double multiplyAdds = 0;
-		for (size_t column = 0; column < destWidth; ++column)
-		{
-			if (mixed && ((column * 2654435761u) >> 13 & 1) != 0)
-				--tapCounts[column];
-			multiplyAdds += static_cast<double>(tapCounts[column]) * 4 * sourceHeight;
-		}
+		for (const uint32_t tapCount : tapCounts)
+			multiplyAdds += static_cast<double>(tapCount) * 4 * sourceHeight;
 
 		const double seconds = bestSeconds([&] {
 			for (size_t pair = 0; pair < rowPairs; ++pair)
@@ -1085,12 +1359,41 @@ namespace
 	{
 		std::printf("%-58s %7.2f ms\n", name, seconds * 1e3);
 	}
+
+#ifdef __AVX2__
+	// The whole pass for runs of Taps taps stepQ8 / 256 pixels apart, per form, three ways:
+	//   read - the count read per column, every column's the same;
+	//   fixed - the count known to the compiler, as a pass compiled per run length would have it;
+	//   mixed - read, Taps or one fewer: the runs a fixed count would pad with a zero weight.
+	// Fixed: the form has a fixed-count pass of its own. The interleaved loops and steps share one per weight source.
+	template <int Form, int Conversion, size_t Taps, bool Fixed>
+	void reportRatioForm(const std::vector<uint8_t>& image, int repeats, const char* ratio, const char* form, size_t stepQ8, size_t columns)
+	{
+		const auto line = [ratio, form](const char* count, double seconds) {
+			std::printf("R  %s | %s | %s | %.2f ms\n", ratio, form, count, seconds * 1e3);
+		};
+		line("read", passSeconds<Form, Conversion>(image, 0, repeats, Taps, stepQ8, columns));
+		if constexpr (Fixed)
+			line("fixed", passSeconds<Form, Conversion, Taps>(image, 0, repeats, Taps, stepQ8, columns));
+		line("mixed", passSeconds<Form, Conversion>(image, 0, repeats, Taps, stepQ8, columns, true));
+	}
+
+	template <size_t Taps>
+	void reportRatio(const std::vector<uint8_t>& image, int repeats, const char* ratio, size_t stepQ8, size_t columns)
+	{
+		reportRatioForm<0, 0, Taps, true>(image, repeats, ratio, "kernel's", stepQ8, columns);
+		reportRatioForm<4, 1, Taps, true>(image, repeats, ratio, "4 chains, broadcast", stepQ8, columns);
+		reportRatioForm<8, 1, Taps, false>(image, repeats, ratio, "steps, broadcast", stepQ8, columns);
+		reportRatioForm<14, 1, Taps, true>(image, repeats, ratio, "4 chains, lanes", stepQ8, columns);
+		reportRatioForm<18, 1, Taps, false>(image, repeats, ratio, "steps, lanes", stepQ8, columns);
+	}
+#endif
 }
 
 int main(int argc, char** argv)
 {
 	const int repeats = argc > 1 ? std::atoi(argv[1]) : 30;
-	const char* const sections = argc > 2 ? argv[2] : "HVTFCPN";
+	const char* const sections = argc > 2 ? argv[2] : "HVTFCPRSN";
 	const auto selected = [sections](char section) { return std::strchr(sections, section) != nullptr; };
 
 	if (selected('N'))
@@ -1105,6 +1408,17 @@ int main(int argc, char** argv)
 		for (const size_t maxTaps : { 4, 6, 8, 12, 16, 24, 48 })
 			reportRuns(maxTaps, false);
 		reportRuns(12, true);
+	}
+
+	if (selected('S'))
+	{
+		// Section R's run lengths, arithmetic only
+		reportRunTable128<5>(repeats, "1.25x, 5 taps", 320, 3072);
+		reportRunTable128<7>(repeats, "1.17x, 7 taps", 299, 3287);
+		reportRunTable128<9>(repeats, "1.5x, 9 taps", 384, 2560);
+		reportRunTable128<12>(repeats, "2x, 12 taps", 2 * 256, 1920);
+		reportRunTable128<18>(repeats, "3x, 18 taps", 3 * 256, 1280);
+		reportRunTable128<24>(repeats, "4x, 24 taps", 4 * 256, 958);
 	}
 
 #ifdef __AVX2__
@@ -1134,7 +1448,7 @@ int main(int argc, char** argv)
 		report("F3 as F2, weights permuted in-lane", fourTapSeconds<3>(repeats), fourTapWork);
 	}
 
-	if (selected('C') || selected('P'))
+	if (selected('C') || selected('P') || selected('R'))
 	{
 		const std::vector<uint8_t> image = sourceImage();
 		if (selected('C'))
@@ -1163,22 +1477,19 @@ int main(int argc, char** argv)
 			report("P9 as P6, lane weights", passSeconds<14, 1>(image, 0, repeats), horizontalWork);
 			report("P10 as P8, lane weights", passSeconds<18, 1>(image, 0, repeats), horizontalWork);
 
-			// Runs at odd pixel offsets: every other one where the step is 3 pixels, two of every four at 1.5, none at 4
-			struct Ratio { const char* name; size_t taps, stepQ8, columns; };
-			for (const Ratio& ratio : { Ratio{ "3x, 18 taps", 18, 3 * 256, 1280 }, Ratio{ "1.5x, 9 taps", 9, 384, 2560 }, Ratio{ "4x, 24 taps", 24, 4 * 256, 958 } })
-			{
-				const double work = static_cast<double>(sourceHeight) * ratio.columns * ratio.taps * 4;
-				const auto reportRatio = [&](const char* form, double seconds) {
-					char name[64];
-					std::snprintf(name, sizeof(name), "R  %s, %s", ratio.name, form);
-					report(name, seconds, work);
-				};
-				reportRatio("the kernel's form", passSeconds<0, 0>(image, 0, repeats, ratio.taps, ratio.stepQ8, ratio.columns));
-				reportRatio("interleaved, 4 chains", passSeconds<4, 1>(image, 0, repeats, ratio.taps, ratio.stepQ8, ratio.columns));
-				reportRatio("interleaved, in steps", passSeconds<8, 1>(image, 0, repeats, ratio.taps, ratio.stepQ8, ratio.columns));
-				reportRatio("interleaved, 4 chains, lanes", passSeconds<14, 1>(image, 0, repeats, ratio.taps, ratio.stepQ8, ratio.columns));
-				reportRatio("interleaved, in steps, lanes", passSeconds<18, 1>(image, 0, repeats, ratio.taps, ratio.stepQ8, ratio.columns));
-			}
+		}
+
+		if (selected('R'))
+		{
+			// A 6-lobe-wide filter's runs, and a 4-lobe-wide one's at 1.25x: the step is the ratio, the columns 3840 over it.
+			// Runs at odd pixel offsets: every other one where the step is 3 pixels, two of every four at 1.5, none at 2 and 4.
+			// 7 taps take all of the 4-, 2- and 1-tap steps and no block.
+			reportRatio<5>(image, repeats, "1.25x, 5 taps", 320, 3072);
+			reportRatio<7>(image, repeats, "1.17x, 7 taps", 299, 3287);
+			reportRatio<9>(image, repeats, "1.5x, 9 taps", 384, 2560);
+			reportRatio<12>(image, repeats, "2x, 12 taps", 2 * 256, 1920);
+			reportRatio<18>(image, repeats, "3x, 18 taps", 3 * 256, 1280);
+			reportRatio<24>(image, repeats, "4x, 24 taps", 4 * 256, 958);
 		}
 	}
 
