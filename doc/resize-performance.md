@@ -90,9 +90,9 @@ In `scripts/perf/`, each with `--help`:
 | Script | Purpose |
 |---|---|
 | `run_benchmark_rounds.py` | Runs several builds' test executables in alternating rounds, one result file per run, and prints the other processes' CPU time over each run. `--no-controls` leaves out the QImage and SSE4.1 runs, about half of a round. `--pinned NAME=MASK`, repeatable, runs each build once per named series at the same time, each pinned to a hexadecimal affinity mask and at high priority on Windows, with results in a directory per series: a hybrid CPU's two core types in one run. |
-| `compare_benchmark_rounds.py` | Per benchmark, each build against a reference build: the median of same-round ratios and the minimum-to-minimum ratio, the two figures of the per-CPU logs' A/B tables. |
-| `count_boundary_jumps.py` | Counts the kernels' jumps that cross or end on a 32-byte boundary in a `dumpbin` or `objdump` listing. A padded build counts under 1%, a plain one 15-25%. |
-| `extract_kernels.py` | Prints a listing's kernels in a form two builds diff in: padding dropped, a jump's target as its distance in instructions. `--loops` prints each kernel's loops with their sizes and stack references. |
+| `compare_benchmark_rounds.py` | Per benchmark, each build against a reference build: the median of same-round ratios and the minimum-to-minimum ratio, the two figures of the per-CPU logs' A/B tables. `--rounds` prints each build's time in each round instead: a row that reads two levels by launch shows there. |
+| `count_boundary_jumps.py` | Counts the kernels' jumps that cross or end on a 32-byte boundary in a `dumpbin` or x86 `objdump` listing. A padded build counts under 1%, a plain one 15-25%. `--loops` prints the loops holding such jumps. |
+| `extract_kernels.py` | Prints a listing's kernels in a form two builds diff in: padding dropped, a jump's target as its distance in instructions. `--loops` numbers each kernel's loops and prints their sizes, multiplies, calls and stack references, `--stack-references` the referencing instructions too. `--loop N` prints one loop's instructions. Takes ARM64 `objdump` listings as well. |
 | `annotate_vtune_hotspots.py` | Sums a VTune by-address hotspots report over the kernels' loops of a listing, or over each instruction. |
 | `multiply_add_ceiling.cpp` | A standalone program: the two passes' multiply-adds without the kernel's bookkeeping, and other forms of the horizontal pass, by section. Builds for AVX2, plain x64 and ARM64. Its header has the build commands. |
 
@@ -105,6 +105,10 @@ The builds to compare are made by hand, the toolchain paths differing per machin
 3. A variant that differs by a define takes it through `CL` (the notes on reading the generated code).
 4. A listing with `dumpbin /disasm` needs the `.pdb` beside the executable under the name the executable records,
    `image-processing-tests.pdb`: one directory per variant.
+5. A clang-cl build goes into a directory of its own, from a `vcvars64` prompt with Visual Studio's `VC\Tools\Llvm\x64\bin`
+   and Qt's `bin` on `PATH`. The AVX2 source's object path is set apart from `OBJECTS_DIR`:
+   `qmake -spec win32-clang-msvc CONFIG+=release CONFIG-=debug <tree>\tests\image-processing-tests.pro -after "OBJECTS_DIR=<dir>\obj"
+   "MOC_DIR=<dir>\moc" "DESTDIR=<dir>\bin" "avx2Compiler.output=<dir>\obj\cimageresizer_simd_avx2.obj"`, then `nmake release`.
 
 ## Machines
 
