@@ -115,34 +115,33 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		{
 			static constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
 
-			// Room kept behind a run's first pixel when the span slides: end-trimming lets a later run start a few pixels earlier
-			static constexpr size_t backMargin = 8;
 			// Pixels converted ahead of the current run, so that conversion runs in batches
 			static constexpr size_t conversionChunk = 128;
 
 			// A slide moves the floats still needed to the front: room for two runs keeps that to about one move per pixel
 			[[nodiscard]] static constexpr size_t capacityFor(size_t longestRun) noexcept
 			{
-				return 2 * longestRun + backMargin + conversionChunk;
+				return 2 * longestRun + conversionChunk;
 			}
 
-			// Converts whatever of pixels [first, first + count) is missing; returns the float offset of pixel first in each buffer
+			// Converts whatever of pixels [first, first + count) is missing; returns the float offset of pixel first in each buffer.
+			// Requires first at the span's start or later: a row's runs come in order, and they start in order.
 			IMAGE_PROCESSING_SIMD_INLINE size_t prepareRun(size_t first, size_t count) noexcept
 			{
-				assert(count + backMargin <= capacity);
+				assert(count <= capacity && first >= base);
 				const size_t end = first + count;
-				if (first < base || end > base + capacity)
+				if (end > base + capacity)
 				{
-					const size_t newBase = first > backMargin ? first - backMargin : 0;
-					if (newBase >= base && newBase < converted)
+					// The span slides to the run's first pixel
+					if (first < converted)
 					{
 						for (size_t row = 0; row < Rows; ++row)
-							::memmove(floats[row], floats[row] + (newBase - base) * floatsPerPixel, (converted - newBase) * floatsPerPixel * sizeof(float));
+							::memmove(floats[row], floats[row] + (first - base) * floatsPerPixel, (converted - first) * floatsPerPixel * sizeof(float));
 					}
 					else
-						converted = newBase; // Nothing converted is reusable: the run starts before the span or past its converted end
+						converted = first; // Nothing converted is reusable: the run starts past the converted end
 
-					base = newBase;
+					base = first;
 				}
 
 				if (end > converted)
@@ -1084,7 +1083,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		{
 			const size_t stripEnd = std::min(stripBegin + stripWidth, destWidth);
 			// Conversion runs ahead in chunks, and must not pass the strip's source pixels
-			const size_t spanEnd = xWeights.sourceSpan(stripBegin, stripEnd).end;
+			const size_t spanEnd = xWeights.sourceEnd(stripBegin, stripEnd);
 
 			uint64_t produced = ring.firstNeededRow();
 			for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)

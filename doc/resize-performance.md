@@ -187,7 +187,7 @@ stopped paying. `SlidingSourceFloats` converts into a buffer of a few KB per row
 
 - Pi, 24 MP -> 1080p with threads, ms: 246 before, 462 with whole rows, 232 sliding. Single-threaded: 542, 427, 476.
 - Single-threaded, sliding keeps a third to two thirds of the whole-row gain.
-- Capacity is two of the longest runs, plus a back margin and a conversion chunk. The first version held one run plus
+- Capacity is two of the longest runs plus a conversion chunk. The first version held one run plus
   72 pixels. For 4K -> 64x64 (360-pixel windows), that copied every source pixel about 5 extra times per sweep.
 - CI runners with large private L2 prefer whole rows single-threaded: ARM Clang 4K -> 1080p 3.41 -> 3.64. The Pi decides:
   it is the target hardware, and its gain is far larger.
@@ -809,17 +809,19 @@ Against 1e18e27; six rounds on the 8500T, four on the 12600K, five on the Pi:
   stepped, 25 and 20 a block; 6.8 and 5.75 cycles a block, about a quarter of the slots plus half a cycle. The loop
   is bound by the 4 slots a cycle the core renames, and an indexed multiply-add takes two.
 
-### A run holds its weights' address, and the runs start in order
+### A run holds its weights' address, and the x runs start in order
 
 Two values the x64 column loops no longer hold (open lead 26: more live values than registers).
 
 - `TapRun::weights` is an address, not an index into the array: no base to keep, no add per column. The builder
   works by index while the array grows (`IndexedAxisWeights`), and `withRunAddresses` converts at the end.
   `AxisWeights` is move-only for it.
-- `AxisWeights::runs` never decrease in `firstSource`. A run's window starts at the first source index nearer than
-  the support, and zero weights at its start are kept: trimmed, a run at a whole-pixel phase started after the next
-  one. `filterBufferedRuns` tests a run against the buffered range's end only, and `TempRowRing` sizes itself by the
-  longest window.
+- The x axis's runs never decrease in `firstSource`. Zero weights at a run's start are kept there: trimmed, a run at
+  a whole-pixel phase started after the next one. `filterBufferedRuns` tests a run against the buffered range's end
+  only, and `SlidingSourceFloats` slides to a run's first pixel with no room kept behind it.
+- The y axis's runs are trimmed at both ends and may start out of order. NEON's vertical pass walks its window,
+  zeros included: kept there, the zero was a second tap on every third row of a 3x upscale, and 720p -> 4K
+  Grayscale8 read +3% on the Pi.
 
 MSVC at AVX2: the RGB32 column loop loads nothing from the stack on a run under 16 taps (3 loads before) and is 3
 instructions shorter; the one-channel upscale loop 45 instructions from 49. clang-cl: 92 from 98, and 48 from 56.
@@ -833,6 +835,15 @@ Six rounds, both "Common" sections, against 2e606ac:
   jumps fell on 32-byte boundaries, in loops with unchanged instructions: it is built without the padding, and is no
   reading of a change there.
 - A prototype of each half on the 8500T, MSVC: the address alone -1% to -2.6%, the test alone about -1%.
+
+With the y runs trimmed again and no room behind a run in the source buffers, against 2e606ac:
+- Pi (GCC), five rounds: the 3- and 4-channel downscales and thumbnails -1% to -3.6%, RGBA32's downscale level;
+  720p -> 4K Grayscale8 level.
+- N4100 (SSE4.1), five rounds: downscales -1% to -2%, Grayscale8's -3.4%; upscales level by their minimums.
+- 8500T, AVX2, six rounds: the 4K -> 1080p rows -2.9% to -5.6% (MSVC). Its upscale rows read two levels by launch in
+  that session, one binary 13.2 and 14.1 ms (open lead 24).
+- The source buffers' change alone, against the commit before it: within 2% on the 8500T and the E-core at both
+  levels; on the Pi 4K -> 1080p RGB32 -2.5%.
 
 ## Experiments that lost
 
@@ -1094,6 +1105,11 @@ Six rounds, both "Common" sections, against 2e606ac:
 24. **Two timing levels the weights do not explain** (8500T): 720p -> 4K Grayscale8 at 5.25 and 5.54 ms and native size
     at 1.96 and 2.2 ms, by launch, before and after "Where the weights start". Not investigated. Also unmeasured: the
     larger weight table on the i3-2310M.
+    - The other upscale rows there do the same in some sessions: 720p -> 4K RGB24 at 13.2 and 14.1 ms from one binary.
+    - Pi, 720p -> 4K RGBA32: 88 ms for the 2e606ac binary within a run of both "Common" sections and 92 ms as the
+      only row run; three later builds 91-95 ms and 90-91 ms. Same user and system time and page faults (127.8
+      thousand) for all, and the kernel's code is the same or shorter: what ran before the row in the process
+      decides, the heap's state the likely carrier. A row's reading across builds is not safe from it.
 25. **A horizontal pass per run length** (not taken). The column loop for runs under two blocks is bound by its
     instruction count and the block loop by its operands (experiment 27): a template parameter as `FourTapXRuns`
     is could give each its own `filterRun`. "The block loop steps its pointers where a level has four chains" got
@@ -1111,13 +1127,11 @@ Six rounds, both "Common" sections, against 2e606ac:
     - Done for `filterBufferedRuns` ("The general pass steps its run and temp pixels"): 72 instructions, 1 load.
     - Done for both upscale passes ("The upscale passes step their runs and temp pixels too").
     - The spread constants reloaded every column: removing the reloads gains nothing (experiment 29).
-    - Done for the weights' base and the range's first pixel ("A run holds its weights' address, and the runs start
-      in order").
+    - Done for the weights' base and the range's first pixel ("A run holds its weights' address, and the x runs
+      start in order").
     - Left in the two-row loops (MSVC): at AVX2 the general pass reloads the loop bound and row B's origin after a
       block loop, nothing on a run under 16 taps (Grayscale8's loop holds 3 loads); the one-channel upscale pass 1 at
       SSE4.1; the RGBA32 upscale pass 1. The one-channel pass is as short of registers under Clang as under MSVC.
-    - `SlidingSourceFloats::backMargin` and `prepareRun`'s branch for a run before the span are still there, for runs
-      that no longer occur: untried without, and the margin moves a one-channel run's place in its cache line.
 27. **A batch API for a caller that knows it has many resizes in a row** (not designed), a folder's thumbnails for one.
     Each `resize()` call builds both axes' weights and allocates the source float buffers and the temp ring per band;
     a 1080p -> 120 px thumbnail is under 2 ms in all, so that setup may be a visible share. Unmeasured.

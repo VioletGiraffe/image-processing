@@ -173,8 +173,9 @@ namespace
 		bool everyRunHasFourTaps = false;
 	};
 
+	// runsStartInOrder: no run starts before an earlier one, at the price of zero weights kept at some runs' start
 	template <class Kernel>
-	[[nodiscard]] inline IndexedAxisWeights buildAxisWeights(uint64_t srcSize, uint64_t dstSize)
+	[[nodiscard]] inline IndexedAxisWeights buildAxisWeights(uint64_t srcSize, uint64_t dstSize, bool runsStartInOrder)
 	{
 		IndexedAxisWeights result;
 		result.runs.reserve(dstSize);
@@ -242,11 +243,18 @@ namespace
 			}
 
 			// The window's last index lands where the kernels are exactly zero, so most runs carry a dead last tap: zeros at the end are dropped.
-			// Zeros at the start stay: without them a run could start after the next one, and the runs must start in order.
+			// Zeros at the start, which a run at a whole-pixel phase has, are dropped unless the runs must start in order: such a run would start after the next one.
 			// (Interior Lanczos zeros compute as ~1e-16, not 0.)
 			size_t runEnd = foldedWeights.size();
 			while (runEnd > 0 && foldedWeights[runEnd - 1] == 0.0)
 				--runEnd;
+
+			size_t runBegin = 0;
+			if (!runsStartInOrder)
+			{
+				while (runBegin < runEnd && foldedWeights[runBegin] == 0.0)
+					++runBegin;
+			}
 
 			// No nonzero weight: the whole window, for the nearest pixel below
 			if (runEnd == 0) [[unlikely]]
@@ -256,7 +264,7 @@ namespace
 			const size_t firstWeight = result.weights.size();
 
 			double sum = 0.0;
-			for (size_t i = 0; i < runEnd; ++i)
+			for (size_t i = runBegin; i < runEnd; ++i)
 			{
 				result.weights.push_back(static_cast<float>(foldedWeights[i]));
 				// Summing the stored floats rather than the doubles makes the normalization below cancel their
@@ -272,13 +280,14 @@ namespace
 			}
 			else
 			{
+				const int64_t trimmedFirst = runFirst + static_cast<int64_t>(runBegin);
 				const int64_t trimmedLast = runFirst + static_cast<int64_t>(runEnd) - 1;
 				std::fill(result.weights.begin() + static_cast<ptrdiff_t>(firstWeight), result.weights.end(), 0.0f);
-				const int64_t nearest = std::clamp(static_cast<int64_t>(std::lround(srcPos)), runFirst, trimmedLast);
-				result.weights[firstWeight + static_cast<size_t>(nearest - runFirst)] = 1.0f;
+				const int64_t nearest = std::clamp(static_cast<int64_t>(std::lround(srcPos)), trimmedFirst, trimmedLast);
+				result.weights[firstWeight + static_cast<size_t>(nearest - trimmedFirst)] = 1.0f;
 			}
 
-			result.runs.push_back(IndexedTapRun{ static_cast<size_t>(runFirst), firstWeight, runEnd });
+			result.runs.push_back(IndexedTapRun{ static_cast<size_t>(runFirst) + runBegin, firstWeight, runEnd - runBegin });
 		}
 
 		result.weights.resize(result.weights.size() + weightsSlack);
@@ -335,20 +344,19 @@ namespace
 		for (const IndexedTapRun& run : indexed.runs)
 			result.runs.push_back(TapRun{ run.firstSource, result.weights.data() + run.firstWeight, run.weightCount });
 
-		assert(std::ranges::is_sorted(result.runs, {}, &TapRun::firstSource));
 		return result;
 	}
 
-	[[nodiscard]] inline IndexedAxisWeights buildAxisWeightsForKernel(ResizeKernel kernel, uint64_t srcSize, uint64_t dstSize)
+	[[nodiscard]] inline IndexedAxisWeights buildAxisWeightsForKernel(ResizeKernel kernel, uint64_t srcSize, uint64_t dstSize, bool runsStartInOrder)
 	{
 		if (kernel == ResizeKernel::Auto)
 			kernel = dstSize >= srcSize ? ResizeKernel::CatmullRom : ResizeKernel::Lanczos3;
 
 		if (kernel == ResizeKernel::Lanczos3)
-			return buildAxisWeights<Lanczos3Kernel>(srcSize, dstSize);
+			return buildAxisWeights<Lanczos3Kernel>(srcSize, dstSize, runsStartInOrder);
 
 		assert(kernel == ResizeKernel::CatmullRom);
-		return buildAxisWeights<BicubicKernel>(srcSize, dstSize);
+		return buildAxisWeights<BicubicKernel>(srcSize, dstSize, runsStartInOrder);
 	}
 
 	// Rounds to nearest, as the float premultiply of the filtering paths does
@@ -449,10 +457,13 @@ namespace
 			return;
 		}
 
-		auto indexedXWeights = buildAxisWeightsForKernel(kernel, srcRect.w, dest.width);
+		// The x runs in order: the horizontal passes and their source buffers take them so.
+		// The y runs not: a kept zero is a tap where the vertical pass walks its window (NEON), on every third row of a 3x upscale.
+		auto indexedXWeights = buildAxisWeightsForKernel(kernel, srcRect.w, dest.width, true);
 		padShortRunsToFourTaps(indexedXWeights, static_cast<size_t>(srcRect.w));
 		const AxisWeights xWeights = withRunAddresses(std::move(indexedXWeights));
-		const AxisWeights yWeights = withRunAddresses(buildAxisWeightsForKernel(kernel, srcRect.h, dest.height));
+		assert(std::ranges::is_sorted(xWeights.runs, {}, &TapRun::firstSource));
+		const AxisWeights yWeights = withRunAddresses(buildAxisWeightsForKernel(kernel, srcRect.h, dest.height, false));
 
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * Channels;
 		// A dest row's work includes producing its share of temp rows, srcRect.h / dest.height of them
@@ -483,13 +494,19 @@ Detail::TempRowRing::TempRowRing(const AxisWeights& yWeights, uint64_t destRowBe
 	assert(destRowBegin < destRowEnd);
 	assert(batchRows >= 1);
 
-	// While writing dest row dy, production has passed dy's window by at most batchRows - 1 rows.
-	// The windows start in order: no later row needs a row before dy's window.
+	// While writing dest row dy, production has passed dy's window by at most batchRows - 1 rows, and end-trimming lets a
+	// later window start slightly before an earlier one - so each window's end is measured against the earliest start any
+	// not-yet-written row still needs.
+	uint64_t firstNeededRow = UINT64_MAX;
 	size_t rowCount = 0;
-	for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
-		rowCount = std::max(rowCount, yWeights.runs[dy].weightCount + batchRows - 1);
+	for (uint64_t dy = destRowEnd; dy-- > destRowBegin;)
+	{
+		const auto run = yWeights.runFor(dy);
+		firstNeededRow = std::min(firstNeededRow, static_cast<uint64_t>(run.firstSource));
+		rowCount = std::max(rowCount, run.firstSource + run.weights.size() + batchRows - 1 - static_cast<size_t>(firstNeededRow));
+	}
 
-	_firstNeededRow = yWeights.runs[destRowBegin].firstSource;
+	_firstNeededRow = firstNeededRow;
 	_rowCount = rowCount;
 	_rows = makeAlignedFloats(startOffset + rowCount * rowStride);
 	_firstRow = _rows.get() + startOffset;

@@ -43,7 +43,7 @@ namespace ImageProcessing::Detail
 		[[nodiscard]] bool operator==(const CacheLineAllocator<U>&) const noexcept { return true; }
 	};
 
-	// The runs start in order: firstSource never decreases along the axis.
+	// The x axis's runs start in order: firstSource never decreases. The y axis's may not.
 	struct AxisWeights
 	{
 		// Every run's weights start at a multiple of this in the array: the horizontal kernels load 8 weights at offsets
@@ -62,28 +62,21 @@ namespace ImageProcessing::Detail
 			std::span<const float> weights;
 		};
 
-		struct SourceSpan
-		{
-			size_t begin;
-			size_t end;
-		};
-
 		[[nodiscard]] IMAGE_PROCESSING_FORCE_INLINE Run runFor(size_t coordinate) const noexcept
 		{
 			const TapRun& run = runs[coordinate];
 			return { run.firstSource, { run.weights, run.weightCount } };
 		}
 
-		// The source indices read by the runs of dest coordinates [destBegin, destEnd), not empty
-		[[nodiscard]] SourceSpan sourceSpan(size_t destBegin, size_t destEnd) const noexcept
+		// The end of the source indices read by the runs of dest coordinates [destBegin, destEnd)
+		[[nodiscard]] size_t sourceEnd(size_t destBegin, size_t destEnd) const noexcept
 		{
-			assert(destBegin < destEnd);
-			SourceSpan span{ runs[destBegin].firstSource, 0 };
-			// Every run's end is checked: trailing zero weights are trimmed, so a run may end before its predecessor
+			size_t end = 0;
+			// Every run is checked: trailing zero weights are trimmed, so a run may end before its predecessor
 			for (size_t coordinate = destBegin; coordinate < destEnd; ++coordinate)
-				span.end = std::max(span.end, runs[coordinate].firstSource + runs[coordinate].weightCount);
+				end = std::max(end, runs[coordinate].firstSource + runs[coordinate].weightCount);
 
-			return span;
+			return end;
 		}
 
 		[[nodiscard]] size_t longestRun() const noexcept
