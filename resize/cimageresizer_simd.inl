@@ -626,37 +626,43 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			if (bufferEnd < bufferBegin + 4)
 				return firstGroup;
 
+			assert(firstGroup <= destEnd);
 			const size_t lastOffset = bufferEnd - bufferBegin - 4;
 			const float* const floatsA = sourceFloats[0];
 			const float* const floatsB = sourceFloats[Rows - 1];
-			// A column index here, not the stepped pointers of filterBufferedRuns: with those, Clang shuffles registers around the multiplies
-			size_t groupBegin = firstGroup;
-			for (; groupBegin + 4 <= destEnd; groupBegin += 4) IMAGE_PROCESSING_FORCE_INLINE_CALLS
+			const float* const weights = xRunLookup.weights;
+			// No column index: see filterBufferedRuns
+			float* outA = tempRows[0] + (firstGroup - destBegin);
+			[[maybe_unused]] float* outB = tempRows[Rows - 1] + (firstGroup - destBegin);
+			const TapRun* run = xRunLookup.runs + firstGroup;
+			const TapRun* const groupsEnd = run + (destEnd - firstGroup) / 4 * 4;
+			for (; run != groupsEnd; run += 4) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
-				const auto [firstPixel0, weights0] = xRunLookup.runFor(groupBegin);
-				const auto [firstPixel1, weights1] = xRunLookup.runFor(groupBegin + 1);
-				const auto [firstPixel2, weights2] = xRunLookup.runFor(groupBegin + 2);
-				const auto [firstPixel3, weights3] = xRunLookup.runFor(groupBegin + 3);
+				assert(run[0].weightCount == 4 && run[1].weightCount == 4 && run[2].weightCount == 4 && run[3].weightCount == 4);
 				// Unsigned: a run before bufferBegin wraps past lastOffset
-				const size_t offset0 = firstPixel0 - bufferBegin, offset1 = firstPixel1 - bufferBegin;
-				const size_t offset2 = firstPixel2 - bufferBegin, offset3 = firstPixel3 - bufferBegin;
+				const size_t offset0 = run[0].firstSource - bufferBegin, offset1 = run[1].firstSource - bufferBegin;
+				const size_t offset2 = run[2].firstSource - bufferBegin, offset3 = run[3].firstSource - bufferBegin;
 				// ||, not |: MSVC materializes each comparison of | in a register
 				if (offset0 > lastOffset || offset1 > lastOffset || offset2 > lastOffset || offset3 > lastOffset)
 					break;
 
 				Floats4 productsA0, productsA1, productsA2, productsA3;
 				[[maybe_unused]] Floats4 productsB0, productsB1, productsB2, productsB3;
-				multiplyFourTapRun<Rows>(floatsA, floatsB, offset0, weights0, productsA0, productsB0);
-				multiplyFourTapRun<Rows>(floatsA, floatsB, offset1, weights1, productsA1, productsB1);
-				multiplyFourTapRun<Rows>(floatsA, floatsB, offset2, weights2, productsA2, productsB2);
-				multiplyFourTapRun<Rows>(floatsA, floatsB, offset3, weights3, productsA3, productsB3);
+				multiplyFourTapRun<Rows>(floatsA, floatsB, offset0, { weights + run[0].firstWeight, 4 }, productsA0, productsB0);
+				multiplyFourTapRun<Rows>(floatsA, floatsB, offset1, { weights + run[1].firstWeight, 4 }, productsA1, productsB1);
+				multiplyFourTapRun<Rows>(floatsA, floatsB, offset2, { weights + run[2].firstWeight, 4 }, productsA2, productsB2);
+				multiplyFourTapRun<Rows>(floatsA, floatsB, offset3, { weights + run[3].firstWeight, 4 }, productsA3, productsB3);
 
-				storeFloats4(tempRows[0] + (groupBegin - destBegin), sumEachOfFour(productsA0, productsA1, productsA2, productsA3));
+				storeFloats4(outA, sumEachOfFour(productsA0, productsA1, productsA2, productsA3));
+				outA += 4;
 				if constexpr (Rows == 2)
-					storeFloats4(tempRows[1] + (groupBegin - destBegin), sumEachOfFour(productsB0, productsB1, productsB2, productsB3));
+				{
+					storeFloats4(outB, sumEachOfFour(productsB0, productsB1, productsB2, productsB3));
+					outB += 4;
+				}
 			}
 
-			return groupBegin;
+			return static_cast<size_t>(run - xRunLookup.runs);
 		}
 
 		// filterHorizontalRowGroup for 1-float pixels: four dest columns share one reduction and one store
