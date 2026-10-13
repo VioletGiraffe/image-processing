@@ -2,6 +2,8 @@
 # Alternating: the machine's drift over the session lands on every binary alike.
 # A binary's label is its file name without the extension; labels must differ.
 # The Qt libraries must be loadable: QT_ROOT_DIR's bin directory is put on PATH when the variable is set.
+# --pinned NAME=MASK, repeatable: a series of the same rounds pinned to the logical processors of a hexadecimal mask,
+# its results in <results>/NAME. The series run each binary at the same time: one per core type of a hybrid CPU, P=4 and E=1000 on a 12600K.
 import argparse
 import os
 import platform
@@ -14,6 +16,28 @@ from pathlib import Path
 NO_CONTROLS_VARIABLE = "IMAGE_PROCESSING_BENCHMARK_NO_CONTROLS"
 # Other processes below this much CPU time over a run are not reported
 REPORTED_CPU_SECONDS = 0.5
+HIGH_PRIORITY_CLASS = 0x80
+
+
+# Starts a benchmark run, pinned to the mask's logical processors where one is given.
+# A pinned run on Windows also gets high priority; on Linux raising it needs privileges, and it is left as it is.
+def start_run(command, environment, affinity_mask):
+    if affinity_mask is None:
+        return subprocess.Popen(command, env=environment, stdout=subprocess.DEVNULL)
+
+    if platform.system() == "Windows":
+        import ctypes
+        process = subprocess.Popen(command, env=environment, stdout=subprocess.DEVNULL, creationflags=HIGH_PRIORITY_CLASS)
+        # Set after the start: the loader's first milliseconds run unpinned
+        set_affinity = ctypes.windll.kernel32.SetProcessAffinityMask
+        set_affinity.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        if not set_affinity(int(process._handle), affinity_mask):
+            process.kill()
+            raise SystemExit(f"Affinity mask {affinity_mask:x} was refused: does this machine have those processors?")
+        return process
+
+    processors = {index for index in range(affinity_mask.bit_length()) if affinity_mask >> index & 1}
+    return subprocess.Popen(command, env=environment, stdout=subprocess.DEVNULL, preexec_fn=lambda: os.sched_setaffinity(0, processors))
 
 
 # CPU seconds and name by process id; empty where the platform has no reader here
@@ -51,6 +75,50 @@ def busiest_other_processes(before, after, own_name):
     return ", ".join(f"{name} {seconds:.1f} s" for seconds, name in used) or f"none above {REPORTED_CPU_SECONDS} s"
 
 
+# series: (name, affinity mask or None, results directory) each. Every series runs a binary at the same time as the others.
+# Returns whether every run exited with 0.
+def run_rounds(binaries, rounds, series, catch_arguments, environment):
+    for _, _, results in series:
+        results.mkdir(parents=True, exist_ok=True)
+    succeeded = True
+    for round_number in range(1, rounds + 1):
+        for binary in binaries:
+            # The snapshots stay outside the timed work, every series' alike
+            before = process_cpu_seconds()
+            started = time.monotonic()
+            running = {}
+            try:
+                for name, mask, results in series:
+                    output = results / f"r{round_number}_{binary.stem}.xml"
+                    running[name] = start_run([str(binary.resolve()), *catch_arguments, "--reporter", "xml", "--out", str(output)], environment, mask)
+            except BaseException:
+                # A series that could not start must not leave the others' runs behind
+                for process in running.values():
+                    process.kill()
+                raise
+            finished = {}
+            while len(finished) < len(running):
+                for name, process in running.items():
+                    if name not in finished and process.poll() is not None:
+                        finished[name] = time.monotonic() - started
+                time.sleep(0.1)
+            others = busiest_other_processes(before, process_cpu_seconds(), binary.stem)
+            for name, process in running.items():
+                print(f"{time.strftime('%H:%M:%S')} {name + ' ' if name else ''}round {round_number} {binary.stem}: exit {process.returncode}, {finished[name]:.0f} s; other CPU: {others}", flush=True)
+                succeeded = succeeded and process.returncode == 0
+    return succeeded
+
+
+def parse_pinned_series(text):
+    name, separator, mask = text.partition("=")
+    try:
+        if not name or not separator:
+            raise ValueError
+        return name, int(mask, 16)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{text}' is not NAME=MASK with a hexadecimal mask") from None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Runs benchmark binaries in alternating rounds, one Catch2 XML per run.",
@@ -59,6 +127,8 @@ def main():
     parser.add_argument("--rounds", type=int, default=6)
     parser.add_argument("--results", type=Path, default=Path("benchmark-rounds"), help="directory for r<round>_<label>.xml (default: %(default)s)")
     parser.add_argument("--no-controls", action="store_true", help="skip the QImage and SSE4.1 runs: about half the time")
+    parser.add_argument("--pinned", action="append", default=[], type=parse_pinned_series, metavar="NAME=MASK",
+        help="a series pinned to a hexadecimal affinity mask, results in <results>/NAME; repeat for series that run at the same time")
     # Split by hand: argparse would take what follows -- as more binaries
     own_arguments, catch_arguments = sys.argv[1:], []
     if "--" in own_arguments:
@@ -89,21 +159,12 @@ def main():
     if environment.get("QT_ROOT_DIR"):
         environment["PATH"] = str(Path(environment["QT_ROOT_DIR"]) / "bin") + os.pathsep + environment["PATH"]
 
-    arguments.results.mkdir(parents=True, exist_ok=True)
-    failed = False
-    for round_number in range(1, arguments.rounds + 1):
-        for binary, label in zip(arguments.binaries, labels):
-            output = arguments.results / f"r{round_number}_{label}.xml"
-            # The snapshots stay outside the timed work
-            before = process_cpu_seconds()
-            started = time.monotonic()
-            exit_code = subprocess.run([str(binary.resolve()), *catch_arguments, "--reporter", "xml", "--out", str(output)], env=environment, stdout=subprocess.DEVNULL).returncode
-            seconds = time.monotonic() - started
-            others = busiest_other_processes(before, process_cpu_seconds(), binary.stem)
-            print(f"{time.strftime('%H:%M:%S')} round {round_number} {label}: exit {exit_code}, {seconds:.0f} s; other CPU: {others}", flush=True)
-            failed = failed or exit_code != 0
-    sys.exit(1 if failed else 0)
+    names = [name for name, _ in arguments.pinned]
+    if len(set(names)) != len(names):
+        raise SystemExit("Two pinned series share a name.")
 
+    series = [(name, mask, arguments.results / name) for name, mask in arguments.pinned] or [("", None, arguments.results)]
+    sys.exit(0 if run_rounds(arguments.binaries, arguments.rounds, series, catch_arguments, environment) else 1)
 
 if __name__ == "__main__":
     main()

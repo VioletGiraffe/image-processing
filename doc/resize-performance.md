@@ -89,7 +89,7 @@ In `scripts/perf/`, each with `--help`:
 
 | Script | Purpose |
 |---|---|
-| `run_benchmark_rounds.py` | Runs several builds' test executables in alternating rounds, one result file per run, and prints the other processes' CPU time over each run. `--no-controls` leaves out the QImage and SSE4.1 runs, about half of a round. |
+| `run_benchmark_rounds.py` | Runs several builds' test executables in alternating rounds, one result file per run, and prints the other processes' CPU time over each run. `--no-controls` leaves out the QImage and SSE4.1 runs, about half of a round. `--pinned NAME=MASK`, repeatable, runs each build once per named series at the same time, each pinned to a hexadecimal affinity mask and at high priority on Windows, with results in a directory per series: a hybrid CPU's two core types in one run. |
 | `compare_benchmark_rounds.py` | Per benchmark, each build against a reference build: the median of same-round ratios and the minimum-to-minimum ratio, the two figures of the per-CPU logs' A/B tables. |
 | `count_boundary_jumps.py` | Counts the kernels' jumps that cross or end on a 32-byte boundary in a `dumpbin` or `objdump` listing. A padded build counts under 1%, a plain one 15-25%. |
 | `extract_kernels.py` | Prints a listing's kernels in a form two builds diff in: padding dropped, a jump's target as its distance in instructions. `--loops` prints each kernel's loops with their sizes and stack references. |
@@ -805,6 +805,9 @@ Against 1e18e27; six rounds on the 8500T, four on the 12600K, five on the Pi:
   Clang 22's AVX2 kernel is the same code but for two instructions' order: within 1.5%, 1080p -> 1440p +4%.
   Both compilers' SSE4.1 kernels are the same code: within 1.7%.
 - MSVC's 32x thumbnail on the 8500T is at clang-cl's time: 26.5 ms against 26.4, from 29.9.
+- Counters on the 8500T, the 32x thumbnail, MSVC: the block loop retires 1.25 slots an instruction indexed and 0.97
+  stepped, 25 and 20 a block; 6.8 and 5.75 cycles a block, about a quarter of the slots plus half a cycle. The loop
+  is bound by the 4 slots a cycle the core renames, and an indexed multiply-add takes two.
 
 ## Experiments that lost
 
@@ -1062,7 +1065,6 @@ Against 1e18e27; six rounds on the 8500T, four on the 12600K, five on the Pi:
     instruction count and the block loop by its operands (experiment 27): a template parameter as `FourTapXRuns`
     is could give each its own `filterRun`. "The block loop steps its pointers where a level has four chains" got
     MSVC's long runs their gain without it.
-    - Unconfirmed with counters: that the 8500T's loss was the indexed multiply-adds' second micro-op.
     - Unexplained: on the 12600K's P-core the 16x thumbnail gained 9% and the 32x one 3%.
 26. **The x64 column loop holds more live values than registers** (MSVC). Of a 12-tap RGB32 column's 81
     instructions at d77c79c, 25 are arithmetic. Per column, outside it:
