@@ -461,8 +461,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
-		// Filters dest columns from firstColumn on, into the temp rows at their offset from destBegin, while their runs lie within
+		// Filters dest columns from firstColumn on, into the temp rows at their offset from destBegin, while their runs end within
 		// source pixels [bufferBegin, bufferEnd). Returns the first column not filtered.
+		// Requires firstColumn's run to start at bufferBegin or later: the runs start in order, so no later one is tested for it.
 		// sourceFloats[row]: the row's floats from pixel bufferBegin on.
 		// The pixel range by value: a constant of this loop, where the members of SlidingSourceFloats are not.
 		template <size_t Channels, size_t Rows>
@@ -474,7 +475,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			size_t destBegin,
 			size_t firstColumn,
 			size_t destEnd,
-			AxisWeights::RunLookup xRunLookup) noexcept
+			const TapRun* xRuns) noexcept
 		{
 			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
 			const WeightSpreader<floatsPerPixel> weightSpreader{};
@@ -487,22 +488,23 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			const float* const originB = sourceFloats[Rows - 1] - bufferBegin * floatsPerPixel;
 			float* outA = tempRows[0] + (firstColumn - destBegin) * Channels;
 			float* outB = tempRows[Rows - 1] + (firstColumn - destBegin) * Channels;
-			const TapRun* run = xRunLookup.runs + firstColumn;
-			const TapRun* const runsEnd = xRunLookup.runs + destEnd;
+			const TapRun* run = xRuns + firstColumn;
+			const TapRun* const runsEnd = xRuns + destEnd;
 			for (; run != runsEnd; ++run) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
 				const size_t firstPixel = run->firstSource;
-				if (firstPixel < bufferBegin || firstPixel + run->weightCount > bufferEnd)
+				assert(firstPixel >= bufferBegin);
+				if (firstPixel + run->weightCount > bufferEnd)
 					break;
 
 				const size_t floatOffset = firstPixel * floatsPerPixel;
-				filterRun<Channels, Rows>(originA + floatOffset, originB + floatOffset, { xRunLookup.weights + run->firstWeight, run->weightCount }, weightSpreader, outA, outB);
+				filterRun<Channels, Rows>(originA + floatOffset, originB + floatOffset, { run->weights, run->weightCount }, weightSpreader, outA, outB);
 				outA += Channels;
 				if constexpr (Rows == 2)
 					outB += Channels;
 			}
 
-			return static_cast<size_t>(run - xRunLookup.runs);
+			return static_cast<size_t>(run - xRuns);
 		}
 
 		// Filters dest columns [destBegin, destEnd) into the temp rows' start
@@ -514,14 +516,14 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			size_t destEnd,
 			const AxisWeights& xWeights) noexcept
 		{
-			const AxisWeights::RunLookup xRunLookup = xWeights.runLookup();
+			// The runs' array read once: the loops' stores may alias the AxisWeights, and would force a reload per column
+			const TapRun* const xRuns = xWeights.runs.data();
 
 			for (size_t dx = destBegin; dx < destEnd;) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
 				// The column's run is in the buffers after this, so each pass filters at least that column
-				const auto [firstPixel, weights] = xRunLookup.runFor(dx);
-				source.prepareRun(firstPixel, weights.size());
-				dx = filterBufferedRuns<Channels>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRunLookup);
+				source.prepareRun(xRuns[dx].firstSource, xRuns[dx].weightCount);
+				dx = filterBufferedRuns<Channels>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRuns);
 			}
 		}
 
@@ -542,7 +544,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		IMAGE_PROCESSING_SIMD_INLINE size_t filterBufferedFourTapRuns(
 			float* const (&sourceFloats)[Rows], size_t bufferBegin, size_t bufferEnd,
 			float* const (&tempRows)[Rows], size_t destBegin, size_t firstColumn, size_t destEnd,
-			AxisWeights::RunLookup xRunLookup) noexcept
+			const TapRun* xRuns) noexcept
 		{
 			static_assert(sourceFloatsPerPixel(Channels) == 4);
 			if (bufferEnd < bufferBegin + 4)
@@ -554,20 +556,19 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			// No column index: see filterBufferedRuns
 			float* outA = tempRows[0] + (firstColumn - destBegin) * Channels;
 			[[maybe_unused]] float* outB = tempRows[Rows - 1] + (firstColumn - destBegin) * Channels;
-			const TapRun* run = xRunLookup.runs + firstColumn;
-			const TapRun* const runsEnd = xRunLookup.runs + destEnd;
+			const TapRun* run = xRuns + firstColumn;
+			const TapRun* const runsEnd = xRuns + destEnd;
 			const float* const floatsA = sourceFloats[0];
 			[[maybe_unused]] const float* const floatsB = sourceFloats[Rows - 1];
 			for (; run != runsEnd; ++run) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
-				assert(run->weightCount == 4);
-				// Unsigned: a run before bufferBegin wraps past lastOffset
+				assert(run->weightCount == 4 && run->firstSource >= bufferBegin);
 				const size_t runOffset = run->firstSource - bufferBegin;
 				if (runOffset > lastOffset)
 					break;
 
 				// A whole WeightBlock for the run's 4 weights: the builder's slack keeps the load in bounds
-				const WeightBlock runWeights = loadWeightBlock(xRunLookup.weights + run->firstWeight);
+				const WeightBlock runWeights = loadWeightBlock(run->weights);
 				const Floats8 w0 = weightSpreader.template spread<0>(runWeights);
 				const Floats8 w1 = weightSpreader.template spread<1>(runWeights);
 				// The rows by name, not in a loop: GCC leaves that loop rolled at NEON, with the row pointers reloaded per row
@@ -580,7 +581,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 			}
 
-			return static_cast<size_t>(run - xRunLookup.runs);
+			return static_cast<size_t>(run - xRuns);
 		}
 
 		// filterHorizontalRowGroup for 4-float pixels
@@ -592,12 +593,13 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			size_t destEnd,
 			const AxisWeights& xWeights) noexcept
 		{
-			const AxisWeights::RunLookup xRunLookup = xWeights.runLookup();
+			// Read once: see filterHorizontalRowGroup
+			const TapRun* const xRuns = xWeights.runs.data();
 			for (size_t dx = destBegin; dx < destEnd;) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
 				// The column's run is in the buffers after this, so each pass filters at least that column
-				source.prepareRun(xRunLookup.runFor(dx).firstSource, 4);
-				dx = filterBufferedFourTapRuns<Channels>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRunLookup);
+				source.prepareRun(xRuns[dx].firstSource, 4);
+				dx = filterBufferedFourTapRuns<Channels>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRuns);
 			}
 		}
 
@@ -618,18 +620,16 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				productsB = mul(loadFloats4(floatsB + runFloatOffset), runWeights);
 		}
 
-		// multiplyFourTapRun for dest column dx, its run prepared first
+		// multiplyFourTapRun for a run prepared first
 		template <size_t PixelStride, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void prepareAndMultiplyFourTapRun(
 			SlidingSourceFloats<1, PixelStride, Rows>& source,
-			AxisWeights::RunLookup xRunLookup,
-			size_t dx,
+			const TapRun& run,
 			Floats4& productsA,
 			Floats4& productsB) noexcept
 		{
-			const auto [firstPixel, weights] = xRunLookup.runFor(dx);
-			const size_t runFloatOffset = source.prepareRun(firstPixel, 4);
-			multiplyFourTapRun<Rows>(source.floats[0], source.floats[Rows - 1], runFloatOffset, weights, productsA, productsB);
+			const size_t runFloatOffset = source.prepareRun(run.firstSource, 4);
+			multiplyFourTapRun<Rows>(source.floats[0], source.floats[Rows - 1], runFloatOffset, { run.weights, run.weightCount }, productsA, productsB);
 		}
 
 		// Filters whole groups of four dest columns of 1-float pixels from firstGroup on, into the temp rows at their offset from
@@ -639,7 +639,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		IMAGE_PROCESSING_SIMD_INLINE size_t filterBufferedFourTapRunGroups(
 			float* const (&sourceFloats)[Rows], size_t bufferBegin, size_t bufferEnd,
 			float* const (&tempRows)[Rows], size_t destBegin, size_t firstGroup, size_t destEnd,
-			AxisWeights::RunLookup xRunLookup) noexcept
+			const TapRun* xRuns) noexcept
 		{
 			if (bufferEnd < bufferBegin + 4)
 				return firstGroup;
@@ -648,16 +648,15 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			const size_t lastOffset = bufferEnd - bufferBegin - 4;
 			const float* const floatsA = sourceFloats[0];
 			const float* const floatsB = sourceFloats[Rows - 1];
-			const float* const weights = xRunLookup.weights;
 			// No column index: see filterBufferedRuns
 			float* outA = tempRows[0] + (firstGroup - destBegin);
 			[[maybe_unused]] float* outB = tempRows[Rows - 1] + (firstGroup - destBegin);
-			const TapRun* run = xRunLookup.runs + firstGroup;
+			const TapRun* run = xRuns + firstGroup;
 			const TapRun* const groupsEnd = run + (destEnd - firstGroup) / 4 * 4;
 			for (; run != groupsEnd; run += 4) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
 				assert(run[0].weightCount == 4 && run[1].weightCount == 4 && run[2].weightCount == 4 && run[3].weightCount == 4);
-				// Unsigned: a run before bufferBegin wraps past lastOffset
+				assert(run[0].firstSource >= bufferBegin);
 				const size_t offset0 = run[0].firstSource - bufferBegin, offset1 = run[1].firstSource - bufferBegin;
 				const size_t offset2 = run[2].firstSource - bufferBegin, offset3 = run[3].firstSource - bufferBegin;
 				// ||, not |: MSVC materializes each comparison of | in a register
@@ -666,10 +665,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 				Floats4 productsA0, productsA1, productsA2, productsA3;
 				[[maybe_unused]] Floats4 productsB0, productsB1, productsB2, productsB3;
-				multiplyFourTapRun<Rows>(floatsA, floatsB, offset0, { weights + run[0].firstWeight, 4 }, productsA0, productsB0);
-				multiplyFourTapRun<Rows>(floatsA, floatsB, offset1, { weights + run[1].firstWeight, 4 }, productsA1, productsB1);
-				multiplyFourTapRun<Rows>(floatsA, floatsB, offset2, { weights + run[2].firstWeight, 4 }, productsA2, productsB2);
-				multiplyFourTapRun<Rows>(floatsA, floatsB, offset3, { weights + run[3].firstWeight, 4 }, productsA3, productsB3);
+				multiplyFourTapRun<Rows>(floatsA, floatsB, offset0, { run[0].weights, 4 }, productsA0, productsB0);
+				multiplyFourTapRun<Rows>(floatsA, floatsB, offset1, { run[1].weights, 4 }, productsA1, productsB1);
+				multiplyFourTapRun<Rows>(floatsA, floatsB, offset2, { run[2].weights, 4 }, productsA2, productsB2);
+				multiplyFourTapRun<Rows>(floatsA, floatsB, offset3, { run[3].weights, 4 }, productsA3, productsB3);
 
 				storeFloats4(outA, sumEachOfFour(productsA0, productsA1, productsA2, productsA3));
 				outA += 4;
@@ -680,7 +679,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 			}
 
-			return static_cast<size_t>(run - xRunLookup.runs);
+			return static_cast<size_t>(run - xRuns);
 		}
 
 		// filterHorizontalRowGroup for 1-float pixels: four dest columns share one reduction and one store
@@ -692,11 +691,12 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			size_t destEnd,
 			const AxisWeights& xWeights) noexcept
 		{
-			const AxisWeights::RunLookup xRunLookup = xWeights.runLookup();
+			// Read once: see filterHorizontalRowGroup
+			const TapRun* const xRuns = xWeights.runs.data();
 
 			for (size_t groupBegin = destBegin; groupBegin < destEnd; groupBegin += 4) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
-				groupBegin = filterBufferedFourTapRunGroups<Rows>(source.floats, source.base, source.converted, tempRows, destBegin, groupBegin, destEnd, xRunLookup);
+				groupBegin = filterBufferedFourTapRunGroups<Rows>(source.floats, source.base, source.converted, tempRows, destBegin, groupBegin, destEnd, xRuns);
 				if (groupBegin >= destEnd)
 					break;
 
@@ -706,10 +706,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				const size_t lastColumn = destEnd - 1;
 				Floats4 productsA0, productsA1, productsA2, productsA3;
 				[[maybe_unused]] Floats4 productsB0, productsB1, productsB2, productsB3;
-				prepareAndMultiplyFourTapRun(source, xRunLookup, std::min(groupBegin, lastColumn), productsA0, productsB0);
-				prepareAndMultiplyFourTapRun(source, xRunLookup, std::min(groupBegin + 1, lastColumn), productsA1, productsB1);
-				prepareAndMultiplyFourTapRun(source, xRunLookup, std::min(groupBegin + 2, lastColumn), productsA2, productsB2);
-				prepareAndMultiplyFourTapRun(source, xRunLookup, std::min(groupBegin + 3, lastColumn), productsA3, productsB3);
+				prepareAndMultiplyFourTapRun(source, xRuns[std::min(groupBegin, lastColumn)], productsA0, productsB0);
+				prepareAndMultiplyFourTapRun(source, xRuns[std::min(groupBegin + 1, lastColumn)], productsA1, productsB1);
+				prepareAndMultiplyFourTapRun(source, xRuns[std::min(groupBegin + 2, lastColumn)], productsA2, productsB2);
+				prepareAndMultiplyFourTapRun(source, xRuns[std::min(groupBegin + 3, lastColumn)], productsA3, productsB3);
 
 				const size_t columnCount = std::min<size_t>(4, destEnd - groupBegin);
 				Floats4 sums[Rows] = { sumEachOfFour(productsA0, productsA1, productsA2, productsA3) };

@@ -22,7 +22,7 @@ namespace ImageProcessing::Detail
 	struct TapRun
 	{
 		size_t firstSource;
-		size_t firstWeight;
+		const float* weights;
 		size_t weightCount;
 	};
 
@@ -43,12 +43,18 @@ namespace ImageProcessing::Detail
 		[[nodiscard]] bool operator==(const CacheLineAllocator<U>&) const noexcept { return true; }
 	};
 
+	// The runs start in order: firstSource never decreases along the axis.
 	struct AxisWeights
 	{
 		// Every run's weights start at a multiple of this in the array: the horizontal kernels load 8 weights at offsets
 		// of 8 into a run, and off a 32-byte boundary such a load can span two cache lines
 		static constexpr size_t runAlignment = 8;
 		using WeightVector = std::vector<float, CacheLineAllocator<float>>;
+
+		AxisWeights() = default;
+		// Not copyable: the runs point into weights
+		AxisWeights(AxisWeights&&) = default;
+		AxisWeights& operator=(AxisWeights&&) = default;
 
 		struct Run
 		{
@@ -62,40 +68,20 @@ namespace ImageProcessing::Detail
 			size_t end;
 		};
 
-		// The array pointers by value: stores in the calling loop may alias the AxisWeights and would force a reload per iteration
-		struct RunLookup
+		[[nodiscard]] IMAGE_PROCESSING_FORCE_INLINE Run runFor(size_t coordinate) const noexcept
 		{
-			[[nodiscard]] IMAGE_PROCESSING_FORCE_INLINE Run runFor(size_t coordinate) const noexcept
-			{
-				const TapRun& run = runs[coordinate];
-				return { run.firstSource, { weights + run.firstWeight, run.weightCount } };
-			}
-
-			const TapRun* runs;
-			const float* weights;
-		};
-
-		[[nodiscard]] RunLookup runLookup() const noexcept
-		{
-			return { runs.data(), weights.data() };
+			const TapRun& run = runs[coordinate];
+			return { run.firstSource, { run.weights, run.weightCount } };
 		}
 
-		[[nodiscard]] Run runFor(size_t coordinate) const noexcept
-		{
-			return runLookup().runFor(coordinate);
-		}
-
-		// The source indices read by the runs of dest coordinates [destBegin, destEnd)
+		// The source indices read by the runs of dest coordinates [destBegin, destEnd), not empty
 		[[nodiscard]] SourceSpan sourceSpan(size_t destBegin, size_t destEnd) const noexcept
 		{
-			SourceSpan span{ SIZE_MAX, 0 };
-			// Every run is checked: end-trimming lets a run start before its predecessor
+			assert(destBegin < destEnd);
+			SourceSpan span{ runs[destBegin].firstSource, 0 };
+			// Every run's end is checked: trailing zero weights are trimmed, so a run may end before its predecessor
 			for (size_t coordinate = destBegin; coordinate < destEnd; ++coordinate)
-			{
-				const TapRun& run = runs[coordinate];
-				span.begin = std::min(span.begin, run.firstSource);
-				span.end = std::max(span.end, run.firstSource + run.weightCount);
-			}
+				span.end = std::max(span.end, runs[coordinate].firstSource + runs[coordinate].weightCount);
 
 			return span;
 		}

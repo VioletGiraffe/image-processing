@@ -158,10 +158,25 @@ namespace
 		}
 	};
 
-	template <class Kernel>
-	[[nodiscard]] inline AxisWeights buildAxisWeights(uint64_t srcSize, uint64_t dstSize)
+	// An axis under construction: the weights array still grows, so a run holds its weights by index
+	struct IndexedTapRun
 	{
-		AxisWeights result;
+		size_t firstSource;
+		size_t firstWeight;
+		size_t weightCount;
+	};
+
+	struct IndexedAxisWeights
+	{
+		AxisWeights::WeightVector weights;
+		std::vector<IndexedTapRun> runs;
+		bool everyRunHasFourTaps = false;
+	};
+
+	template <class Kernel>
+	[[nodiscard]] inline IndexedAxisWeights buildAxisWeights(uint64_t srcSize, uint64_t dstSize)
+	{
+		IndexedAxisWeights result;
 		result.runs.reserve(dstSize);
 
 		// The horizontal kernels load 8 weights where as few as 2 of the run remain: this slack keeps the last run's load in bounds
@@ -171,7 +186,7 @@ namespace
 		{
 			result.weights.resize(1 + weightsSlack);
 			result.weights[0] = 1.0f;
-			result.runs.resize(dstSize, TapRun{ 0, 0, 1 });
+			result.runs.resize(dstSize, IndexedTapRun{ 0, 0, 1 });
 			return result;
 		}
 
@@ -198,14 +213,15 @@ namespace
 		{
 			if (d >= period && windowEnds[d - period] != windowClamped && windowEnds[d - period] + periodSourceStep <= srcMax)
 			{
-				const TapRun& samePhaseRun = result.runs[d - period];
-				result.runs.push_back(TapRun{ samePhaseRun.firstSource + static_cast<size_t>(periodSourceStep), samePhaseRun.firstWeight, samePhaseRun.weightCount });
+				const IndexedTapRun& samePhaseRun = result.runs[d - period];
+				result.runs.push_back(IndexedTapRun{ samePhaseRun.firstSource + static_cast<size_t>(periodSourceStep), samePhaseRun.firstWeight, samePhaseRun.weightCount });
 				windowEnds.push_back(windowEnds[d - period] + periodSourceStep);
 				continue;
 			}
 
 			const double srcPos = (static_cast<double>(d) + 0.5) / scale - 0.5;
-			const int64_t left = static_cast<int64_t>(std::floor(srcPos - support));
+			// The first source index nearer than support, where the kernels reach zero
+			const int64_t left = static_cast<int64_t>(std::floor(srcPos - support)) + 1;
 			const int64_t right = static_cast<int64_t>(std::ceil(srcPos + support));
 			const int64_t runFirst = std::clamp(left, int64_t{ 0 }, srcMax);
 			const int64_t runLast = std::clamp(right, int64_t{ 0 }, srcMax);
@@ -225,27 +241,22 @@ namespace
 				foldedWeights[static_cast<size_t>(std::clamp(s, runFirst, runLast) - runFirst)] += weight;
 			}
 
-			// The window edges land where the kernels are exactly zero, so most runs carry dead end taps; only
-			// interior zeros are needed for contiguity. (Interior Lanczos zeros compute as ~1e-16, not 0, and stay.)
-			size_t runBegin = 0;
+			// The window's last index lands where the kernels are exactly zero, so most runs carry a dead last tap: zeros at the end are dropped.
+			// Zeros at the start stay: without them a run could start after the next one, and the runs must start in order.
+			// (Interior Lanczos zeros compute as ~1e-16, not 0.)
 			size_t runEnd = foldedWeights.size();
-			while (runBegin < runEnd && foldedWeights[runBegin] == 0.0)
-				++runBegin;
-			while (runBegin < runEnd && foldedWeights[runEnd - 1] == 0.0)
+			while (runEnd > 0 && foldedWeights[runEnd - 1] == 0.0)
 				--runEnd;
+
+			// No nonzero weight: the whole window, for the nearest pixel below
+			if (runEnd == 0) [[unlikely]]
+				runEnd = foldedWeights.size();
 
 			result.weights.resize((result.weights.size() + AxisWeights::runAlignment - 1) / AxisWeights::runAlignment * AxisWeights::runAlignment);
 			const size_t firstWeight = result.weights.size();
 
-			if (runBegin == runEnd) [[unlikely]] // no nonzero weights in the window; fall back to the nearest pixel
-			{
-				result.weights.push_back(1.0f);
-				result.runs.push_back(TapRun{ static_cast<size_t>(std::clamp(static_cast<int64_t>(std::lround(srcPos)), runFirst, runLast)), firstWeight, 1 });
-				continue;
-			}
-
 			double sum = 0.0;
-			for (size_t i = runBegin; i < runEnd; ++i)
+			for (size_t i = 0; i < runEnd; ++i)
 			{
 				result.weights.push_back(static_cast<float>(foldedWeights[i]));
 				// Summing the stored floats rather than the doubles makes the normalization below cancel their
@@ -261,14 +272,13 @@ namespace
 			}
 			else
 			{
-				const int64_t trimmedFirst = runFirst + static_cast<int64_t>(runBegin);
 				const int64_t trimmedLast = runFirst + static_cast<int64_t>(runEnd) - 1;
 				std::fill(result.weights.begin() + static_cast<ptrdiff_t>(firstWeight), result.weights.end(), 0.0f);
-				const int64_t nearest = std::clamp(static_cast<int64_t>(std::lround(srcPos)), trimmedFirst, trimmedLast);
-				result.weights[firstWeight + static_cast<size_t>(nearest - trimmedFirst)] = 1.0f;
+				const int64_t nearest = std::clamp(static_cast<int64_t>(std::lround(srcPos)), runFirst, trimmedLast);
+				result.weights[firstWeight + static_cast<size_t>(nearest - runFirst)] = 1.0f;
 			}
 
-			result.runs.push_back(TapRun{ static_cast<size_t>(runFirst) + runBegin, firstWeight, runEnd - runBegin });
+			result.runs.push_back(IndexedTapRun{ static_cast<size_t>(runFirst), firstWeight, runEnd });
 		}
 
 		result.weights.resize(result.weights.size() + weightsSlack);
@@ -278,10 +288,10 @@ namespace
 
 	// Where no run exceeds 4 taps, pads every run to exactly 4 with zero weights: after the run, or before it where it would pass the source's end.
 	// Does nothing to a source narrower than 4.
-	inline void padShortRunsToFourTaps(AxisWeights& axis, size_t srcSize)
+	inline void padShortRunsToFourTaps(IndexedAxisWeights& axis, size_t srcSize)
 	{
 		constexpr size_t paddedCount = 4;
-		if (srcSize < paddedCount || axis.longestRun() > paddedCount)
+		if (srcSize < paddedCount || std::ranges::any_of(axis.runs, [](const IndexedTapRun& run) { return run.weightCount > paddedCount; }))
 			return;
 
 		// The horizontal kernels load 8 weights for a run's 4
@@ -293,7 +303,7 @@ namespace
 		constexpr size_t notPlaced = SIZE_MAX;
 		std::vector<size_t> paddedFirstWeight(axis.weights.size(), notPlaced);
 
-		for (TapRun& run : axis.runs)
+		for (IndexedTapRun& run : axis.runs)
 		{
 			const size_t runEnd = run.firstSource + paddedCount;
 			const size_t leadingZeros = runEnd > srcSize ? runEnd - srcSize : 0;
@@ -309,14 +319,27 @@ namespace
 					paddedFirstWeight[run.firstWeight] = firstWeight;
 			}
 
-			run = TapRun{ run.firstSource - leadingZeros, firstWeight, paddedCount };
+			run = IndexedTapRun{ run.firstSource - leadingZeros, firstWeight, paddedCount };
 		}
 
 		axis.weights = std::move(paddedWeights);
 		axis.everyRunHasFourTaps = true;
 	}
 
-	[[nodiscard]] inline AxisWeights buildAxisWeightsForKernel(ResizeKernel kernel, uint64_t srcSize, uint64_t dstSize)
+	[[nodiscard]] inline AxisWeights withRunAddresses(IndexedAxisWeights&& indexed)
+	{
+		AxisWeights result;
+		result.weights = std::move(indexed.weights);
+		result.everyRunHasFourTaps = indexed.everyRunHasFourTaps;
+		result.runs.reserve(indexed.runs.size());
+		for (const IndexedTapRun& run : indexed.runs)
+			result.runs.push_back(TapRun{ run.firstSource, result.weights.data() + run.firstWeight, run.weightCount });
+
+		assert(std::ranges::is_sorted(result.runs, {}, &TapRun::firstSource));
+		return result;
+	}
+
+	[[nodiscard]] inline IndexedAxisWeights buildAxisWeightsForKernel(ResizeKernel kernel, uint64_t srcSize, uint64_t dstSize)
 	{
 		if (kernel == ResizeKernel::Auto)
 			kernel = dstSize >= srcSize ? ResizeKernel::CatmullRom : ResizeKernel::Lanczos3;
@@ -426,9 +449,10 @@ namespace
 			return;
 		}
 
-		auto xWeights = buildAxisWeightsForKernel(kernel, srcRect.w, dest.width);
-		padShortRunsToFourTaps(xWeights, static_cast<size_t>(srcRect.w));
-		const auto yWeights = buildAxisWeightsForKernel(kernel, srcRect.h, dest.height);
+		auto indexedXWeights = buildAxisWeightsForKernel(kernel, srcRect.w, dest.width);
+		padShortRunsToFourTaps(indexedXWeights, static_cast<size_t>(srcRect.w));
+		const AxisWeights xWeights = withRunAddresses(std::move(indexedXWeights));
+		const AxisWeights yWeights = withRunAddresses(buildAxisWeightsForKernel(kernel, srcRect.h, dest.height));
 
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * Channels;
 		// A dest row's work includes producing its share of temp rows, srcRect.h / dest.height of them
@@ -459,19 +483,13 @@ Detail::TempRowRing::TempRowRing(const AxisWeights& yWeights, uint64_t destRowBe
 	assert(destRowBegin < destRowEnd);
 	assert(batchRows >= 1);
 
-	// While writing dest row dy, production has passed dy's window by at most batchRows - 1 rows, and end-trimming lets a
-	// later window start slightly before an earlier one - so each window's end is measured against the earliest start any
-	// not-yet-written row still needs.
-	uint64_t firstNeededRow = UINT64_MAX;
+	// While writing dest row dy, production has passed dy's window by at most batchRows - 1 rows.
+	// The windows start in order: no later row needs a row before dy's window.
 	size_t rowCount = 0;
-	for (uint64_t dy = destRowEnd; dy-- > destRowBegin;)
-	{
-		const auto run = yWeights.runFor(dy);
-		firstNeededRow = std::min(firstNeededRow, static_cast<uint64_t>(run.firstSource));
-		rowCount = std::max(rowCount, run.firstSource + run.weights.size() + batchRows - 1 - static_cast<size_t>(firstNeededRow));
-	}
+	for (uint64_t dy = destRowBegin; dy < destRowEnd; ++dy)
+		rowCount = std::max(rowCount, yWeights.runs[dy].weightCount + batchRows - 1);
 
-	_firstNeededRow = firstNeededRow;
+	_firstNeededRow = yWeights.runs[destRowBegin].firstSource;
 	_rowCount = rowCount;
 	_rows = makeAlignedFloats(startOffset + rowCount * rowStride);
 	_firstRow = _rows.get() + startOffset;

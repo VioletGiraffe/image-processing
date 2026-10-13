@@ -267,10 +267,10 @@ Against the scalar path it replaced:
 - Pi, Clang, resizer / QImage: 4K -> 1080p RGB24 3.76 -> 2.75, Grayscale8 1.19 -> 0.74.
 - SSE4.1 / AVX2 time under MSVC on the PC: Grayscale8 1.1x, RGB24 1.25-1.7x.
 
-### The run lookup holds its array pointers by value (f2f4569, 03113a6)
+### The horizontal passes read the runs' array pointer once (f2f4569, 03113a6)
 
-The horizontal pass looks up each output pixel's run through `AxisWeights::RunLookup`, a copy of the two array pointers.
-Through the `AxisWeights` reference the compiler reloads both per pixel: the loop's stores may alias the object.
+The horizontal passes take `AxisWeights::runs`' pointer into a local ahead of their loops.
+Through the `AxisWeights` reference the compiler reloads it per pixel: the loop's stores may alias the object.
 
 - The reload sits ahead of the load that yields the pixel's tap count, so every branch on that count resolves later.
 - x64 GCC kept the reference itself on the stack in the 3-channel AVX2 kernel at e5ea70d, a third load in that chain.
@@ -278,8 +278,8 @@ Through the `AxisWeights` reference the compiler reloads both per pixel: the loo
 Gains: x64 GCC on the EPYC 7763 5-8% on most AVX2 rows (4K -> 1080p RGB32 27.85 -> 25.82 ms), ARM GCC 1-16%, MSVC's AVX2
 downscales on the PC 3-6%. Clang: within 2% everywhere.
 
-`RunLookup::runFor` is force-inlined. MSVC's link-time code generation otherwise calls it once per output pixel in the
-SSE4.1 kernels, and did the same to a `std::span` constructor written directly in the loop (f2f4569): 4-6% on the SSE4.1
+`AxisWeights::runFor` is force-inlined. MSVC's link-time code generation called a lookup of its kind once per output
+pixel in the SSE4.1 kernels, and did the same to a `std::span` constructor written directly in the loop (f2f4569): 4-6% on the SSE4.1
 upscales on the PC, 4-18% on the EPYC 7763 runner, nothing on the N4100.
 
 Calls written in the hot loop bodies are forced inline at the call site as well (`IMAGE_PROCESSING_FORCE_INLINE_CALLS`),
@@ -538,7 +538,7 @@ Each primitives header states its level's form in `verticalTapsListed`. Both for
 `filterHorizontalRowGroup` prepares the source buffers for one column, then `filterBufferedRuns` filters every following
 column whose run lies in them. The buffers' pixel range reaches that loop as arguments: read through
 `SlidingSourceFloats` in a loop that also slides and converts, it was live state at every column. The same reason as for
-the run lookup's pointers above.
+the runs' array pointer above.
 
 | Machine, level | Compiler | 3- and 4-channel 4K downscales | Upscales |
 |---|---|---|---|
@@ -809,6 +809,31 @@ Against 1e18e27; six rounds on the 8500T, four on the 12600K, five on the Pi:
   stepped, 25 and 20 a block; 6.8 and 5.75 cycles a block, about a quarter of the slots plus half a cycle. The loop
   is bound by the 4 slots a cycle the core renames, and an indexed multiply-add takes two.
 
+### A run holds its weights' address, and the runs start in order
+
+Two values the x64 column loops no longer hold (open lead 26: more live values than registers).
+
+- `TapRun::weights` is an address, not an index into the array: no base to keep, no add per column. The builder
+  works by index while the array grows (`IndexedAxisWeights`), and `withRunAddresses` converts at the end.
+  `AxisWeights` is move-only for it.
+- `AxisWeights::runs` never decrease in `firstSource`. A run's window starts at the first source index nearer than
+  the support, and zero weights at its start are kept: trimmed, a run at a whole-pixel phase started after the next
+  one. `filterBufferedRuns` tests a run against the buffered range's end only, and `TempRowRing` sizes itself by the
+  longest window.
+
+MSVC at AVX2: the RGB32 column loop loads nothing from the stack on a run under 16 taps (3 loads before) and is 3
+instructions shorter; the one-channel upscale loop 45 instructions from 49. clang-cl: 92 from 98, and 48 from 56.
+
+Six rounds, both "Common" sections, against 2e606ac:
+- 8500T, AVX2: the 4K -> 1080p rows of 3 and 4 channels -3.1% to -3.9% under MSVC and -2.8% to -3.9% under clang-cl;
+  24 MP -> 1080p -1.6% and -3.3%; the 8x thumbnail -2% to -3%; the rest within 2%.
+- 12600K: the P-core agrees within its noise. The E-core within 1%, but: clang-cl's Grayscale8 rows -3% to -7%,
+  and MSVC's 4K -> 1080p Grayscale8 +3.4% at AVX2 and -4.3% at SSE4.1 (open lead 22's row).
+- SSE4.1 on the 12600K: within 2%. On the 8500T that level's rows moved by up to +12% in a prototype build whose
+  jumps fell on 32-byte boundaries, in loops with unchanged instructions: it is built without the padding, and is no
+  reading of a change there.
+- A prototype of each half on the 8500T, MSVC: the address alone -1% to -2.6%, the test alone about -1%.
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -929,6 +954,14 @@ Against 1e18e27; six rounds on the 8500T, four on the 12600K, five on the Pi:
       inlined, it steps row A's pointer and reaches row B at a constant distance from it, 4 indexed. On Skylake an
       indexed multiply-add is two micro-ops: the 8500T's thumbnails. The 12600K's were not run.
     - Neither comes from the buffers' state reaching the pass through a reference, the first suspect.
+29. **The weight spread's indices hidden from MSVC too** (against 2e606ac, not committed): a `volatile` zero added
+    to them in `spreadIndices`. MSVC loads a known vector constant ahead of the innermost loop that uses it, so
+    the RGB32 column loop reloaded the four indices every column, into registers it holds for them alone, and the
+    4-tap pass two.
+    - Hidden, they are formed once per row: the general column loop 4 instructions shorter, the 4-tap loop 26 from 28.
+    - Six rounds, both "Common" sections: no row moved on the 8500T or the 12600K's E-core; the P-core's -1.5% to
+      -3% is its Grayscale8 rows' too, whose code has no spread.
+    - A removed instruction is not a gain by itself in these loops: these loads cost less than the rows' noise.
 
 ## Open leads
 
@@ -1077,9 +1110,14 @@ Against 1e18e27; six rounds on the 8500T, four on the 12600K, five on the Pi:
       model benchmark of `throughput-ceiling.md` has them, remove two bases, the offset and the address arithmetic.
     - Done for `filterBufferedRuns` ("The general pass steps its run and temp pixels"): 72 instructions, 1 load.
     - Done for both upscale passes ("The upscale passes step their runs and temp pixels too").
-    - Left: the spread constants reloaded every column in the general and the 4-float pass (2 of the latter's 25
-      instructions); the weights' base in the general pass and row B's base in both upscale passes loaded from the
-      stack. The one-channel pass is as short of registers under Clang as under MSVC.
+    - The spread constants reloaded every column: removing the reloads gains nothing (experiment 29).
+    - Done for the weights' base and the range's first pixel ("A run holds its weights' address, and the runs start
+      in order").
+    - Left in the two-row loops (MSVC): at AVX2 the general pass reloads the loop bound and row B's origin after a
+      block loop, nothing on a run under 16 taps (Grayscale8's loop holds 3 loads); the one-channel upscale pass 1 at
+      SSE4.1; the RGBA32 upscale pass 1. The one-channel pass is as short of registers under Clang as under MSVC.
+    - `SlidingSourceFloats::backMargin` and `prepareRun`'s branch for a run before the span are still there, for runs
+      that no longer occur: untried without, and the margin moves a one-channel run's place in its cache line.
 27. **A batch API for a caller that knows it has many resizes in a row** (not designed), a folder's thumbnails for one.
     Each `resize()` call builds both axes' weights and allocates the source float buffers and the temp ring per band;
     a 1080p -> 120 px thumbnail is under 2 ms in all, so that setup may be a visible share. Unmeasured.
