@@ -771,6 +771,41 @@ AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-ch
   720p -> 4K Grayscale8 +1.7%; the rest within 1.5%.
 - No row that does not run these passes moved by more than 2.6%.
 
+### The block loop steps its pointers where a level has four chains
+
+Past its first block, `filterRun` steps a weights pointer and a pixel pointer per row beside the tap counter at
+AVX2 and NEON. At SSE4.1 it indexes the three by the counter.
+
+- MSVC addresses an indexed loop's loads by base and scaled index, and keeps a second counter for the bound. On
+  Skylake a multiply-add with such an operand is two micro-ops. Its AVX2 block loop: 21 instructions and no indexed
+  operand, from 20 and 9. A 12-tap column, one block, does not enter the loop: one instruction shorter.
+- At SSE4.1 a block is 4 taps, so a 12-tap run takes the loop twice. Stepped there, MSVC's column loop has 13
+  instructions and 5 stack references more, and its plain loads gain nothing from the operand.
+- Clang steps the loop itself: its kernels are the same code at both levels. GCC at NEON did too, to an end pointer;
+  it follows the source's counter now, 33 instructions a block from 31 and about 8 fewer around the loop.
+- The counter stays: an end pointer computed ahead of the loop cost MSVC's short runs 4 instructions
+  (experiment 27).
+- The second row at a constant distance from the first, as Clang's code has it: MSVC masks the distance every
+  block and keeps 4 operands indexed.
+
+Against 1e18e27; six rounds on the 8500T, four on the 12600K, five on the Pi:
+
+| Row, MSVC, AVX2 | 8500T | P-core | E-core |
+|---|---:|---:|---:|
+| 1080p -> 120 px wide thumbnail (16x) | -9.3% | -9.0% | level |
+| 21 MP photo -> 175 px wide thumbnail (32x) | -11.6% | -2.8% | level |
+| 4K -> 64x64 (60x) | -11.5% | -1.6% | level |
+| 101 MP -> 720p | -1.8% | | |
+
+- MSVC's other AVX2 rows within 2.5%. Its SSE4.1 rows, the same code: within 0.6% on the 8500T and the E-core, +1%
+  to +3% on the P-core, that session's noise there.
+- clang-cl, both levels: within 2.2%. Pi, GCC: within 2%.
+- WSL 2 on the 8500T, six rounds. GCC 14.3 at AVX2 indexed the loop as MSVC did, 17 instructions a block and 9
+  indexed operands; now 20 and 1: the 16x and 32x thumbnails -7% and -9%, 4K -> 64x64 -9%, the rest within 3%.
+  Clang 22's AVX2 kernel is the same code but for two instructions' order: within 1.5%, 1080p -> 1440p +4%.
+  Both compilers' SSE4.1 kernels are the same code: within 1.7%.
+- MSVC's 32x thumbnail on the 8500T is at clang-cl's time: 26.5 ms against 26.4, from 29.9.
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -872,7 +907,25 @@ AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-ch
     - GCC steps the block loop's pointers itself and MSVC does not: the long runs' gain is MSVC's alone. AArch64 has
       no base + index + offset operand and pairs loads only from a base: there the steps after the loop gain.
     - On these columns one instruction is about 1.2% of the 4K -> 1080p rows: short runs and long runs want
-      different code (open lead 25).
+      different code (open lead 25, and the block loop's design entry).
+28. **The horizontal pass as a function of its own** (against 1e18e27, not committed): `filterHorizontal` not
+    inlined into `resizeRowsWith`, the sliding source buffers passed by reference as they are. Meant to keep one
+    pass's change out of another's code, as 7a873c8's reached the upscales' at SSE4.1, and to free registers.
+    Six rounds on the 8500T, four on the 12600K, AVX2 and SSE4.1:
+    - MSVC: the SSE4.1 downscales and thumbnails +6% to +7% on the 8500T and +2% to +8% on the P-core; AVX2
+      4K -> 1080p Grayscale8 +6% on the P-core and +22% on the E-core. 720p -> 4K Grayscale8 -9% at AVX2 on the 8500T.
+    - clang-cl: the AVX2 16x and 32x thumbnails +10% and +12% (8500T), the SSE4.1 downscales +2% to +9%.
+      720p -> 4K Grayscale8 -10% on the E-core at AVX2, which undoes its +5% of "The upscale passes".
+    - MSVC's two-row loops, instructions and stack references, inlined against split: the one-channel upscale pass
+      49 and 4 against 45 and 0 at AVX2; the general pass 114 and 1 against 105 and 3 at AVX2, 131 and 2 against 142
+      and 2 at SSE4.1. The general pass is short of registers on its own values.
+    - MSVC's SSE4.1 block loop in the split pass: four of the eight chains are summed through a second register,
+      four moves a block and four before the loop, 43 instructions a block from 39. A 12-tap run is three blocks
+      there: about 12 instructions a column. The same habit as `RowChains` guards against.
+    - clang-cl's AVX2 block loop in the split pass addresses both rows by base and scaled index, all 8 multiply-adds;
+      inlined, it steps row A's pointer and reaches row B at a constant distance from it, 4 indexed. On Skylake an
+      indexed multiply-add is two micro-ops: the 8500T's thumbnails. The 12600K's were not run.
+    - Neither comes from the buffers' state reaching the pass through a reference, the first suspect.
 
 ## Open leads
 
@@ -1005,15 +1058,12 @@ AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-ch
 24. **Two timing levels the weights do not explain** (8500T): 720p -> 4K Grayscale8 at 5.25 and 5.54 ms and native size
     at 1.96 and 2.2 ms, by launch, before and after "Where the weights start". Not investigated. Also unmeasured: the
     larger weight table on the i3-2310M.
-25. **MSVC's block loop costs Skylake 11-14% on downscales of 16x and more** (experiment 27): the thumbnail rows
-    and 4K -> 64x64 on the 8500T. Not on the 12600K, and not under clang-cl, whose build of the same source has the
-    gain on the 8500T with no row worse than +3% against MSVC's (the 8500T's log).
-    - The cause is not confirmed with counters. MSVC addresses the loop's 8 multiply-adds by base and index and
-      keeps a second counter for the bound; stepped pointers written by hand remove both.
-    - Hand-stepped, the loop costs MSVC's short runs 3-8 instructions a column, each about 1.2% of 4K -> 1080p.
-    - Not taken: a horizontal pass per run length (a template parameter as `FourTapXRuns` is, the stepped loop for
-      long runs and no block loop for short ones). It would buy MSVC what clang-cl has without it.
-    - Open: a form of the loop MSVC compiles well that leaves the short runs' column as it is.
+25. **A horizontal pass per run length** (not taken). The column loop for runs under two blocks is bound by its
+    instruction count and the block loop by its operands (experiment 27): a template parameter as `FourTapXRuns`
+    is could give each its own `filterRun`. "The block loop steps its pointers where a level has four chains" got
+    MSVC's long runs their gain without it.
+    - Unconfirmed with counters: that the 8500T's loss was the indexed multiply-adds' second micro-op.
+    - Unexplained: on the 12600K's P-core the 16x thumbnail gained 9% and the 32x one 3%.
 26. **The x64 column loop holds more live values than registers** (MSVC). Of a 12-tap RGB32 column's 81
     instructions at d77c79c, 25 are arithmetic. Per column, outside it:
     - 5-6 loads of loop constants from the stack: the weights' base, row B's base, both temp rows' bases, the

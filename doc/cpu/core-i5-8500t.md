@@ -343,7 +343,9 @@ and the display rows from one session, the rest from another.
 | 720p -> 4K Grayscale8, RGB24 | -9%, -1.7% |
 
 - MSVC with the block loop's pointers stepped by hand reaches clang-cl on the three 16x-60x rows (-11% to -14%)
-  and loses 4-7% on 2x to 4.5x (`resize-performance.md`, experiment 27 and open lead 25).
+  and loses 4-7% on 2x to 4.5x (`resize-performance.md`, experiment 27).
+- The block loop stepped where a level has four chains (its design entry) closes the gap on those three rows with
+  no row lost: MSVC's 32x thumbnail 26.5 ms against clang-cl's 26.4.
 - On the 12600K the two compilers are within 3% on those rows, on both core types.
 
 ## The source buffers' range by value in the horizontal filter

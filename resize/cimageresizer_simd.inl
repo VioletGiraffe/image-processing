@@ -346,8 +346,26 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				RowChains chainsA;
 				RowChains chainsB;
 				filterBlock<true, Rows>(weightSpreader, weights.data(), runPixels[0], runPixels[Rows - 1], chainsA, chainsB);
-				for (tap = blockTaps; tap + blockTaps <= tapCount; tap += blockTaps)
-					filterBlock<false, Rows>(weightSpreader, weights.data() + tap, runPixels[0] + tap * floatsPerPixel, runPixels[Rows - 1] + tap * floatsPerPixel, chainsA, chainsB);
+				// Four chains - stepped pointers: MSVC addresses an indexed loop's loads by base and scaled index, a micro-op more per multiply-add on Skylake.
+				// Two chains - the index: a 12-tap run takes this loop there, and three more pointers push MSVC's column loop onto the stack.
+				if constexpr (horizontalChainCount == 4)
+				{
+					const float* blockWeights = weights.data() + blockTaps;
+					const float* blockPixelsA = runPixels[0] + blockTaps * floatsPerPixel;
+					const float* blockPixelsB = runPixels[Rows - 1] + blockTaps * floatsPerPixel;
+					for (tap = blockTaps; tap + blockTaps <= tapCount; tap += blockTaps)
+					{
+						filterBlock<false, Rows>(weightSpreader, blockWeights, blockPixelsA, blockPixelsB, chainsA, chainsB);
+						blockWeights += blockTaps;
+						blockPixelsA += blockTaps * floatsPerPixel;
+						blockPixelsB += blockTaps * floatsPerPixel;
+					}
+				}
+				else
+				{
+					for (tap = blockTaps; tap + blockTaps <= tapCount; tap += blockTaps)
+						filterBlock<false, Rows>(weightSpreader, weights.data() + tap, runPixels[0] + tap * floatsPerPixel, runPixels[Rows - 1] + tap * floatsPerPixel, chainsA, chainsB);
+				}
 
 				accumPairs[0] = sumChains(chainsA);
 				if constexpr (Rows == 2)
