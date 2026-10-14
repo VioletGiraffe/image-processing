@@ -207,10 +207,11 @@ namespace
 TEST_CASE("Common display resize scenarios", "[!benchmark][resize]")
 {
 	benchmarkResize("24 MP photo to 1080p viewport - RGB32", 6000, 4000, 1620, 1080, 3, 4, QImage::Format_RGB32);
-	benchmarkResize("4K image to 1080p - RGB32", 3840, 2160, 1920, 1080, 3, 4, QImage::Format_RGB32);
+	benchmarkResize("2.8 MP photo to 1920x1280 viewport - RGB32", 2048, 1365, 1920, 1280, 3, 4, QImage::Format_RGB32); // x runs of 6 and 7 taps
+	benchmarkResize("4K image to 1600x900 - RGB32", 3840, 2160, 1600, 900, 3, 4, QImage::Format_RGB32); // x runs of 14 and 15 taps
+	benchmarkResize("4K image to 720p - RGB32", 3840, 2160, 1280, 720, 3, 4, QImage::Format_RGB32); // x runs of 17 taps
 	benchmarkResize("720p image to 4K - RGBA32", 1280, 720, 3840, 2160, 4, 4, QImage::Format_RGBA8888);
 	benchmarkResize("720p image to 4K - RGB32", 1280, 720, 3840, 2160, 3, 4, QImage::Format_RGB32);
-	benchmarkResize("1080p image to 1440p - RGB32", 1920, 1080, 2560, 1440, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("1080p to 240p thumbnail - RGB32", 1920, 1080, 426, 240, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("1080p to 120 px wide thumbnail - RGB32", 1920, 1080, 120, 68, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("21 MP photo to 175 px wide thumbnail - RGB32", 5600, 3744, 175, 117, 3, 4, QImage::Format_RGB32);
@@ -251,7 +252,6 @@ TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 	benchmarkResize("4K to 1080p - RGB24", 3840, 2160, 1920, 1080, 3, 3, QImage::Format_RGB888, &pool);
 	benchmarkResize("720p image to 4K - RGBA32", 1280, 720, 3840, 2160, 4, 4, QImage::Format_RGBA8888, &pool);
 	benchmarkResize("720p to 4K - RGB24", 1280, 720, 3840, 2160, 3, 3, QImage::Format_RGB888, &pool);
-	benchmarkResize("1080p image to 1440p - RGB32", 1920, 1080, 2560, 1440, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("1080p to 240p thumbnail - RGB32", 1920, 1080, 426, 240, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("4K image to 64x64 - RGB32", 3840, 2160, 64, 64, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("101 MP photo to 720p - RGB32", 11608, 8708, 1280, 720, 3, 4, QImage::Format_RGB32, &pool);
