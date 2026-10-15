@@ -31,6 +31,8 @@ namespace ImageProcessing::Detail::Neon
 
 	// The horizontal pass's accumulation chains per row, a Floats8 each
 	inline constexpr size_t horizontalChainCount = 4;
+	// The longest x run of 1- or 4-float pixels with a horizontal pass compiled for its length: the longest measured, still gaining on Cortex-A72
+	inline constexpr size_t longestFixedXRun = 32;
 	// Blocks the vertical pass filters per step: one block already has 6-8 accumulators, two registers per Floats8
 	inline constexpr size_t verticalBlocksPerStep = 1;
 	// Not listed: a list's load per tap costs Cortex-A72 3-7% under Clang, at any stored weight size

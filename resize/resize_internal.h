@@ -16,6 +16,9 @@
 
 namespace ImageProcessing::Detail
 {
+	// The fewest taps x runs are padded to: an upscale's
+	inline constexpr size_t shortestPaddedXRun = 4;
+
 	// One destination coordinate's filter: weights for a contiguous run of source pixels (x axis) or rows (y axis).
 	// weights[i] applies to source index firstSource + i: border clamping is folded into the boundary weights at build
 	// time, and interior zero weights are kept, so runs have no gaps.
@@ -90,8 +93,8 @@ namespace ImageProcessing::Detail
 
 		WeightVector weights;
 		std::vector<TapRun> runs;
-		// Set by padShortRunsToFourTaps: the horizontal passes for such runs load 4 source pixels per run unconditionally
-		bool everyRunHasFourTaps = false;
+		// Set by padRunsToOneLength: every run has this many taps, and the horizontal pass compiled for that length reads no count. 0: the lengths vary.
+		size_t paddedRunLength = 0;
 	};
 
 	struct AlignedFloatsDeleter
@@ -204,6 +207,8 @@ namespace ImageProcessing::Detail
 		template <size_t Channels, size_t PixelStride>
 		IMAGE_PROCESSING_AVX2_TARGET void resizeRows(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
+		// The longest AxisWeights::paddedRunLength resizeRows takes for the x axis
+		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
 	}
 
 	// Legacy-SSE encoded: every thread running it clears the upper YMM state first wherever AVX exists
@@ -212,6 +217,8 @@ namespace ImageProcessing::Detail
 		template <size_t Channels, size_t PixelStride>
 		IMAGE_PROCESSING_SSE41_TARGET void resizeRows(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
+		// As Avx2's
+		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
 	}
 #else
 	namespace Neon
@@ -219,6 +226,8 @@ namespace ImageProcessing::Detail
 		template <size_t Channels, size_t PixelStride>
 		void resizeRows(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
+		// The longest AxisWeights::paddedRunLength resizeRows takes for the x axis
+		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
 	}
 #endif
 }

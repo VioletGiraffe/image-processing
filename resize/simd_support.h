@@ -69,6 +69,13 @@ namespace ImageProcessing::Detail
 {
 	// Where a kernel writes an output block. Destination: the image's rows, written once and not read back.
 	enum class BlockTarget { Destination, Scratch };
+
+	// MSVC itself: clang-cl defines _MSC_VER too
+#if defined(_MSC_VER) && !defined(__clang__)
+	inline constexpr bool compilerIsMsvc = true;
+#else
+	inline constexpr bool compilerIsMsvc = false;
+#endif
 }
 
 namespace ImageProcessing::SimdSupport

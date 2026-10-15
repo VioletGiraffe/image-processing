@@ -170,8 +170,11 @@ namespace
 	{
 		AxisWeights::WeightVector weights;
 		std::vector<IndexedTapRun> runs;
-		bool everyRunHasFourTaps = false;
+		size_t paddedRunLength = 0;
 	};
+
+	// The horizontal kernels load 8 weights where as few as 2 of the run remain: this slack keeps the last run's load in bounds
+	constexpr size_t weightsSlack = 6;
 
 	// runsStartInOrder: no run starts before an earlier one, at the price of zero weights kept at some runs' start
 	template <class Kernel>
@@ -179,9 +182,6 @@ namespace
 	{
 		IndexedAxisWeights result;
 		result.runs.reserve(dstSize);
-
-		// The horizontal kernels load 8 weights where as few as 2 of the run remain: this slack keeps the last run's load in bounds
-		constexpr size_t weightsSlack = 6;
 
 		if (srcSize == 1) [[unlikely]]
 		{
@@ -295,17 +295,20 @@ namespace
 		return result;
 	}
 
-	// Where no run exceeds 4 taps, pads every run to exactly 4 with zero weights: after the run, or before it where it would pass the source's end.
-	// Does nothing to a source narrower than 4.
-	inline void padShortRunsToFourTaps(IndexedAxisWeights& axis, size_t srcSize)
+	// Where no run exceeds longestPaddedRun taps, pads every run to the longest, shortestPaddedXRun at least, with zero weights:
+	// after the run, or before it where it would pass the source's end. Does nothing to a source narrower than that.
+	inline void padRunsToOneLength(IndexedAxisWeights& axis, size_t srcSize, size_t longestPaddedRun)
 	{
-		constexpr size_t paddedCount = 4;
-		if (srcSize < paddedCount || std::ranges::any_of(axis.runs, [](const IndexedTapRun& run) { return run.weightCount > paddedCount; }))
+		size_t paddedCount = shortestPaddedXRun;
+		for (const IndexedTapRun& run : axis.runs)
+			paddedCount = std::max(paddedCount, run.weightCount);
+
+		if (srcSize < paddedCount || paddedCount > longestPaddedRun)
 			return;
 
-		// The horizontal kernels load 8 weights for a run's 4
-		constexpr size_t storedCount = AxisWeights::runAlignment;
-		static_assert(storedCount >= 8);
+		// Whole blocks of the 8 weights the horizontal kernels load
+		const size_t storedCount = (paddedCount + AxisWeights::runAlignment - 1) / AxisWeights::runAlignment * AxisWeights::runAlignment;
+		static_assert(AxisWeights::runAlignment >= 8);
 		AxisWeights::WeightVector paddedWeights;
 		paddedWeights.reserve(axis.weights.size());
 		// Runs that shared their weights still do: indexed by a run's old first weight, for runs with no leading zeros
@@ -331,15 +334,16 @@ namespace
 			run = IndexedTapRun{ run.firstSource - leadingZeros, firstWeight, paddedCount };
 		}
 
+		paddedWeights.resize(paddedWeights.size() + weightsSlack);
 		axis.weights = std::move(paddedWeights);
-		axis.everyRunHasFourTaps = true;
+		axis.paddedRunLength = paddedCount;
 	}
 
 	[[nodiscard]] inline AxisWeights withRunAddresses(IndexedAxisWeights&& indexed)
 	{
 		AxisWeights result;
 		result.weights = std::move(indexed.weights);
-		result.everyRunHasFourTaps = indexed.everyRunHasFourTaps;
+		result.paddedRunLength = indexed.paddedRunLength;
 		result.runs.reserve(indexed.runs.size());
 		for (const IndexedTapRun& run : indexed.runs)
 			result.runs.push_back(TapRun{ run.firstSource, result.weights.data() + run.firstWeight, run.weightCount });
@@ -434,6 +438,15 @@ namespace
 #endif
 	}
 
+	[[nodiscard]] size_t longestPaddedXRun([[maybe_unused]] SimdLevel simdLevel, size_t channels) noexcept
+	{
+#if IMAGE_PROCESSING_X64
+		return simdLevel == SimdLevel::Avx2 ? Avx2::longestPaddedXRun(channels) : Sse41::longestPaddedXRun(channels);
+#else
+		return Neon::longestPaddedXRun(channels);
+#endif
+	}
+
 	template <size_t Channels>
 	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, SimdLevel simdLevel, size_t ringBudgetBytes)
 	{
@@ -460,7 +473,7 @@ namespace
 		// The x runs in order: the horizontal passes and their source buffers take them so.
 		// The y runs not: a kept zero is a tap where the vertical pass walks its window (NEON), on every third row of a 3x upscale.
 		auto indexedXWeights = buildAxisWeightsForKernel(kernel, srcRect.w, dest.width, true);
-		padShortRunsToFourTaps(indexedXWeights, static_cast<size_t>(srcRect.w));
+		padRunsToOneLength(indexedXWeights, static_cast<size_t>(srcRect.w), longestPaddedXRun(simdLevel, Channels));
 		const AxisWeights xWeights = withRunAddresses(std::move(indexedXWeights));
 		assert(std::ranges::is_sorted(xWeights.runs, {}, &TapRun::firstSource));
 		const AxisWeights yWeights = withRunAddresses(buildAxisWeightsForKernel(kernel, srcRect.h, dest.height, false));

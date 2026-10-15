@@ -608,10 +608,63 @@ namespace
 		}
 	}
 
-	// One row pair of an upscale, every column: 4 taps of 4-float pixels, no tap count. Requires 8 readable floats at every column's weights.
-	// Form: 0 - filterFourTapRun's: the weights spread over a pixel pair, halves summed;
-	//       1, 2 - a tap per multiply-add over interleaved pixels in Form chains, each weight broadcast from memory;
-	//       3 - as 2, the 4 weights loaded into both lanes and permuted in-lane.
+	// One column of an upscale's row pair: 4 taps of 4-float pixels, no tap count. Requires 8 readable floats at w.
+	// Form: 0 - the kernel's filterRun at 4 taps: the weights spread over a pixel pair, halves summed, the rows at pa and pb;
+	//       1, 2 - a tap per multiply-add over the interleaved pixels at p in Form chains, each weight broadcast from memory;
+	//       3, 4 - as 2 and 1, the 4 weights loaded into both lanes and shuffled in-lane;
+	//       5 - interleavedColumnFixed at 4 taps, lane weights: a chain per tap.
+	template <int Form>
+	FORCEINLINE void fourTapColumn(const SpreadIndices& indices, const float* pa, const float* pb, const float* p, const float* w, float* outA, float* outB)
+	{
+		if constexpr (Form == 5)
+			interleavedColumnFixed<4, 0>(p, w, outA, outB);
+		else if constexpr (Form == 0)
+		{
+			const __m256 weights = _mm256_loadu_ps(w);
+			const __m256 w0 = _mm256_permutevar8x32_ps(weights, indices.i0), w1 = _mm256_permutevar8x32_ps(weights, indices.i1);
+			_mm_storeu_ps(outA, sumHalves(_mm256_fmadd_ps(_mm256_loadu_ps(pa), w0, _mm256_mul_ps(_mm256_loadu_ps(pa + 8), w1))));
+			_mm_storeu_ps(outB, sumHalves(_mm256_fmadd_ps(_mm256_loadu_ps(pb), w0, _mm256_mul_ps(_mm256_loadu_ps(pb + 8), w1))));
+		}
+		else
+		{
+			__m256 sum;
+			if constexpr (Form == 1)
+			{
+				sum = _mm256_mul_ps(_mm256_loadu_ps(p), _mm256_broadcast_ss(w));
+				sum = _mm256_fmadd_ps(_mm256_loadu_ps(p + 8), _mm256_broadcast_ss(w + 1), sum);
+				sum = _mm256_fmadd_ps(_mm256_loadu_ps(p + 16), _mm256_broadcast_ss(w + 2), sum);
+				sum = _mm256_fmadd_ps(_mm256_loadu_ps(p + 24), _mm256_broadcast_ss(w + 3), sum);
+			}
+			else if constexpr (Form == 2)
+			{
+				__m256 s0 = _mm256_mul_ps(_mm256_loadu_ps(p), _mm256_broadcast_ss(w)), s1 = _mm256_mul_ps(_mm256_loadu_ps(p + 8), _mm256_broadcast_ss(w + 1));
+				s0 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 16), _mm256_broadcast_ss(w + 2), s0); s1 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 24), _mm256_broadcast_ss(w + 3), s1);
+				sum = _mm256_add_ps(s0, s1);
+			}
+			else
+			{
+				__m256 weights = _mm256_broadcast_ps(reinterpret_cast<const __m128*>(w));
+				OPAQUE_VECTOR(weights);
+				if constexpr (Form == 3)
+				{
+					__m256 s0 = _mm256_mul_ps(_mm256_loadu_ps(p), _mm256_shuffle_ps(weights, weights, 0x00)), s1 = _mm256_mul_ps(_mm256_loadu_ps(p + 8), _mm256_shuffle_ps(weights, weights, 0x55));
+					s0 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 16), _mm256_shuffle_ps(weights, weights, 0xAA), s0); s1 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 24), _mm256_shuffle_ps(weights, weights, 0xFF), s1);
+					sum = _mm256_add_ps(s0, s1);
+				}
+				else
+				{
+					sum = _mm256_mul_ps(_mm256_loadu_ps(p), _mm256_shuffle_ps(weights, weights, 0x00));
+					sum = _mm256_fmadd_ps(_mm256_loadu_ps(p + 8), _mm256_shuffle_ps(weights, weights, 0x55), sum);
+					sum = _mm256_fmadd_ps(_mm256_loadu_ps(p + 16), _mm256_shuffle_ps(weights, weights, 0xAA), sum);
+					sum = _mm256_fmadd_ps(_mm256_loadu_ps(p + 24), _mm256_shuffle_ps(weights, weights, 0xFF), sum);
+				}
+			}
+			_mm_storeu_ps(outA, _mm256_castps256_ps128(sum));
+			_mm_storeu_ps(outB, _mm256_extractf128_ps(sum, 1));
+		}
+	}
+
+	// One row pair of an upscale, every column of fourTapColumn<Form>, each column's pixels and weights at a constant step
 	template <int Form>
 	NOINLINE void fourTapRowPair(const float* a, const float* b, const float* interleaved, const float* columnWeights, size_t columns, size_t stepQ8, size_t capacityPixels, float* outA, float* outB)
 	{
@@ -620,47 +673,28 @@ namespace
 		for (size_t column = 0; column < columns; ++column)
 		{
 			const size_t pixel = positionQ8 >> 8;
-			const float* w = columnWeights + column * weightStrideFor(4);
-			if constexpr (Form == 0)
-			{
-				const __m256 weights = _mm256_loadu_ps(w);
-				const __m256 w0 = _mm256_permutevar8x32_ps(weights, indices.i0), w1 = _mm256_permutevar8x32_ps(weights, indices.i1);
-				const float* pa = a + pixel * 4;
-				const float* pb = b + pixel * 4;
-				_mm_storeu_ps(outA + column * 3, sumHalves(_mm256_fmadd_ps(_mm256_loadu_ps(pa), w0, _mm256_mul_ps(_mm256_loadu_ps(pa + 8), w1))));
-				_mm_storeu_ps(outB + column * 3, sumHalves(_mm256_fmadd_ps(_mm256_loadu_ps(pb), w0, _mm256_mul_ps(_mm256_loadu_ps(pb + 8), w1))));
-			}
-			else
-			{
-				const float* p = interleaved + pixel * 8;
-				__m256 sum;
-				if constexpr (Form == 1)
-				{
-					sum = _mm256_mul_ps(_mm256_loadu_ps(p), _mm256_broadcast_ss(w));
-					sum = _mm256_fmadd_ps(_mm256_loadu_ps(p + 8), _mm256_broadcast_ss(w + 1), sum);
-					sum = _mm256_fmadd_ps(_mm256_loadu_ps(p + 16), _mm256_broadcast_ss(w + 2), sum);
-					sum = _mm256_fmadd_ps(_mm256_loadu_ps(p + 24), _mm256_broadcast_ss(w + 3), sum);
-				}
-				else if constexpr (Form == 2)
-				{
-					__m256 s0 = _mm256_mul_ps(_mm256_loadu_ps(p), _mm256_broadcast_ss(w)), s1 = _mm256_mul_ps(_mm256_loadu_ps(p + 8), _mm256_broadcast_ss(w + 1));
-					s0 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 16), _mm256_broadcast_ss(w + 2), s0); s1 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 24), _mm256_broadcast_ss(w + 3), s1);
-					sum = _mm256_add_ps(s0, s1);
-				}
-				else
-				{
-					const __m256 weights = _mm256_broadcast_ps(reinterpret_cast<const __m128*>(w));
-					__m256 s0 = _mm256_mul_ps(_mm256_loadu_ps(p), _mm256_shuffle_ps(weights, weights, 0x00)), s1 = _mm256_mul_ps(_mm256_loadu_ps(p + 8), _mm256_shuffle_ps(weights, weights, 0x55));
-					s0 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 16), _mm256_shuffle_ps(weights, weights, 0xAA), s0); s1 = _mm256_fmadd_ps(_mm256_loadu_ps(p + 24), _mm256_shuffle_ps(weights, weights, 0xFF), s1);
-					sum = _mm256_add_ps(s0, s1);
-				}
-				_mm_storeu_ps(outA + column * 3, _mm256_castps256_ps128(sum));
-				_mm_storeu_ps(outB + column * 3, _mm256_extractf128_ps(sum, 1));
-			}
+			fourTapColumn<Form>(indices, a + pixel * 4, b + pixel * 4, interleaved + pixel * 8, columnWeights + column * weightStrideFor(4), outA + column * 3, outB + column * 3);
 
 			positionQ8 += stepQ8;
 			if ((positionQ8 >> 8) + 4 > capacityPixels)
 				positionQ8 = 0;
+		}
+	}
+
+	// fourTapRowPair with each column's run read from runs, as filterBufferedRuns at a fixed length reads the kernel's run table:
+	// a run's firstSource is its pixel in the buffers, tested against the last pixel a run may start at.
+	template <int Form>
+	NOINLINE void fourTapRunTable(const float* a, const float* b, const float* interleaved, const ColumnRun* runs, size_t columns, size_t lastPixel, float* outA, float* outB)
+	{
+		[[maybe_unused]] const SpreadIndices indices;
+		const ColumnRun* const runsEnd = runs + columns;
+		for (const ColumnRun* run = runs; run != runsEnd; ++run, outA += 3, outB += 3)
+		{
+			const size_t pixel = run->firstSource;
+			if (pixel > lastPixel)
+				break;
+
+			fourTapColumn<Form>(indices, a + pixel * 4, b + pixel * 4, interleaved + pixel * 8, run->weights, outA, outB);
 		}
 	}
 
@@ -945,6 +979,40 @@ namespace
 		const double seconds = bestSeconds([&] {
 			for (size_t pair = 0; pair < 720 / 2; ++pair)
 				fourTapRowPair<Form>(a, b, interleaved, weights, columns, 256 / 3, capacityPixels, outA, outB);
+		}, repeats);
+		volatile float sink = outA[100] + outB[200];
+		(void)sink;
+		freeFloats(a); freeFloats(b); freeFloats(interleaved); freeFloats(weights); freeFloats(outA); freeFloats(outB);
+		return seconds;
+	}
+
+	// fourTapRunTable<Form> at 720p -> 4K's row and column counts. Runs a period of 3 columns apart share their weights, as the kernel's do.
+	template <int Form>
+	double fourTapRunTableSeconds(int repeats)
+	{
+		constexpr size_t columns = 3840, capacityPixels = 2 * 4 + 128, period = 3;
+		float* a = alignedFloats(capacityPixels * 4 + 64);
+		float* b = alignedFloats(capacityPixels * 4 + 64);
+		float* interleaved = alignedFloats(capacityPixels * 8 + 128);
+		float* weights = alignedFloats(period * weightStrideFor(4) + 64);
+		for (size_t i = 0; i < period * weightStrideFor(4) + 64; ++i)
+			weights[i] = 0.25f;
+		float* outA = alignedFloats(columns * 3 + 64);
+		float* outB = alignedFloats(columns * 3 + 64);
+
+		std::vector<ColumnRun> runs(columns);
+		size_t positionQ8 = 0;
+		for (size_t column = 0; column < columns; ++column)
+		{
+			runs[column] = { positionQ8 >> 8, weights + column % period * weightStrideFor(4), 4 };
+			positionQ8 += 256 / 3;
+			if ((positionQ8 >> 8) + 4 > capacityPixels)
+				positionQ8 = 0;
+		}
+
+		const double seconds = bestSeconds([&] {
+			for (size_t pair = 0; pair < 720 / 2; ++pair)
+				fourTapRunTable<Form>(a, b, interleaved, runs.data(), columns, capacityPixels - 4, outA, outB);
 		}, repeats);
 		volatile float sink = outA[100] + outB[200];
 		(void)sink;
@@ -1445,7 +1513,14 @@ int main(int argc, char** argv)
 		report("F0 four taps, weights spread over a pixel pair", fourTapSeconds<0>(repeats), fourTapWork);
 		report("F1 four taps, rows interleaved, one chain", fourTapSeconds<1>(repeats), fourTapWork);
 		report("F2 four taps, rows interleaved, two chains", fourTapSeconds<2>(repeats), fourTapWork);
-		report("F3 as F2, weights permuted in-lane", fourTapSeconds<3>(repeats), fourTapWork);
+		report("F3 as F2, lane weights", fourTapSeconds<3>(repeats), fourTapWork);
+		report("F4 as F1, lane weights", fourTapSeconds<4>(repeats), fourTapWork);
+		report("F5 as F0, each column's run read from a run table", fourTapRunTableSeconds<0>(repeats), fourTapWork);
+		report("F6 as F1, from a run table", fourTapRunTableSeconds<1>(repeats), fourTapWork);
+		report("F7 as F2, from a run table", fourTapRunTableSeconds<2>(repeats), fourTapWork);
+		report("F8 as F3, from a run table", fourTapRunTableSeconds<3>(repeats), fourTapWork);
+		report("F9 as F4, from a run table", fourTapRunTableSeconds<4>(repeats), fourTapWork);
+		report("F10 as F8, four chains: the fixed-count column at 4 taps", fourTapRunTableSeconds<5>(repeats), fourTapWork);
 	}
 
 	if (selected('C') || selected('P') || selected('R'))

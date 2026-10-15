@@ -37,6 +37,8 @@ namespace ImageProcessing::Detail::Sse41
 
 	// The horizontal pass's accumulation chains per row, a Floats8 each: a row pair's must fit the 16 XMM registers
 	inline constexpr size_t horizontalChainCount = 2;
+	// The longest x run of 1- or 4-float pixels with a horizontal pass compiled for its length: a longer 4-float run's written-out blocks outgrow the registers under MSVC
+	inline constexpr size_t longestFixedXRun = 12;
 	// Blocks the vertical pass filters per step: one block already has 6-8 accumulators, two registers per Floats8
 	inline constexpr size_t verticalBlocksPerStep = 1;
 	// As at AVX2. A list costs a load per tap: Goldmont Plus pays 2-4% for it on downscales, Sandy Bridge nothing.

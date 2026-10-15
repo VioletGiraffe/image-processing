@@ -1,6 +1,6 @@
 // The SIMD kernels' outline, written against one instruction set's primitives.
 // A cimageresizer_simd_<level>.cpp includes that level's simd_primitives_<level>.h, sets IMAGE_PROCESSING_SIMD_LEVEL to the
-// level's namespace, then includes this file.
+// level's namespace, named as its SimdLevel, then includes this file.
 
 #ifndef IMAGE_PROCESSING_SIMD_LEVEL
 	#error "Only a cimageresizer_simd_<level>.cpp includes this file"
@@ -13,11 +13,13 @@
 #include <algorithm>
 #include <array>
 #include <assert.h>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <string.h>
 #include <type_traits>
+#include <utility>
 
 // The float equality tests are exact-zero checks by design
 DISABLE_CLANG_GCC_WARNING("-Wfloat-equal")
@@ -26,10 +28,19 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 {
 	namespace
 	{
+		constexpr SimdLevel simdLevel = SimdLevel::IMAGE_PROCESSING_SIMD_LEVEL;
+
 		// 3 channels get a 4th float, 0: the 4-channel code then serves them
 		[[nodiscard]] constexpr size_t sourceFloatsPerPixel(size_t channels) noexcept
 		{
 			return channels == 3 ? 4 : channels;
+		}
+
+		// The longest padded x run with a kernel compiled for its length, 0 for none.
+		// 2-float pixels have none: a rare layout, not worth the kernels.
+		[[nodiscard]] constexpr size_t longestKernelXRun(size_t channels) noexcept
+		{
+			return sourceFloatsPerPixel(channels) == 2 ? 0 : longestFixedXRun;
 		}
 
 		// PixelStride 0: the stride is taken at runtime
@@ -297,6 +308,40 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				return add(chains.chain0, chains.chain1);
 		}
 
+		// A run's length: FixedTaps where the x runs are padded to that many taps, readLength where FixedTaps is 0
+		template <size_t FixedTaps>
+		[[nodiscard]] IMAGE_PROCESSING_SIMD_INLINE size_t runLength([[maybe_unused]] size_t readLength) noexcept
+		{
+			if constexpr (FixedTaps != 0)
+				return FixedTaps;
+			else
+				return readLength;
+		}
+
+		// Blocks Block to BlockCount - 1 of a run, written out: MSVC keeps a loop over a known count as a loop
+		template <size_t Block, size_t BlockCount, size_t Rows, size_t FloatsPerPixel>
+		IMAGE_PROCESSING_SIMD_INLINE void filterBlocksFrom(
+			[[maybe_unused]] const WeightSpreader<FloatsPerPixel>& spreader,
+			[[maybe_unused]] const float* runWeights,
+			[[maybe_unused]] const float* runPixelsA,
+			[[maybe_unused]] const float* runPixelsB,
+			[[maybe_unused]] RowChains& chainsA,
+			[[maybe_unused]] RowChains& chainsB) noexcept
+		{
+			if constexpr (Block < BlockCount)
+			{
+				constexpr size_t blockTaps = horizontalChainCount * 8 / FloatsPerPixel;
+				constexpr size_t firstFloat = Block * blockTaps * FloatsPerPixel;
+				filterBlock<Block == 0, Rows>(spreader, runWeights + Block * blockTaps, runPixelsA + firstFloat, runPixelsB + firstFloat, chainsA, chainsB);
+				// No load moves across the fence, so a block's weight broadcasts stay beside its products.
+				// MSVC at SSE4.1 otherwise hoists all of a column's broadcasts ahead of its products: up to 6% slower on Goldmont Plus.
+				if constexpr (simdLevel == SimdLevel::Sse41 && compilerIsMsvc)
+					std::atomic_signal_fence(std::memory_order_seq_cst);
+
+				filterBlocksFrom<Block + 1, BlockCount, Rows>(spreader, runWeights, runPixelsA, runPixelsB, chainsA, chainsB);
+			}
+		}
+
 		// Filters Rows source rows in one destination-column sweep. The weight loads, permutes and broadcasts
 		// depend only on the column, so paired rows share them, while each row keeps its own accumulators and
 		// its exact single-row arithmetic. Two rows is the register budget: the spread constants plus a row pair's
@@ -304,7 +349,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		// Rows are passed as individual pointers: a pair of temp rows may straddle the ring's wrap.
 		// Filters one dest column: each row's run of weights.size() pixels, at pixelsA and pixelsB, into its temp pixel, at outA and outB.
 		// The second row's pointers are unused for one row.
-		template <size_t Channels, size_t Rows>
+		// FixedTaps: see runLength. The steps a run of that length takes are then chosen at compile time.
+		template <size_t Channels, size_t Rows, size_t FixedTaps>
 		IMAGE_PROCESSING_SIMD_INLINE void filterRun(
 			const float* pixelsA,
 			[[maybe_unused]] const float* pixelsB,
@@ -318,7 +364,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
 			// Taps per block: 8 source floats per chain
 			constexpr size_t blockTaps = horizontalChainCount * 8 / floatsPerPixel;
-			const size_t tapCount = weights.size();
+			const size_t tapCount = runLength<FixedTaps>(weights.size());
+			assert(tapCount == weights.size());
 
 			const float* runPixels[Rows];
 			float* outPixels[Rows];
@@ -339,7 +386,18 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 			// A run is consecutive pixels, so a block goes through independent chains of 8 floats;
 			// per-tap accumulation into one register would serialize on the multiply-add latency.
-			if (tapCount >= blockTaps)
+			if constexpr (FixedTaps >= blockTaps)
+			{
+				RowChains chainsA;
+				RowChains chainsB;
+				filterBlocksFrom<0, FixedTaps / blockTaps, Rows>(weightSpreader, weights.data(), runPixels[0], runPixels[Rows - 1], chainsA, chainsB);
+				tap = FixedTaps / blockTaps * blockTaps;
+
+				accumPairs[0] = sumChains(chainsA);
+				if constexpr (Rows == 2)
+					accumPairs[1] = sumChains(chainsB);
+			}
+			else if (tapCount >= blockTaps)
 			{
 				// The rows' chains by name, not by row index: see RowChains
 				RowChains chainsA;
@@ -390,7 +448,12 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					for (size_t row = 0; row < Rows; ++row)
 					{
 						const float* blockPixels = runPixels[row] + tap * floatsPerPixel;
-						addProduct(accumPairs[row], loadFloats8(blockPixels + 8), w1);
+						// A run known to be shorter than a block starts its sums here, with no zero to add to
+						if constexpr (FixedTaps != 0 && FixedTaps < blockTaps)
+							accumPairs[row] = mul(loadFloats8(blockPixels + 8), w1);
+						else
+							addProduct(accumPairs[row], loadFloats8(blockPixels + 8), w1);
+
 						addProduct(accumPairs[row], loadFloats8(blockPixels), w0);
 					}
 
@@ -465,7 +528,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		// Requires firstColumn's run to start at bufferBegin or later: the runs start in order, so no later one is tested for it.
 		// sourceFloats[row]: the row's floats from pixel bufferBegin on.
 		// The pixel range by value: a constant of this loop, where the members of SlidingSourceFloats are not.
-		template <size_t Channels, size_t Rows>
+		// FixedTaps: see runLength. Requires firstColumn's run within the range then.
+		template <size_t Channels, size_t FixedTaps, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE size_t filterBufferedRuns(
 			float* const (&sourceFloats)[Rows],
 			size_t bufferBegin,
@@ -480,6 +544,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			const WeightSpreader<floatsPerPixel> weightSpreader{};
 
 			assert(firstColumn <= destEnd);
+			assert(bufferEnd >= bufferBegin + FixedTaps);
+			// The last pixel a run of FixedTaps may start at
+			[[maybe_unused]] const size_t lastStart = bufferEnd - FixedTaps;
 			// No column index: the run and the temp pixels are stepped, where an index makes every column form them from bases kept across the loop.
 			// The rows' floats as if they began at source pixel 0: a run's pixels are one scaled add away.
 			// Before the allocation unless bufferBegin is 0, and never read below bufferBegin.
@@ -493,11 +560,16 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			{
 				const size_t firstPixel = run->firstSource;
 				assert(firstPixel >= bufferBegin);
-				if (firstPixel + run->weightCount > bufferEnd)
+				if constexpr (FixedTaps != 0)
+				{
+					if (firstPixel > lastStart)
+						break;
+				}
+				else if (firstPixel + run->weightCount > bufferEnd)
 					break;
 
 				const size_t floatOffset = firstPixel * floatsPerPixel;
-				filterRun<Channels, Rows>(originA + floatOffset, originB + floatOffset, { run->weights, run->weightCount }, weightSpreader, outA, outB);
+				filterRun<Channels, Rows, FixedTaps>(originA + floatOffset, originB + floatOffset, { run->weights, run->weightCount }, weightSpreader, outA, outB);
 				outA += Channels;
 				if constexpr (Rows == 2)
 					outB += Channels;
@@ -506,8 +578,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			return static_cast<size_t>(run - xRuns);
 		}
 
-		// Filters dest columns [destBegin, destEnd) into the temp rows' start
-		template <size_t Channels, size_t PixelStride, size_t Rows>
+		// Filters dest columns [destBegin, destEnd) into the temp rows' start. FixedTaps: see runLength.
+		template <size_t FixedTaps, size_t Channels, size_t PixelStride, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalRowGroup(
 			SlidingSourceFloats<Channels, PixelStride, Rows>& source,
 			float* const (&tempRows)[Rows],
@@ -521,86 +593,12 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			for (size_t dx = destBegin; dx < destEnd;) IMAGE_PROCESSING_FORCE_INLINE_CALLS
 			{
 				// The column's run is in the buffers after this, so each pass filters at least that column
-				source.prepareRun(xRuns[dx].firstSource, xRuns[dx].weightCount);
-				dx = filterBufferedRuns<Channels>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRuns);
+				source.prepareRun(xRuns[dx].firstSource, runLength<FixedTaps>(xRuns[dx].weightCount));
+				dx = filterBufferedRuns<Channels, FixedTaps>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRuns);
 			}
 		}
 
-		// The passes below require AxisWeights::everyRunHasFourTaps: a run is 4 source pixels and 4 weights, with no count to branch on.
-
-		// One row's run of four 4-float pixels at runPixels, times its weights spread per pixel pair, into one temp pixel
-		template <size_t Channels>
-		IMAGE_PROCESSING_SIMD_INLINE void filterFourTapRun(const float* runPixels, Floats8 w0, Floats8 w1, float* outPixel) noexcept
-		{
-			const Floats8 pixelPairSums = mulAdd(loadFloats8(runPixels), w0, mul(loadFloats8(runPixels + 8), w1));
-			storeTempPixel<Channels>(outPixel, sumHalves(pixelPairSums));
-		}
-
-		// Filters dest columns of 4-float pixels from firstColumn on, into the temp rows at their offset from destBegin, while
-		// their runs lie within source pixels [bufferBegin, bufferEnd). Returns the first column not filtered.
-		// sourceFloats, and the range by value: see filterBufferedRuns.
-		template <size_t Channels, size_t Rows>
-		IMAGE_PROCESSING_SIMD_INLINE size_t filterBufferedFourTapRuns(
-			float* const (&sourceFloats)[Rows], size_t bufferBegin, size_t bufferEnd,
-			float* const (&tempRows)[Rows], size_t destBegin, size_t firstColumn, size_t destEnd,
-			const TapRun* xRuns) noexcept
-		{
-			static_assert(sourceFloatsPerPixel(Channels) == 4);
-			if (bufferEnd < bufferBegin + 4)
-				return firstColumn;
-
-			assert(firstColumn <= destEnd);
-			const WeightSpreader<4> weightSpreader{};
-			const size_t lastOffset = bufferEnd - bufferBegin - 4;
-			// No column index: see filterBufferedRuns
-			float* outA = tempRows[0] + (firstColumn - destBegin) * Channels;
-			[[maybe_unused]] float* outB = tempRows[Rows - 1] + (firstColumn - destBegin) * Channels;
-			const TapRun* run = xRuns + firstColumn;
-			const TapRun* const runsEnd = xRuns + destEnd;
-			const float* const floatsA = sourceFloats[0];
-			[[maybe_unused]] const float* const floatsB = sourceFloats[Rows - 1];
-			for (; run != runsEnd; ++run) IMAGE_PROCESSING_FORCE_INLINE_CALLS
-			{
-				assert(run->weightCount == 4 && run->firstSource >= bufferBegin);
-				const size_t runOffset = run->firstSource - bufferBegin;
-				if (runOffset > lastOffset)
-					break;
-
-				// A whole WeightBlock for the run's 4 weights: the builder's slack keeps the load in bounds
-				const WeightBlock runWeights = loadWeightBlock(run->weights);
-				const Floats8 w0 = weightSpreader.template spread<0>(runWeights);
-				const Floats8 w1 = weightSpreader.template spread<1>(runWeights);
-				// The rows by name, not in a loop: GCC leaves that loop rolled at NEON, with the row pointers reloaded per row
-				filterFourTapRun<Channels>(floatsA + runOffset * 4, w0, w1, outA);
-				outA += Channels;
-				if constexpr (Rows == 2)
-				{
-					filterFourTapRun<Channels>(floatsB + runOffset * 4, w0, w1, outB);
-					outB += Channels;
-				}
-			}
-
-			return static_cast<size_t>(run - xRuns);
-		}
-
-		// filterHorizontalRowGroup for 4-float pixels
-		template <size_t Channels, size_t PixelStride, size_t Rows>
-		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalFourTapRuns(
-			SlidingSourceFloats<Channels, PixelStride, Rows>& source,
-			float* const (&tempRows)[Rows],
-			size_t destBegin,
-			size_t destEnd,
-			const AxisWeights& xWeights) noexcept
-		{
-			// Read once: see filterHorizontalRowGroup
-			const TapRun* const xRuns = xWeights.runs.data();
-			for (size_t dx = destBegin; dx < destEnd;) IMAGE_PROCESSING_FORCE_INLINE_CALLS
-			{
-				// The column's run is in the buffers after this, so each pass filters at least that column
-				source.prepareRun(xRuns[dx].firstSource, 4);
-				dx = filterBufferedFourTapRuns<Channels>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRuns);
-			}
-		}
+		// The passes below require an AxisWeights::paddedRunLength of 4: a run is 4 source pixels and 4 weights, with no count to branch on.
 
 		// One dest column of a group of 1-float pixels: each row's run at runFloatOffset times its weights, lane by lane
 		template <size_t Rows>
@@ -730,8 +728,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
-		// FourTapRuns: xWeights.everyRunHasFourTaps
-		template <bool FourTapRuns, size_t Channels, size_t PixelStride, size_t Rows>
+		// XRunLength: xWeights.paddedRunLength
+		template <size_t XRunLength, size_t Channels, size_t PixelStride, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontal(
 			SlidingSourceFloats<Channels, PixelStride, Rows>& source,
 			float* const (&tempRows)[Rows],
@@ -739,12 +737,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			size_t destEnd,
 			const AxisWeights& xWeights) noexcept
 		{
-			if constexpr (!FourTapRuns)
-				filterHorizontalRowGroup(source, tempRows, destBegin, destEnd, xWeights);
-			else if constexpr (Channels == 1)
+			if constexpr (XRunLength == 4 && Channels == 1)
 				filterHorizontalFourTapRunGroups(source, tempRows, destBegin, destEnd, xWeights);
 			else
-				filterHorizontalFourTapRuns(source, tempRows, destBegin, destEnd, xWeights);
+				filterHorizontalRowGroup<XRunLength>(source, tempRows, destBegin, destEnd, xWeights);
 		}
 
 		// A block's pixels, color capped at alpha, as bytes packed Channels per pixel
@@ -1034,9 +1030,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 	// The ring is also what lets the pair write two store streams safely: into cold full-size temp, the interleaved streams
 	// defeat the prefetch that hides each line's ownership read (measured ~1.2 cycles per temp byte, and software prefetch
 	// does not recover it) - the ring is rewritten every few rows and stays cache-owned.
-	// FourTapXRuns: xWeights.everyRunHasFourTaps. A template parameter, not a flag: held through the loops, the flag cost
-	// MSVC a stack reload per column in the general horizontal pass.
-	template <size_t Channels, size_t PixelStride, bool FourTapXRuns>
+	// XRunLength: xWeights.paddedRunLength. A template parameter: the horizontal pass has no run length to read or branch on,
+	// and held through the loops as a flag, the choice of pass cost MSVC a stack reload per column in the general one.
+	template <size_t Channels, size_t PixelStride, size_t XRunLength>
 	IMAGE_PROCESSING_FLATTEN IMAGE_PROCESSING_SIMD_TARGET void resizeRowsWith(
 		const ImageView<true>& source,
 		Rect srcRect,
@@ -1065,7 +1061,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		const auto listedTapRows = std::make_unique_for_overwrite<const float*[]>(listedTapCapacity);
 		const auto listedTapWeights = std::make_unique_for_overwrite<float[]>(listedTapCapacity);
 
-		assert(FourTapXRuns == (xWeights.everyRunHasFourTaps && Channels != 2));
+		assert(XRunLength == xWeights.paddedRunLength);
 		const size_t sourceFloatsCapacity = SourceRowPair::capacityFor(xWeights.longestRun());
 		const AlignedFloats sourceFloats = makeAlignedFloats(2 * sourceFloatsCapacity * floatsPerPixel);
 		float* const sourceFloatsA = sourceFloats.get();
@@ -1098,14 +1094,14 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					{
 						SourceRowPair sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, spanEnd, pixelStride, premultiplyAlpha };
 						float* const tempRows[2] = { ring.row(produced), ring.row(produced + 1) };
-						filterHorizontal<FourTapXRuns>(sourceRows, tempRows, stripBegin, stripEnd, xWeights);
+						filterHorizontal<XRunLength>(sourceRows, tempRows, stripBegin, stripEnd, xWeights);
 						produced += 2;
 					}
 					else
 					{
 						SourceRow sourceRow{ { sourcePixels(produced) }, { sourceFloatsA }, sourceFloatsCapacity, spanEnd, pixelStride, premultiplyAlpha };
 						float* const tempRows[1] = { ring.row(produced) };
-						filterHorizontal<FourTapXRuns>(sourceRow, tempRows, stripBegin, stripEnd, xWeights);
+						filterHorizontal<XRunLength>(sourceRow, tempRows, stripBegin, stripEnd, xWeights);
 						++produced;
 					}
 				}
@@ -1120,6 +1116,19 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		leaveKernel();
 	}
 
+	size_t longestPaddedXRun(size_t channels) noexcept
+	{
+		return longestKernelXRun(channels);
+	}
+
+	// The kernel for x runs padded to xRunLength taps. LengthOffsets: 0 to the longest such length less shortestPaddedXRun.
+	template <size_t Channels, size_t PixelStride, size_t... LengthOffsets>
+	[[nodiscard]] IMAGE_PROCESSING_SIMD_INLINE auto kernelForPaddedXRuns(size_t xRunLength, std::index_sequence<LengthOffsets...>) noexcept
+	{
+		static constexpr decltype(&resizeRowsWith<Channels, PixelStride, 0>) kernels[]{ &resizeRowsWith<Channels, PixelStride, shortestPaddedXRun + LengthOffsets>... };
+		return kernels[xRunLength - shortestPaddedXRun];
+	}
+
 	template <size_t Channels, size_t PixelStride>
 	IMAGE_PROCESSING_SIMD_TARGET void resizeRows(
 		const ImageView<true>& source,
@@ -1131,17 +1140,20 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		uint64_t destRowBegin,
 		uint64_t destRowEnd)
 	{
-		// 2-float pixels have no four-tap pass
-		if constexpr (Channels != 2)
+		[[maybe_unused]] const size_t xRunLength = xWeights.paddedRunLength;
+		if constexpr (longestKernelXRun(Channels) != 0)
 		{
-			if (xWeights.everyRunHasFourTaps)
+			if (xRunLength != 0)
 			{
-				resizeRowsWith<Channels, PixelStride, true>(source, srcRect, dest, xWeights, yWeights, stripWidth, destRowBegin, destRowEnd);
+				assert(xRunLength >= shortestPaddedXRun && xRunLength <= longestPaddedXRun(Channels));
+				const auto kernel = kernelForPaddedXRuns<Channels, PixelStride>(xRunLength, std::make_index_sequence<longestKernelXRun(Channels) - shortestPaddedXRun + 1>{});
+				kernel(source, srcRect, dest, xWeights, yWeights, stripWidth, destRowBegin, destRowEnd);
 				return;
 			}
 		}
 
-		resizeRowsWith<Channels, PixelStride, false>(source, srcRect, dest, xWeights, yWeights, stripWidth, destRowBegin, destRowEnd);
+		assert(xRunLength == 0);
+		resizeRowsWith<Channels, PixelStride, 0>(source, srcRect, dest, xWeights, yWeights, stripWidth, destRowBegin, destRowEnd);
 	}
 
 #define IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(Channels, PixelStride) \

@@ -110,8 +110,8 @@ in one buffer, as in the table above.
   them single lines differ by up to 14% between two builds of one source on the 8500T, and by nothing on the 12600K.
 - Every figure is the better of two runs, the compilers' builds alternated. A run on the 12600K's P-core now and then
   reads 10-25% slow in most lines; the E-core and the 8500T repeat within 3%.
-- Only the whole pass, section R, reads its runs from a run table. Sections T and F are arithmetic with each column's
-  position and weights computed in registers, and were measured before the pass got the table.
+- The whole pass, section R, and the four-tap runs read their runs from a run table. Section T is arithmetic with
+  each column's position and weights computed in registers, and was measured before the pass got the table.
 - Section N, the 128-bit levels with the count read, is as measured at a8dd837, before these changes to the kernel's
   form. Section S, the same levels over a run table, is of this source.
 
@@ -326,17 +326,31 @@ shuffles more per four pixel pairs. The whole pass's figures include it.
 
 ### Four-tap runs
 
-An upscale's arithmetic, 720p -> 4K, ms, MSVC / clang-cl.
+An upscale's arithmetic, 720p -> 4K: 3840 columns of exactly 4 taps, no count to read. Each column's first pixel and
+weights' address are read from a run table, with a test of the pixel against the buffer's end, as the kernel's pass at
+a fixed 4 taps has them; runs a period of 3 columns apart share their weights. ms, the better of three runs, with the
+change against the same compiler's kernel's form.
 
-| Form | 8500T | P-core | E-core |
-|---|---:|---:|---:|
-| `filterFourTapRun`'s: weights spread over a pixel pair, halves summed | 3.59 / 3.04 | 2.05 / 1.49 | 4.00 / 4.06 |
-| Interleaved, one chain, broadcast | 3.19 / 2.81 | 1.63 / 1.49 | 3.25 / 2.87 |
-| Interleaved, two chains, broadcast | 3.20 / 2.83 | 1.69 / 1.46 | 3.45 / 3.16 |
-| Interleaved, two chains, lanes | 3.58 / 2.83 | 1.75 / 1.46 | 3.73 / 3.16 |
+| Form | 8500T: MSVC | clang-cl | E-core: MSVC | clang-cl |
+|---|---:|---:|---:|---:|
+| The kernel's form: weights spread over a pixel pair, halves summed | 2.92 | 2.73 | 4.01 | 4.01 |
+| Interleaved, one chain, broadcast | 2.73 (-7%) | 2.82 (+3%) | 3.20 (-20%) | 3.19 (-20%) |
+| Interleaved, two chains, broadcast | 2.70 (-8%) | 2.82 (+3%) | 3.20 (-20%) | 3.21 (-20%) |
+| Interleaved, two chains, lanes | 2.83 (-3%) | 2.53 (-7%) | 3.22 (-20%) | 3.08 (-23%) |
+| Interleaved, one chain, lanes | 2.81 (-4%) | 2.50 (-8%) | 3.03 (-24%) | 2.91 (-27%) |
+| Interleaved, four chains, lanes: the fixed-count column at 4 taps | 2.89 (-1%) | 2.86 (+5%) | 3.62 (-10%) | 3.46 (-14%) |
 
-One chain with broadcast weights: -11% on the 8500T, -20% on the P-core and -19% on the E-core under MSVC. Under
-clang-cl the P-core's forms are level: its code for the kernel's form is 27% faster than MSVC's.
+- **Lane weights in one or two chains gain 3-8% on the 8500T and 20-27% on the E-core.** One chain and two are level.
+- **Four chains give up most of that:** four multiplies and three adds, where one chain is a multiply and three multiply-adds.
+- **Broadcast weights gain 7-8% on the 8500T under MSVC only.**
+- **The P-core's lines do not repeat across sessions.** Each form and the kernel's take one of two levels about 15-20%
+  apart, set for hours and sometimes per process, and their order changes with it: within 1.47-1.85 ms for all of
+  them. The whole pass's lines and the register-only ones held within 4% meanwhile. VTune finds no blocked store
+  forwarding, machine clears or mispredicts; these loops wait partly on L1 misses and on their output stores.
+- **Without the run table the ranking is the reverse.** With each column's pixels and weights at a constant step, and
+  a block of weights per column, broadcast gained 11% on the 8500T under MSVC, and the kernel's form took 3.59 ms:
+  its 32-byte weight loads went through 240 KB of weights where the kernel's shared ones stay in L1. The program
+  still times those lines.
 
 ### The 128-bit levels
 
@@ -388,7 +402,7 @@ with its change against the count read, and against the runs of two lengths: the
   - Lane weights are the source for the big cores: broadcast needs a column with no other loads, and the run table's
     are two. The E-core would prefer broadcast by up to 10%.
   - Under MSVC, with the count read, the pass gains 4-29% on the 8500T and the P-core up to 18 taps, most at short
-    runs, and 22-30% on the E-core from 9 taps up. Upscales' arithmetic gains 11-20%.
+    runs, and 22-30% on the E-core from 9 taps up. Upscales' arithmetic gains 3-8% on the 8500T.
   - Runs of 24 taps and more are the kernel's form's: it leads at 48 taps on both big cores. A resize would choose
     its form by the x axis's longest run, the span's layout being one per resize.
   - Every 32-byte load of it is aligned once the span is: a pixel pair is 32 bytes. The kernel's form is 16 bytes off
@@ -397,11 +411,13 @@ with its change against the count read, and against the runs of two lengths: the
   - The conversion that interleaves is the 8500T's cost: 16% of the conversion under MSVC.
   - One outline could serve every level: the span interleaved everywhere, a row pair as one register at AVX2 and two at
     128 bits.
-- **Untried in the kernel: a pass per x run length,** the count a template parameter as `FourTapXRuns` is, every x run
-  padded to the resize's longest.
-  - It is a gain of its own for the kernel's form: 8-21% up to 12 taps under MSVC on the big cores, the padding paid.
+- **A pass per x run length, every x run padded to the resize's longest,** is in the kernel for its own form
+  ([resize-performance.md](resize-performance.md), "The x runs padded to one length, and a kernel per length"): whole
+  rows 3-10% faster at AVX2 and NEON, 8-16% at SSE4.1.
+  - Here it gains the kernel's form 8-21% up to 12 taps under MSVC on the big cores, the padding paid.
   - On top of interleaved lanes it adds 4-10% on the 8500T up to 12 taps and 0-5% on the P-core, the padding paid.
-  - Every length is another copy of the kernel per pixel layout, and above about 20 taps there is nothing to gain.
+  - Every length is another copy of the kernel per pixel layout. Above about 20 taps there is nothing to gain at AVX2
+    under MSVC; NEON gains up to 32, the longest measured.
   - At the 128-bit levels the arithmetic with its run lookup gains 2-9% up to 12 taps at SSE4.1 on the N4100 and
     3-19% up to 24 at NEON on the Pi, the padding paid.
 
@@ -412,7 +428,8 @@ with its change against the count read, and against the runs of two lengths: the
 - The program's vertical variant packs 64 floats to 64 bytes, not RGB32's 3 floats to 4 bytes.
 - At SSE4.1 and NEON only the horizontal forms of sections N and S are measured, without the conversion, not the
   levels' ceilings: their peak is 8 floats per cycle on a core with two 128-bit units.
-- The interleaved form's sections have no straight alpha and no RGB24 source, and only the whole pass has a run table.
+- The interleaved form's sections have no straight alpha and no RGB24 source, and section T has no run table.
+- The four-tap runs are arithmetic and the run lookup: no conversion, no sliding span.
 - The whole pass's runs within one resize are all of one length, or of two in the padding table; the kernel's are
   shorter at the image's edges too.
 - GCC is not measured at this source. At a8dd837 its kernel's form was the fastest of the three compilers' on the 8500T

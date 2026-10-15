@@ -32,6 +32,8 @@ namespace ImageProcessing::Detail::Avx2
 
 	// The horizontal pass's accumulation chains per row, a Floats8 each
 	inline constexpr size_t horizontalChainCount = 4;
+	// The longest x run of 1- or 4-float pixels with a horizontal pass compiled for its length: a longer 4-float run's written-out blocks outgrow the registers under MSVC
+	inline constexpr size_t longestFixedXRun = 20;
 	// Blocks the vertical pass filters per step. 2: a block's taps go through only 3-4 registers here, and a pair shares each tap's weight and zero test
 	inline constexpr size_t verticalBlocksPerStep = 2;
 	// The vertical pass reads a dest row's nonzero taps from a list, not from the ring's rows in order: a third fewer instructions in the tap loop
