@@ -7,6 +7,7 @@
 #   --debug     - the debug configuration; the default is release
 #   --no-build  - runs what is already built
 # The remaining arguments go to the Catch2 runner: a test spec narrows either mode, options such as --benchmark-samples 50 override the defaults.
+# Tests: exclusions alone, e.g. ~[slow], get ~[.] added; see the test run below.
 # qmake comes from $QT_ROOT_DIR/bin when that is set, otherwise from PATH.
 
 set -eu
@@ -45,6 +46,18 @@ EXECUTABLE="$BINARIES/image-processing-tests"
 if [ -d "$EXECUTABLE.app" ]; then EXECUTABLE="$EXECUTABLE.app/Contents/MacOS/image-processing-tests"; fi
 
 if [ "$BENCHMARK" = 0 ]; then
+	# Catch2 runs its hidden cases, the benchmarks among them, for a spec of exclusions alone: ~[.] keeps them out.
+	# Not beside a bare argument, an inclusion or an option's value: Catch2 ANDs the arguments, so ~[.] would drop the hidden cases an inclusion names.
+	exclusion=0
+	bare=0
+	for argument in "$@"; do
+		case "$argument" in
+			'~'*) exclusion=1 ;;
+			-*) ;;
+			*) bare=1 ;;
+		esac
+	done
+	if [ "$exclusion" = 1 ] && [ "$bare" = 0 ]; then set -- "$@" '~[.]'; fi
 	exec "$EXECUTABLE" "$@"
 fi
 
