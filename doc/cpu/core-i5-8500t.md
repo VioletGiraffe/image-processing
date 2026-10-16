@@ -348,6 +348,35 @@ and the display rows from one session, the rest from another.
   no row lost: MSVC's 32x thumbnail 26.5 ms against clang-cl's 26.4.
 - On the 12600K the two compilers are within 3% on those rows, on both core types.
 
+## clang-cl 22 against MSVC at 3c33ab0
+
+12 alternating rounds pinned to core 2: minimum ms, and clang-cl's time against MSVC's as median of same-round ratios /
+minimum to minimum. Both built on the 12600K; MSVC's binary is 560ca96's: 3c33ab0's barrier is empty under MSVC.
+
+| Scenario | MSVC | clang-cl | clang-cl / MSVC |
+|---|---:|---:|---:|
+| 24 MP photo -> 1080p viewport | 46.13 | 44.38 | -3.9% / -3.8% |
+| 2.8 MP photo -> 1920x1280 viewport | 9.07 | 9.25 | +2.4% / +2.0% |
+| 4K image -> 1600x900 | 16.49 | 16.41 | -0.6% / -0.5% |
+| 4K image -> 720p | 14.44 | 14.50 | -0.1% / +0.4% |
+| 720p image -> 4K RGBA32 | 13.95 | 13.88 | -0.5% / -0.5% |
+| 720p image -> 4K RGB32 | 12.63 | 12.90 | +2.3% / +2.1% |
+| 1080p -> 240p thumbnail | 3.63 | 3.58 | -1.5% / -1.4% |
+| 1080p -> 120 px wide thumbnail (16x) | 2.61 | 2.49 | -4.3% / -4.7% |
+| 21 MP photo -> 175 px wide thumbnail (32x) | 25.86 | 25.06 | -3.1% / -3.1% |
+| 1080p image at native size | 1.80 | 1.82 | -1.2% / +0.9% |
+| 4K -> 1080p Grayscale8 | 9.07 | 9.15 | +0.9% / +0.9% |
+| 4K -> 1080p RGB24 | 18.37 | 18.37 | +0.5% / -0.0% |
+| 4K -> 1080p RGB32 | 18.16 | 18.20 | -0.1% / +0.2% |
+| 4K -> 1080p RGBA32 | 21.49 | 21.17 | -1.9% / -1.5% |
+| 720p -> 4K Grayscale8 | 4.50 | 4.60 | +1.1% / +2.3% |
+| 720p -> 4K RGB24 | 11.37 | 11.39 | +0.4% / +0.2% |
+| 4K -> 64x64 | 10.22 | 9.89 | -3.3% / -3.2% |
+
+- clang-cl faster by 3-5% on the 16x-60x rows and 24 MP -> 1080p; MSVC by about 2% on 2.8 MP -> 1920x1280 and the
+  RGB32 and Grayscale8 upscales; the rest within 2%.
+- The 12600K, both core types: its log's section of this name.
+
 ## The source buffers' range by value in the horizontal filter
 
 Median of same-round ratios over twenty alternating rounds (sixteen in WSL), against 93b1b79 with the same benchmark
