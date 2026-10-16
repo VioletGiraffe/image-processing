@@ -400,6 +400,14 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				return readLength;
 		}
 
+		// Hides the pointer's value from Clang and GCC: they rederive a stepped pointer as origin plus offset, and fold that into each load as an index
+		IMAGE_PROCESSING_SIMD_INLINE void keepInRegister([[maybe_unused]] const float*& pointer) noexcept
+		{
+#if defined(__clang__) || defined(__GNUC__)
+			__asm__("" : "+r"(pointer));
+#endif
+		}
+
 		// Blocks Block to BlockCount - 1 of a run, written out: MSVC keeps a loop over a known count as a loop
 		template <size_t Block, size_t BlockCount, size_t Rows, size_t FloatsPerPixel>
 		IMAGE_PROCESSING_SIMD_INLINE void filterBlocksFrom(
@@ -494,6 +502,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					const float* blockPixelsB = runPixels[Rows - 1] + blockTaps * floatsPerPixel;
 					for (tap = blockTaps; tap + blockTaps <= tapCount; tap += blockTaps)
 					{
+						keepInRegister(blockPixelsA);
+						if constexpr (Rows == 2)
+							keepInRegister(blockPixelsB);
 						filterBlock<false, Rows>(weightSpreader, blockWeights, blockPixelsA, blockPixelsB, chainsA, chainsB);
 						blockWeights += blockTaps;
 						blockPixelsA += blockTaps * floatsPerPixel;
@@ -632,14 +643,6 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 				filterInterleavedTapsFrom<Tap + 1, Taps, Chains>(pixelPairs, weights, fourWeights, chains);
 			}
-		}
-
-		// Hides the pointer's value from Clang and GCC: they rederive a stepped pointer as origin plus offset, and fold that into each load as an index
-		IMAGE_PROCESSING_SIMD_INLINE void keepInRegister([[maybe_unused]] const float*& pointer) noexcept
-		{
-#if defined(__clang__) || defined(__GNUC__)
-			__asm__("" : "+r"(pointer));
-#endif
 		}
 
 		// filterRun for an interleaved row pair of 4-float pixels, runs of FixedTaps taps: a pixel pair per Floats8, row A's pixel in its low half.

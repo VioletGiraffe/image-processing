@@ -980,8 +980,9 @@ AVX2 and NEON. At SSE4.1 it indexes the three by the counter.
   operand, from 20 and 9. A 12-tap column, one block, does not enter the loop: one instruction shorter.
 - At SSE4.1 a block is 4 taps, so a 12-tap run takes the loop twice. Stepped there, MSVC's column loop has 13
   instructions and 5 stack references more, and its plain loads gain nothing from the operand.
-- Clang steps the loop itself: its kernels are the same code at both levels. GCC at NEON did too, to an end pointer;
-  it follows the source's counter now, 33 instructions a block from 31 and about 8 fewer around the loop.
+- Clang and GCC fold the stepped pointers back into the counter, so the loop hides the pixel pointers from them every
+  block (`keepInRegister`). clang-cl's AVX2 row-pair loop then has no indexed operand: 19 instructions a block from 17
+  with all 8 multiply-adds indexed for 1-float pixels, 21 from 19 with 4 indexed for 4-float ones.
 - The counter stays: an end pointer computed ahead of the loop cost MSVC's short runs 4 instructions
   (experiment 27).
 - The second row at a constant distance from the first, as Clang's code has it: MSVC masks the distance every
@@ -1007,6 +1008,20 @@ Against 1e18e27; six rounds on the 8500T, four on the 12600K, five on the Pi:
 - Counters on the 8500T, the 32x thumbnail, MSVC: the block loop retires 1.25 slots an instruction indexed and 0.97
   stepped, 25 and 20 a block; 6.8 and 5.75 cycles a block, about a quarter of the slots plus half a cycle. The loop
   is bound by the 4 slots a cycle the core renames, and an indexed multiply-add takes two.
+
+The pixel pointers hidden from Clang and GCC, against 560ca96; 12 rounds on the 8500T, eight on the 12600K, five on the
+Pi. Under MSVC the barrier is empty.
+
+| Row | 8500T, clang-cl | P-core, clang-cl | E-core, clang-cl | Pi, GCC | Pi, Clang |
+|---|---:|---:|---:|---:|---:|
+| 1080p -> 240p thumbnail | +0.7% / +0.2% | -2.2% / -1.0% | +0.1% / -0.4% | -3.5% / -1.9% | -0.1% / -1.8% |
+| 1080p -> 120 px wide thumbnail (16x) | -2.1% / -3.0% | -6.3% / -7.2% | +0.1% / -0.2% | -4.5% / -4.5% | -0.2% / -1.0% |
+| 21 MP photo -> 175 px wide thumbnail (32x) | -2.4% / -2.6% | -4.7% / -4.2% | +0.3% / -0.3% | -0.3% / -0.4% | -1.1% / -1.3% |
+| 4K -> 64x64 (60x) | -2.5% / -2.3% | -4.9% / -4.7% | +0.1% / +0.1% | -0.6% / +0.1% | -6.9% / -3.3% |
+
+- The 8500T's other rows within 1% by the minimums; the medians of its upscales vary up to 4.3%.
+- The 12600K's other rows within 1.6% by the minimums, but for the P-core's 24 MP -> 1080p, -0.9% / -2.4%.
+- The Pi's other rows within 2%, but for Clang's 720p -> 4K Grayscale8, +0.9% / +4.9%.
 
 ### A run holds its weights' address, and the x runs start in order
 
@@ -1210,6 +1225,11 @@ With the y runs trimmed again and no room behind a run in the source buffers, ag
     - The stores cost the most: without them the 4K aliases fall by four fifths and port 5 does 3 uops fewer per pair.
     - The stepped pointer gains only without the stores: with the indexed loads the front end then leaves 14-18% of
       the issue slots empty.
+36. **The general column's row pointers stepped as the interleaved column's** (against 560ca96, not committed): two
+    pointers stepped by each run's start, hidden from Clang. The 1-float kernels' column loops lose their 2-6 indexed
+    multiply-adds and gain 6 instructions under MSVC, 4-6 under clang-cl. The unpadded kernels' tail steps stay indexed by
+    the tap counter, and their column loops gain up to 13 instructions. 8500T, 12 rounds: 4K -> 1080p Grayscale8 +12.6%
+    under MSVC, +8.6% under clang-cl; MSVC's 4K -> 720p and -> 1600x900 RGB32 +3% to +4%.
 
 ## Open leads
 

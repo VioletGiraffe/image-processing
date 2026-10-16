@@ -143,8 +143,8 @@ From both listings:
     slower at 48 taps on the 8500T.
   - Lane permutes of a loaded weight block become broadcasts from memory: no lane weights at all.
   - A pixel pointer and a weight pointer stepped together become one index scaled by 8: every multiply-add of the loop
-    is indexed. The kernel's form's block loop is not hidden, and Clang indexes it: 45 G/s at 48 taps on the P-core
-    against MSVC's 55.
+    is indexed. The program's copy of the kernel's block loop is not hidden, and Clang indexes it: 45 G/s at 48 taps on
+    the P-core against MSVC's 55. The kernel hides its pixel pointers.
 - **MSVC keeps a second counter for a bound written `w + n <= end`.** With the loop's end pointer computed before it,
   the bookkeeping is 3 instructions.
 - **MSVC does not unroll a loop over a known count; Clang does.** A fixed count must be written out, by template
