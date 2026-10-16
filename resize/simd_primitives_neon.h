@@ -26,11 +26,15 @@ namespace ImageProcessing::Detail::Neon
 	using Floats4 = float32x4_t;
 	// 8 consecutive filter weights
 	using WeightBlock = Floats8;
+	// 4 consecutive filter weights
+	using FourWeights = float32x4_t;
 	// The alpha bytes writeEightRgb32Pixels sets
 	using Rgb32PixelTails = uint8x16_t;
 
 	// The horizontal pass's accumulation chains per row, a Floats8 each
 	inline constexpr size_t horizontalChainCount = 4;
+	// Not interleaved: as at SSE4.1
+	inline constexpr bool interleavedRowPairs = false;
 	// The longest x run of 1- or 4-float pixels with a horizontal pass compiled for its length: the longest measured, still gaining on Cortex-A72
 	inline constexpr size_t longestFixedXRun = 32;
 	// Blocks the vertical pass filters per step: one block already has 6-8 accumulators, two registers per Floats8
@@ -88,6 +92,8 @@ namespace ImageProcessing::Detail::Neon
 
 	// The sum of the first 4 floats and the last 4
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 sumHalves(Floats8 values) noexcept { return vaddq_f32(values.low, values.high); }
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 lowHalf(Floats8 values) noexcept { return values.low; }
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 highHalf(Floats8 values) noexcept { return values.high; }
 
 	// Sums a Floats4's 4 / FloatsPerPixel pixels into its first FloatsPerPixel lanes
 	template <size_t FloatsPerPixel>
@@ -134,6 +140,17 @@ namespace ImageProcessing::Detail::Neon
 		}
 	};
 
+	IMAGE_PROCESSING_SIMD_INLINE FourWeights loadFourWeights(const float* weights) noexcept { return vld1q_f32(weights); }
+
+	// Weight Tap of 4 in all 8 floats
+	template <size_t Tap>
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 weightOfTap(FourWeights fourWeights) noexcept
+	{
+		static_assert(Tap < 4);
+		const float32x4_t weight = vdupq_laneq_f32(fourWeights, Tap);
+		return { weight, weight };
+	}
+
 	// 16 bytes as 16 floats: the first 8 go to first
 	IMAGE_PROCESSING_SIMD_INLINE void sixteenBytesAsFloats(uint8x16_t bytes, Floats8& first, Floats8& second) noexcept
 	{
@@ -158,6 +175,33 @@ namespace ImageProcessing::Detail::Neon
 			6, 7, 8, 0xFF,
 			9, 10, 11, 0xFF };
 		sixteenBytesAsFloats(vqtbl1q_u8(vld1q_u8(pixels), vld1q_u8(rgbToRgb0Indices)), pixels01, pixels23);
+	}
+
+	// Two rows' 4 pixels each as pixel pairs: row A's pixel i in pairI's low half, row B's in its high half
+	IMAGE_PROCESSING_SIMD_INLINE void pairPixels(Floats8 pixelsA01, Floats8 pixelsA23, Floats8 pixelsB01, Floats8 pixelsB23, Floats8& pair0, Floats8& pair1, Floats8& pair2, Floats8& pair3) noexcept
+	{
+		pair0 = { pixelsA01.low, pixelsB01.low };
+		pair1 = { pixelsA01.high, pixelsB01.high };
+		pair2 = { pixelsA23.low, pixelsB23.low };
+		pair3 = { pixelsA23.high, pixelsB23.high };
+	}
+
+	// 4 pixels of 4 bytes from each of two rows as floats, a pixel pair per Floats8: see pairPixels
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourPixelPairsAsFloats(const uint8_t* pixelsA, const uint8_t* pixelsB, Floats8& pair0, Floats8& pair1, Floats8& pair2, Floats8& pair3) noexcept
+	{
+		Floats8 pixelsA01, pixelsA23, pixelsB01, pixelsB23;
+		loadSixteenBytesAsFloats(pixelsA, pixelsA01, pixelsA23);
+		loadSixteenBytesAsFloats(pixelsB, pixelsB01, pixelsB23);
+		pairPixels(pixelsA01, pixelsA23, pixelsB01, pixelsB23, pair0, pair1, pair2, pair3);
+	}
+
+	// loadFourPixelPairsAsFloats of RGB pixels, the 4th float 0. Reads 16 bytes per row, 4 past the pixels.
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourRgbPixelPairsAsFloats(const uint8_t* pixelsA, const uint8_t* pixelsB, Floats8& pair0, Floats8& pair1, Floats8& pair2, Floats8& pair3) noexcept
+	{
+		Floats8 pixelsA01, pixelsA23, pixelsB01, pixelsB23;
+		loadFourRgbPixelsAsFloats(pixelsA, pixelsA01, pixelsA23);
+		loadFourRgbPixelsAsFloats(pixelsB, pixelsB01, pixelsB23);
+		pairPixels(pixelsA01, pixelsA23, pixelsB01, pixelsB23, pair0, pair1, pair2, pair3);
 	}
 
 	// Each pixel's alpha, the last of its FloatsPerPixel floats, in all of its lanes

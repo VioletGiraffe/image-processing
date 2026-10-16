@@ -50,6 +50,29 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			return PixelStride != 0 ? PixelStride : runtimePixelStride;
 		}
 
+		// One pixel's sourceFloatsPerPixel floats, premultiplied with the vector code's arithmetic: one row mixes both
+		template <size_t Channels, bool PremultiplyAlpha>
+		IMAGE_PROCESSING_SIMD_INLINE void convertPixelToFloats(const uint8_t* sourcePixel, float* pixelFloats) noexcept
+		{
+			if constexpr (PremultiplyAlpha)
+			{
+				const float alpha = static_cast<float>(sourcePixel[Channels - 1]);
+				const float premultiplier = alpha * (1.0f / 255.0f);
+				for (size_t channel = 0; channel + 1 < Channels; ++channel)
+					pixelFloats[channel] = static_cast<float>(sourcePixel[channel]) * premultiplier;
+
+				pixelFloats[Channels - 1] = alpha;
+			}
+			else
+			{
+				for (size_t channel = 0; channel < Channels; ++channel)
+					pixelFloats[channel] = static_cast<float>(sourcePixel[channel]);
+			}
+
+			if constexpr (sourceFloatsPerPixel(Channels) > Channels)
+				pixelFloats[Channels] = 0.0f;
+		}
+
 		template <size_t Channels, size_t PixelStride, bool PremultiplyAlpha>
 		IMAGE_PROCESSING_SIMD_INLINE void convertPixelsToFloats(const uint8_t* pixels, size_t runtimePixelStride, float* floats, size_t pixelCount) noexcept
 		{
@@ -91,40 +114,80 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 			}
 
-			// Premultiplies with the vector code's arithmetic: one row mixes both.
-			// Scalar: a few pixels after the block loop, and Clang's vector form keeps four constants in registers the filter's column loop needs.
+			// Scalar: a few pixels after the block loop, and Clang's vector form keeps four constants in registers the filter's column loop needs
+			IMAGE_PROCESSING_SCALAR_LOOP
+			for (; pixel < pixelCount; ++pixel)
+				convertPixelToFloats<Channels, PremultiplyAlpha>(pixels + pixel * pixelStride, floats + pixel * floatsPerPixel);
+		}
+
+		// A row pair's pixels as floats, interleaved: pixel i of row A at floats [8i, 8i + 4), of row B at [8i + 4, 8i + 8)
+		template <size_t Channels, size_t PixelStride, bool PremultiplyAlpha>
+		IMAGE_PROCESSING_SIMD_INLINE void convertPixelPairsToFloats(const uint8_t* pixelsA, const uint8_t* pixelsB, size_t runtimePixelStride, float* floats, size_t pixelCount) noexcept
+		{
+			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
+			static_assert(floatsPerPixel == 4);
+			const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
+			size_t pixel = 0;
+
+			// A 16-byte load per row: 4 pixels, or 4 RGB pixels and 4 bytes past them
+			if constexpr (PixelStride == floatsPerPixel || (Channels == 3 && PixelStride == 3))
+			{
+				constexpr size_t loadedPixels = (16 + PixelStride - 1) / PixelStride;
+				if (pixelCount >= loadedPixels)
+				{
+					const size_t blockCount = (pixelCount - loadedPixels) / 4 + 1;
+					// Stepped pointers and an end pointer: see convertPixelsToFloats
+					const uint8_t* blockBytesA = pixelsA;
+					const uint8_t* blockBytesB = pixelsB;
+					float* blockFloats = floats;
+					float* const blockFloatsEnd = floats + blockCount * 32;
+					for (; blockFloats != blockFloatsEnd; blockBytesA += 4 * PixelStride, blockBytesB += 4 * PixelStride, blockFloats += 32)
+					{
+						Floats8 pair0, pair1, pair2, pair3;
+						if constexpr (PixelStride == 3)
+							loadFourRgbPixelPairsAsFloats(blockBytesA, blockBytesB, pair0, pair1, pair2, pair3);
+						else
+							loadFourPixelPairsAsFloats(blockBytesA, blockBytesB, pair0, pair1, pair2, pair3);
+
+						if constexpr (PremultiplyAlpha)
+						{
+							pair0 = premultiplyPixels<floatsPerPixel>(pair0);
+							pair1 = premultiplyPixels<floatsPerPixel>(pair1);
+							pair2 = premultiplyPixels<floatsPerPixel>(pair2);
+							pair3 = premultiplyPixels<floatsPerPixel>(pair3);
+						}
+
+						storeFloats8(blockFloats, pair0);
+						storeFloats8(blockFloats + 8, pair1);
+						storeFloats8(blockFloats + 16, pair2);
+						storeFloats8(blockFloats + 24, pair3);
+					}
+
+					pixel = blockCount * 4;
+				}
+			}
+
+			// Scalar: see convertPixelsToFloats
 			IMAGE_PROCESSING_SCALAR_LOOP
 			for (; pixel < pixelCount; ++pixel)
 			{
-				const uint8_t* const sourcePixel = pixels + pixel * pixelStride;
-				float* const pixelFloats = floats + pixel * floatsPerPixel;
-				if constexpr (PremultiplyAlpha)
-				{
-					const float alpha = static_cast<float>(sourcePixel[Channels - 1]);
-					const float premultiplier = alpha * (1.0f / 255.0f);
-					for (size_t channel = 0; channel + 1 < Channels; ++channel)
-						pixelFloats[channel] = static_cast<float>(sourcePixel[channel]) * premultiplier;
-
-					pixelFloats[Channels - 1] = alpha;
-				}
-				else
-				{
-					for (size_t channel = 0; channel < Channels; ++channel)
-						pixelFloats[channel] = static_cast<float>(sourcePixel[channel]);
-				}
-
-				if constexpr (floatsPerPixel > Channels)
-					pixelFloats[Channels] = 0.0f;
+				convertPixelToFloats<Channels, PremultiplyAlpha>(pixelsA + pixel * pixelStride, floats + pixel * 8);
+				convertPixelToFloats<Channels, PremultiplyAlpha>(pixelsB + pixel * pixelStride, floats + pixel * 8 + floatsPerPixel);
 			}
 		}
 
 		// A row group's source pixels as floats, sourceFloatsPerPixel per pixel, over a span that slides along the rows as the x runs advance.
 		// Each pixel is converted once: overlapping runs would otherwise convert it once per run.
 		// The span stays a few KB so that it lives in L1: whole converted rows overflow the L2 that parallel bands share.
-		template <size_t Channels, size_t PixelStride, size_t Rows>
+		// Interleaved: a row pair's floats in floats[0] alone, as convertPixelPairsToFloats writes them.
+		template <size_t Channels, size_t PixelStride, size_t Rows, bool Interleaved = false>
 		struct SlidingSourceFloats
 		{
+			static_assert(!Interleaved || Rows == 2);
 			static constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
+			static constexpr size_t buffers = Interleaved ? 1 : Rows;
+			// From one pixel's floats to the next pixel's in a buffer
+			static constexpr size_t pixelFloats = Interleaved ? Rows * floatsPerPixel : floatsPerPixel;
 
 			// Pixels converted ahead of the current run, so that conversion runs in batches
 			static constexpr size_t conversionChunk = 128;
@@ -146,8 +209,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					// The span slides to the run's first pixel
 					if (first < converted)
 					{
-						for (size_t row = 0; row < Rows; ++row)
-							::memmove(floats[row], floats[row] + (first - base) * floatsPerPixel, (converted - first) * floatsPerPixel * sizeof(float));
+						for (size_t buffer = 0; buffer < buffers; ++buffer)
+							::memmove(floats[buffer], floats[buffer] + (first - base) * pixelFloats, (converted - first) * pixelFloats * sizeof(float));
 					}
 					else
 						converted = first; // Nothing converted is reusable: the run starts past the converted end
@@ -160,24 +223,37 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					// Two-argument min: the initializer-list overload is a library call under MSVC
 					const size_t convertedTarget = std::min(std::min(std::max(end, converted + conversionChunk), base + capacity), pixelEnd);
 					const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
-					for (size_t row = 0; row < Rows; ++row)
+					if constexpr (Interleaved)
 					{
-						const uint8_t* rowPixels = pixels[row] + converted * pixelStride;
-						float* rowFloats = floats[row] + (converted - base) * floatsPerPixel;
+						const uint8_t* pixelsA = pixels[0] + converted * pixelStride;
+						const uint8_t* pixelsB = pixels[1] + converted * pixelStride;
+						float* pairFloats = floats[0] + (converted - base) * pixelFloats;
 						if (hasAlphaChannel(Channels) && premultiplyAlpha)
-							convertPixelsToFloats<Channels, PixelStride, hasAlphaChannel(Channels)>(rowPixels, pixelStride, rowFloats, convertedTarget - converted);
+							convertPixelPairsToFloats<Channels, PixelStride, hasAlphaChannel(Channels)>(pixelsA, pixelsB, pixelStride, pairFloats, convertedTarget - converted);
 						else
-							convertPixelsToFloats<Channels, PixelStride, false>(rowPixels, pixelStride, rowFloats, convertedTarget - converted);
+							convertPixelPairsToFloats<Channels, PixelStride, false>(pixelsA, pixelsB, pixelStride, pairFloats, convertedTarget - converted);
+					}
+					else
+					{
+						for (size_t row = 0; row < Rows; ++row)
+						{
+							const uint8_t* rowPixels = pixels[row] + converted * pixelStride;
+							float* rowFloats = floats[row] + (converted - base) * floatsPerPixel;
+							if (hasAlphaChannel(Channels) && premultiplyAlpha)
+								convertPixelsToFloats<Channels, PixelStride, hasAlphaChannel(Channels)>(rowPixels, pixelStride, rowFloats, convertedTarget - converted);
+							else
+								convertPixelsToFloats<Channels, PixelStride, false>(rowPixels, pixelStride, rowFloats, convertedTarget - converted);
+						}
 					}
 
 					converted = convertedTarget;
 				}
 
-				return (first - base) * floatsPerPixel;
+				return (first - base) * pixelFloats;
 			}
 
 			const uint8_t* const pixels[Rows];
-			float* const floats[Rows];
+			float* const floats[buffers];
 			const size_t capacity; // In pixels
 			const size_t pixelEnd; // Conversion never reaches this pixel
 			const size_t runtimePixelStride;
@@ -300,12 +376,16 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
+		template <size_t Chains = horizontalChainCount>
 		IMAGE_PROCESSING_SIMD_INLINE Floats8 sumChains(const RowChains& chains) noexcept
 		{
-			if constexpr (horizontalChainCount == 4)
+			static_assert(Chains == 1 || Chains == 2 || Chains == 4);
+			if constexpr (Chains == 4)
 				return add(add(chains.chain0, chains.chain1), add(chains.chain2, chains.chain3));
-			else
+			else if constexpr (Chains == 2)
 				return add(chains.chain0, chains.chain1);
+			else
+				return chains.chain0;
 		}
 
 		// A run's length: FixedTaps where the x runs are padded to that many taps, readLength where FixedTaps is 0
@@ -523,15 +603,60 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
+		// Chains of an interleaved column. One at 4 taps: 4 chains would take 4 multiplies and 3 adds for its 1 multiply and 3 multiply-adds.
+		[[nodiscard]] constexpr size_t interleavedChainCount(size_t taps) noexcept
+		{
+			return taps == 4 ? 1 : 4;
+		}
+
+		// Taps Tap to Taps - 1 of an interleaved column, written out: MSVC keeps a loop over a known count as a loop.
+		// Tap i goes to chain i % Chains; the first Chains taps start the chains. fourWeights: the weights of taps Tap / 4 * 4 on.
+		template <size_t Tap, size_t Taps, size_t Chains>
+		IMAGE_PROCESSING_SIMD_INLINE void filterInterleavedTapsFrom(const float* pixelPairs, const float* weights, FourWeights fourWeights, RowChains& chains) noexcept
+		{
+			if constexpr (Tap < Taps)
+			{
+				if constexpr (Tap % 4 == 0 && Tap != 0)
+					fourWeights = loadFourWeights(weights + Tap);
+
+				const Floats8 weight = weightOfTap<Tap % 4>(fourWeights);
+				const Floats8 pixelPair = loadFloats8(pixelPairs + Tap * 8);
+				constexpr size_t chain = Tap % Chains;
+				Floats8& chainSum = chain == 0 ? chains.chain0 : chain == 1 ? chains.chain1 : chain == 2 ? chains.chain2 : chains.chain3;
+				if constexpr (Tap < Chains)
+					chainSum = mul(pixelPair, weight);
+				else
+					addProduct(chainSum, pixelPair, weight);
+
+				filterInterleavedTapsFrom<Tap + 1, Taps, Chains>(pixelPairs, weights, fourWeights, chains);
+			}
+		}
+
+		// filterRun for an interleaved row pair of 4-float pixels, runs of FixedTaps taps: a pixel pair per Floats8, row A's pixel in its low half.
+		// A tap is one multiply-add of the pair by the tap's weight; the low half of the sum is row A's temp pixel, the high half row B's.
+		template <size_t Channels, size_t FixedTaps>
+		IMAGE_PROCESSING_SIMD_INLINE void filterInterleavedRun(const float* pixelPairs, std::span<const float> weights, float* outA, float* outB) noexcept
+		{
+			static_assert(sourceFloatsPerPixel(Channels) == 4 && FixedTaps != 0);
+			assert(weights.size() == FixedTaps);
+
+			constexpr size_t chainCount = interleavedChainCount(FixedTaps);
+			RowChains chains;
+			filterInterleavedTapsFrom<0, FixedTaps, chainCount>(pixelPairs, weights.data(), loadFourWeights(weights.data()), chains);
+			const Floats8 sum = sumChains<chainCount>(chains);
+			storeTempPixel<Channels>(outA, lowHalf(sum));
+			storeTempPixel<Channels>(outB, highHalf(sum));
+		}
+
 		// Filters dest columns from firstColumn on, into the temp rows at their offset from destBegin, while their runs end within
 		// source pixels [bufferBegin, bufferEnd). Returns the first column not filtered.
 		// Requires firstColumn's run to start at bufferBegin or later: the runs start in order, so no later one is tested for it.
-		// sourceFloats[row]: the row's floats from pixel bufferBegin on.
+		// sourceFloats: SlidingSourceFloats' buffers, from pixel bufferBegin on. Interleaved: see SlidingSourceFloats.
 		// The pixel range by value: a constant of this loop, where the members of SlidingSourceFloats are not.
 		// FixedTaps: see runLength. Requires firstColumn's run within the range then.
-		template <size_t Channels, size_t FixedTaps, size_t Rows>
+		template <size_t Channels, size_t FixedTaps, bool Interleaved, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE size_t filterBufferedRuns(
-			float* const (&sourceFloats)[Rows],
+			float* const (&sourceFloats)[Interleaved ? 1 : Rows],
 			size_t bufferBegin,
 			size_t bufferEnd,
 			float* const (&tempRows)[Rows],
@@ -541,7 +666,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			const TapRun* xRuns) noexcept
 		{
 			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
-			const WeightSpreader<floatsPerPixel> weightSpreader{};
+			constexpr size_t pixelFloats = Interleaved ? Rows * floatsPerPixel : floatsPerPixel;
+			[[maybe_unused]] const WeightSpreader<floatsPerPixel> weightSpreader{};
 
 			assert(firstColumn <= destEnd);
 			assert(bufferEnd >= bufferBegin + FixedTaps);
@@ -550,8 +676,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			// No column index: the run and the temp pixels are stepped, where an index makes every column form them from bases kept across the loop.
 			// The rows' floats as if they began at source pixel 0: a run's pixels are one scaled add away.
 			// Before the allocation unless bufferBegin is 0, and never read below bufferBegin.
-			const float* const originA = sourceFloats[0] - bufferBegin * floatsPerPixel;
-			const float* const originB = sourceFloats[Rows - 1] - bufferBegin * floatsPerPixel;
+			// Interleaved: originA alone.
+			const float* const originA = sourceFloats[0] - bufferBegin * pixelFloats;
+			[[maybe_unused]] const float* const originB = sourceFloats[Interleaved ? 0 : Rows - 1] - bufferBegin * pixelFloats;
 			float* outA = tempRows[0] + (firstColumn - destBegin) * Channels;
 			float* outB = tempRows[Rows - 1] + (firstColumn - destBegin) * Channels;
 			const TapRun* run = xRuns + firstColumn;
@@ -568,8 +695,11 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				else if (firstPixel + run->weightCount > bufferEnd)
 					break;
 
-				const size_t floatOffset = firstPixel * floatsPerPixel;
-				filterRun<Channels, Rows, FixedTaps>(originA + floatOffset, originB + floatOffset, { run->weights, run->weightCount }, weightSpreader, outA, outB);
+				const size_t floatOffset = firstPixel * pixelFloats;
+				if constexpr (Interleaved)
+					filterInterleavedRun<Channels, FixedTaps>(originA + floatOffset, { run->weights, run->weightCount }, outA, outB);
+				else
+					filterRun<Channels, Rows, FixedTaps>(originA + floatOffset, originB + floatOffset, { run->weights, run->weightCount }, weightSpreader, outA, outB);
 				outA += Channels;
 				if constexpr (Rows == 2)
 					outB += Channels;
@@ -579,9 +709,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		}
 
 		// Filters dest columns [destBegin, destEnd) into the temp rows' start. FixedTaps: see runLength.
-		template <size_t FixedTaps, size_t Channels, size_t PixelStride, size_t Rows>
+		template <size_t FixedTaps, size_t Channels, size_t PixelStride, size_t Rows, bool Interleaved>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalRowGroup(
-			SlidingSourceFloats<Channels, PixelStride, Rows>& source,
+			SlidingSourceFloats<Channels, PixelStride, Rows, Interleaved>& source,
 			float* const (&tempRows)[Rows],
 			size_t destBegin,
 			size_t destEnd,
@@ -594,7 +724,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			{
 				// The column's run is in the buffers after this, so each pass filters at least that column
 				source.prepareRun(xRuns[dx].firstSource, runLength<FixedTaps>(xRuns[dx].weightCount));
-				dx = filterBufferedRuns<Channels, FixedTaps>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRuns);
+				dx = filterBufferedRuns<Channels, FixedTaps, Interleaved>(source.floats, source.base, source.converted, tempRows, destBegin, dx, destEnd, xRuns);
 			}
 		}
 
@@ -729,9 +859,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		}
 
 		// XRunLength: xWeights.paddedRunLength
-		template <size_t XRunLength, size_t Channels, size_t PixelStride, size_t Rows>
+		template <size_t XRunLength, size_t Channels, size_t PixelStride, size_t Rows, bool Interleaved>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontal(
-			SlidingSourceFloats<Channels, PixelStride, Rows>& source,
+			SlidingSourceFloats<Channels, PixelStride, Rows, Interleaved>& source,
 			float* const (&tempRows)[Rows],
 			size_t destBegin,
 			size_t destEnd,
@@ -1047,9 +1177,11 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		assert(destRowBegin < destRowEnd);
 		assert(PixelStride == 0 || PixelStride == source.pixelStrideBytes);
 
-		using SourceRowPair = SlidingSourceFloats<Channels, PixelStride, 2>;
+		constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
+		// Padded runs only: interleaved, runs read per run lose the big cores up to 36% to filterRun's form
+		constexpr bool interleavedPair = interleavedRowPairs && floatsPerPixel == 4 && XRunLength != 0;
+		using SourceRowPair = SlidingSourceFloats<Channels, PixelStride, 2, interleavedPair>;
 		using SourceRow = SlidingSourceFloats<Channels, PixelStride, 1>;
-		constexpr size_t floatsPerPixel = SourceRowPair::floatsPerPixel;
 
 		const size_t pixelStride = effectivePixelStride<PixelStride>(source.pixelStrideBytes);
 		const size_t destWidth = static_cast<size_t>(dest.width);
@@ -1065,7 +1197,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		const size_t sourceFloatsCapacity = SourceRowPair::capacityFor(xWeights.longestRun());
 		const AlignedFloats sourceFloats = makeAlignedFloats(2 * sourceFloatsCapacity * floatsPerPixel);
 		float* const sourceFloatsA = sourceFloats.get();
-		float* const sourceFloatsB = sourceFloatsA + sourceFloatsCapacity * floatsPerPixel;
+		[[maybe_unused]] float* const sourceFloatsB = sourceFloatsA + sourceFloatsCapacity * floatsPerPixel;
 		const uint64_t firstPixelOffset = srcRect.left * pixelStride;
 		const auto sourcePixels = [&source, srcRect, firstPixelOffset](uint64_t srcRow) noexcept
 		{
@@ -1090,7 +1222,16 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 				while (produced < windowEnd)
 				{
-					if (produced + 2 <= srcRect.h)
+					if constexpr (interleavedPair)
+					{
+						// The odd last row, paired with itself: there is no single row in this layout
+						const uint64_t secondRow = produced + 2 <= srcRect.h ? produced + 1 : produced;
+						SourceRowPair sourceRows{ { sourcePixels(produced), sourcePixels(secondRow) }, { sourceFloatsA }, sourceFloatsCapacity, spanEnd, pixelStride, premultiplyAlpha };
+						float* const tempRows[2] = { ring.row(produced), ring.row(secondRow) };
+						filterHorizontal<XRunLength>(sourceRows, tempRows, stripBegin, stripEnd, xWeights);
+						produced = secondRow + 1;
+					}
+					else if (produced + 2 <= srcRect.h)
 					{
 						SourceRowPair sourceRows{ { sourcePixels(produced), sourcePixels(produced + 1) }, { sourceFloatsA, sourceFloatsB }, sourceFloatsCapacity, spanEnd, pixelStride, premultiplyAlpha };
 						float* const tempRows[2] = { ring.row(produced), ring.row(produced + 1) };

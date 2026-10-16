@@ -398,19 +398,12 @@ with its change against the count read, and against the runs of two lengths: the
   are idle three quarters of the time.
 - The room is in the work per multiply-add. Stepped pointers in the passes and the block loop took 3-7% of it (the
   main doc's sections on them); the horizontal form itself is the larger term.
-- **Untried in the kernel: the interleaved form** for the 4-float layouts' row pairs.
-  - Lane weights are the source for the big cores: broadcast needs a column with no other loads, and the run table's
-    are two. The E-core would prefer broadcast by up to 10%.
-  - Under MSVC, with the count read, the pass gains 4-29% on the 8500T and the P-core up to 18 taps, most at short
-    runs, and 22-30% on the E-core from 9 taps up. Upscales' arithmetic gains 3-8% on the 8500T.
-  - Runs of 24 taps and more are the kernel's form's: it leads at 48 taps on both big cores. A resize would choose
-    its form by the x axis's longest run, the span's layout being one per resize.
-  - Every 32-byte load of it is aligned once the span is: a pixel pair is 32 bytes. The kernel's form is 16 bytes off
-    at every odd pixel offset.
+- **The interleaved form is in the kernel** for the 4-float layouts' row pairs at padded lengths, with lane weights
+  ([resize-performance.md](resize-performance.md), "Row pairs interleaved at AVX2, at padded lengths"). Whole rows: the
+  8500T up to 7% faster, the P-core up to 12%, the E-core 5-23%: less than this program's figures on the big cores.
+  - On runs read per run it lost to the kernel's form on both big cores, up to 36% at 96-360 taps (that doc's
+    experiment 30), as this program found from 24 taps up.
   - The 1- and 2-float layouts keep the kernel's form: a pixel pair would fill 2 or 4 of a register's 8 floats.
-  - The conversion that interleaves is the 8500T's cost: 16% of the conversion under MSVC.
-  - One outline could serve every level: the span interleaved everywhere, a row pair as one register at AVX2 and two at
-    128 bits.
 - **A pass per x run length, every x run padded to the resize's longest,** is in the kernel for its own form
   ([resize-performance.md](resize-performance.md), "The x runs padded to one length, and a kernel per length"): whole
   rows 3-10% faster at AVX2 and NEON, 8-16% at SSE4.1.
