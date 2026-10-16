@@ -559,6 +559,39 @@ E-core 6 rounds. The rows the change does not reach (Grayscale8, native size, ru
 - In the P-core's 7-round clang-cl series the padded rows read -8% to +1% minimum to minimum; its medians spread too
   wide to read.
 
+### 3-channel temp pixels stored whole, and the interleaved column's pixel pairs stepped
+
+- A 3-channel temp pixel is one 16-byte store, its fourth float the next pixel's first: the element stores and the
+  extract cost the 8500T's column loop more than any other part (experiment 35).
+- The temp rows end in 16 floats of slack, a cache line: with 1, the strides lose their 64-byte alignment and the
+  vertical pass's two loops took 48% more cycles on the 8500T, the column loop's gain undone.
+- The interleaved column steps its pixel-pair pointer from run to run (`keepInRegister` hides it from Clang and GCC):
+  from an origin, each compiler folds the offset into every load as an index, and Skylake splits an indexed
+  multiply-add in two uops. Alone it gained nothing (experiment 34); with the whole stores the 8500T's column loop took
+  16.4 cycles per column pair against 17.6 without it, 19.0 before both.
+
+Against 594a17b, the median of same-round ratios: the 8500T 12 rounds, the 12600K's cores 7 rounds each at once, the
+Pi 6 rounds of GCC and 12 of Clang. Minimum to minimum agrees within about 1 point on the rows below unless noted.
+
+| Row | 8500T, MSVC | 8500T, clang-cl | P-core, MSVC | P-core, clang-cl | E-core, MSVC | E-core, clang-cl | Pi, GCC | Pi, Clang |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2.8 MP -> 1920x1280 | -6.7% | -9.4% | -5.6% | -8.4% | -2.5% | -2.0% | -9.1% | -1.9% |
+| 4K -> 1080p RGB32 | -6.5% | -5.0% | -3.1% | -7.0% | -2.0% | -2.1% | -8.9% | -3.1% |
+| 4K -> 1080p RGB24 | -6.3% | -5.1% | -3.4% | -7.8% | -2.2% | -2.5% | -8.0% | -2.5% |
+| 4K -> 1080p RGBA32 | -2.1% | -0.6% | +1.0% | -1.6% | +0.7% | +1.4% | -0.5% | +0.3% |
+| 4K -> 1600x900 | -10.6% | -7.9% | -3.7% | -6.5% | -4.1% | -2.7% | -6.5% | -0.6% |
+| 4K -> 720p | -11.0% | -8.6% | -4.8% | -6.3% | -4.6% | -2.7% | -7.6% | -0.4% |
+| 720p -> 4K RGB32 | -5.8% | -12.1% | +0.2% | -0.4% | -0.1% | +0.9% | -5.6% | +2.5% |
+| 720p -> 4K RGBA32 | -0.1% | -3.9% | -0.3% | +0.7% | +1.6% | +1.3% | +0.5% | +1.6% |
+| 720p -> 4K RGB24 | -3.2% | -1.1% | -1.0% | +3.2% | -0.2% | +0.5% | -3.2% | +1.4% |
+
+- RGBA32 has only the stepped pointer. The E-core loses 0.7-1.6% on it, every round of both compilers.
+- At NEON only the whole stores apply. Clang's RGBA32 rows move as much as its RGB32 upscale, without a change to
+  their code.
+- 8500T clang-cl 720p -> 4K: RGB32 -9.9% and RGB24 -6.2% minimum to minimum. P-core clang-cl 720p -> 4K RGB24: +2.2%.
+- The N4100 at SSE4.1, the pixel-layout rows, MSVC 8 rounds / clang-cl 4: 4K -> 1080p RGB32 -5.8% / -1.9%, RGB24
+  -5.7% / -6.4% (-2.6% minimum to minimum), 720p -> 4K RGB24 -5.6% to -7.7% / -2.4%; RGBA32 and Grayscale8 within 1.5%.
+
 ### Two chains at SSE4.1, and a first block that assigns
 
 A `Floats8` is two XMM registers at SSE4.1, so a row pair's four chains were 16 accumulators, x64's whole register file:
@@ -1157,6 +1190,26 @@ With the y runs trimmed again and no room behind a run in the source buffers, ag
 32. **Every other weight broadcast in the padded columns too** (not committed): against the shuffles alone, the E-core
     4 points more gain on 4K -> 1080p, the P-core 3 points less, the 8500T level.
 33. **Two chains at 5-8 taps of the interleaved column** (not committed): no change on the 7-tap row on either machine.
+34. **The interleaved column's pixel pairs by a stepped pointer** (not committed): MSVC then addresses every load by one
+    register and a constant, no index. 8500T, 12 rounds: 4K -> 1080p RGB32 -0.9% / -1.2%; the
+    others from -6.6% / -2.0% to +6.8% / +4.2%, as wide as Grayscale8's +7.9% / +1.2%, a layout the change leaves alone.
+    The column loop issues 51.5 uops per column pair against 59, and takes the same 18.3 cycles: the front end leaves
+    2% of the issue slots empty against 15%, and the back end is full 23.5% of cycles against 3%.
+35. **Diagnostics of the interleaved column, 4K -> 1080p RGB32** (not committed, wrong pixels): one weights pointer for
+    every column, and the sums kept in a register in place of the temp-pixel stores, each with and without
+    experiment 34's stepped pointer. 8500T, 20 rounds; cycles per column pair from the hardware events:
+
+    | Build | Whole resize | Cycles | Uops issued | Loads blocked by a 4K alias |
+    |---|---:|---:|---:|---:|
+    | Indexed loads | +0.9% / +0.7% | 18.6 | 61.2 | 0.97 |
+    | Stepped pointer, the reference | 19.45 ms | 18.4 | 52.4 | 0.95 |
+    | One weights pointer, indexed / stepped | -1.8% / -3.0% | 18.1 / 17.5 | 60.1 / 51.5 | 0.98 |
+    | No stores, indexed / stepped | -5.5% / -10.7% | 16.5 / 14.8 | 52.7 / 44.4 | 0.19 |
+    | Both, indexed / stepped | -9.3% / -14.6% | 15.4 / 13.5 | 50.7 / 42.9 | 0.17 |
+
+    - The stores cost the most: without them the 4K aliases fall by four fifths and port 5 does 3 uops fewer per pair.
+    - The stepped pointer gains only without the stores: with the indexed loads the front end then leaves 14-18% of
+      the issue slots empty.
 
 ## Open leads
 

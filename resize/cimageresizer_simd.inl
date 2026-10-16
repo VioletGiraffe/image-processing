@@ -262,17 +262,19 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			size_t converted = 0; // Pixels [base, converted) are in the buffers
 		};
 
+		// Floats after each temp row: storeTempPixel writes 4 floats for 3 channels.
+		// A cache line of them: a stride off its 64-byte alignment splits the vertical pass's loads.
+		[[nodiscard]] constexpr size_t tempRowSlack(size_t channels) noexcept
+		{
+			return channels == 3 ? 16 : 0;
+		}
+
+		// One 4-float store. 3 channels: the fourth float is the next pixel's first, so a row's pixels must be written in order; see tempRowSlack.
 		template <size_t Channels>
 		IMAGE_PROCESSING_SIMD_INLINE void storeTempPixel(float* outPixel, Floats4 accum) noexcept
 		{
-			if constexpr (Channels == 4)
-				storeFloats4(outPixel, accum);
-			else
-			{
-				alignas(16) float channelValues[4];
-				storeFloats4(channelValues, accum);
-				::memcpy(outPixel, channelValues, Channels * sizeof(float));
-			}
+			static_assert(sourceFloatsPerPixel(Channels) == 4);
+			storeFloats4(outPixel, accum);
 		}
 
 		// Adds one tap of a 1- or 2-float pixel to its channel sums. Not a lambda: one would not carry the SIMD level's target attribute.
@@ -632,6 +634,14 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
+		// Hides the pointer's value from Clang and GCC: they rederive a stepped pointer as origin plus offset, and fold that into each load as an index
+		IMAGE_PROCESSING_SIMD_INLINE void keepInRegister([[maybe_unused]] const float*& pointer) noexcept
+		{
+#if defined(__clang__) || defined(__GNUC__)
+			__asm__("" : "+r"(pointer));
+#endif
+		}
+
 		// filterRun for an interleaved row pair of 4-float pixels, runs of FixedTaps taps: a pixel pair per Floats8, row A's pixel in its low half.
 		// A tap is one multiply-add of the pair by the tap's weight; the low half of the sum is row A's temp pixel, the high half row B's.
 		template <size_t Channels, size_t FixedTaps>
@@ -674,11 +684,14 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			// The last pixel a run of FixedTaps may start at
 			[[maybe_unused]] const size_t lastStart = bufferEnd - FixedTaps;
 			// No column index: the run and the temp pixels are stepped, where an index makes every column form them from bases kept across the loop.
-			// The rows' floats as if they began at source pixel 0: a run's pixels are one scaled add away.
+			// The rows' floats as if they began at source pixel 0, for filterRun: a run's pixels are one scaled add away.
 			// Before the allocation unless bufferBegin is 0, and never read below bufferBegin.
-			// Interleaved: originA alone.
-			const float* const originA = sourceFloats[0] - bufferBegin * pixelFloats;
+			[[maybe_unused]] const float* const originA = sourceFloats[0] - bufferBegin * pixelFloats;
 			[[maybe_unused]] const float* const originB = sourceFloats[Interleaved ? 0 : Rows - 1] - bufferBegin * pixelFloats;
+			// Interleaved: the run's pixel pairs stepped from the previous run's, so each load addresses one register and a constant.
+			// From an origin, the compilers fold the offset into each load as an index, and Skylake splits an indexed multiply-add in two uops.
+			[[maybe_unused]] const float* runPixelPairs = sourceFloats[0];
+			[[maybe_unused]] size_t previousFirstPixel = bufferBegin;
 			float* outA = tempRows[0] + (firstColumn - destBegin) * Channels;
 			float* outB = tempRows[Rows - 1] + (firstColumn - destBegin) * Channels;
 			const TapRun* run = xRuns + firstColumn;
@@ -695,11 +708,18 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				else if (firstPixel + run->weightCount > bufferEnd)
 					break;
 
-				const size_t floatOffset = firstPixel * pixelFloats;
 				if constexpr (Interleaved)
-					filterInterleavedRun<Channels, FixedTaps>(originA + floatOffset, { run->weights, run->weightCount }, outA, outB);
+				{
+					runPixelPairs += (firstPixel - previousFirstPixel) * pixelFloats;
+					keepInRegister(runPixelPairs);
+					previousFirstPixel = firstPixel;
+					filterInterleavedRun<Channels, FixedTaps>(runPixelPairs, { run->weights, run->weightCount }, outA, outB);
+				}
 				else
+				{
+					const size_t floatOffset = firstPixel * pixelFloats;
 					filterRun<Channels, Rows, FixedTaps>(originA + floatOffset, originB + floatOffset, { run->weights, run->weightCount }, weightSpreader, outA, outB);
+				}
 				outA += Channels;
 				if constexpr (Rows == 2)
 					outB += Channels;
@@ -1185,7 +1205,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 		const size_t pixelStride = effectivePixelStride<PixelStride>(source.pixelStrideBytes);
 		const size_t destWidth = static_cast<size_t>(dest.width);
-		const size_t tempRowStride = stripWidth * Channels;
+		const size_t tempRowStride = stripWidth * Channels + tempRowSlack(Channels);
 
 		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2, tempRingStartOffset };
 		// ListedTaps' arrays, for the longest y run

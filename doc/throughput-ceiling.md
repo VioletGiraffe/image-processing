@@ -1,47 +1,60 @@
 # The kernels against the hardware's multiply-add ceiling
 
 How far the AVX2 kernels run from the CPU's peak multiply-add rate, what the distance consists of, and which
-horizontal structure each core prefers. Measured at b1395f9 on 4K -> 1080p RGB32, the interleaved form's sections
+horizontal structure each core prefers. Measured at b1395f9 on 4K -> 1080p RGB32, the kernel's profile on the current code, the interleaved form's sections
 against the kernel's form of 32b0a2f. The design's measurements are in
 [resize-performance.md](resize-performance.md).
 
 ## Method
 
-- **Peak:** two 256-bit FMA units give 16 float multiply-adds per cycle. 50 G/s on the 8500T at 3.15 GHz, 75 G/s on a
+- **Peak:** two 256-bit FMA units give 16 float multiply-adds per cycle. 56 G/s on the 8500T at 3.48 GHz, its clock in the
+  single-threaded runs by VTune's core cycles against the 2.1 GHz reference clock, 75 G/s on a
   12600K P-core at 4.69 GHz. The 12600K's E-cores ran at 3.59 GHz; their unit count for 256-bit work was not established.
-- **Work in one resize:** 274 M float multiply-adds, 5.4 ms at the 8500T's peak.
+- **Work in one resize:** 274 M float multiply-adds, 4.9 ms at the 8500T's peak.
   - Horizontal: 2160 source rows x 1920 columns x 12 taps x 4 floats = 199 M.
   - Vertical: 1080 rows x 1920 pixels x 3 floats x 12 taps = 75 M.
 - **The kernel's rates:** VTune's time for the per-column loop and for the vertical pass over 600 resizes (8500T, MSVC),
   a few percent high for the profiler's overhead.
+- **The kernel's bounds:** VTune's hardware events over the same section, in groups that fit the core's counters so
+  none is multiplexed, summed over each loop's addresses.
 - **The ceilings:** `scripts/perf/multiply_add_ceiling.cpp`, the passes' arithmetic alone at the real sizes: the same
   loads, chains, reductions and stores, with a fixed 12 taps, no run lookup, no range checks, no conversion. Best of 30
   repeats; two runs agree within 1-3%.
 - Rates are G float multiply-adds per second, MSVC / clang-cl. A column pair is 96 of them.
 
-## The 8500T's 4x
+## The 8500T's 3.7x
 
 | Part | Time per resize | Rate | Share of peak |
 |---|---:|---:|---:|
-| Horizontal per-column loop | 14.8 ms | 13.4 G/s | 27% |
-| Vertical pass, output packing included | 4.9 ms | 15.3 G/s | 30% |
-| Conversion and the rest of the kernel | 4.3 ms | no multiply-adds | |
-| Whole resize | about 23 ms | 11.9 G/s | 24% |
+| Horizontal pass, conversion included | 13.7 ms | 14.5 G/s | 26% |
+| Its per-column loop, interleaved | 9.5 ms | 20.9 G/s | 38% |
+| Its conversion to floats | 3.6 ms | no multiply-adds | |
+| Vertical pass, output packing included | 3.5 ms | 21.3 G/s | 38% |
+| The rest, mostly the destination's first touch and page faults | 1.0 ms | | |
+| Whole resize | 18.2 ms | 15.1 G/s | 27% |
 
 | Step | Both passes | Factor |
 |---|---:|---:|
-| Peak multiply-add rate | 5.4 ms | |
-| The passes' arithmetic with no bookkeeping | 13.1 ms | 2.4x |
-| The kernel's two passes | 19.7 ms | 1.5x |
-| With conversion and the rest | about 23 ms | 1.2x |
+| Peak multiply-add rate | 4.9 ms | |
+| The passes' arithmetic with no bookkeeping, horizontal interleaved | 12.8 ms | 2.6x |
+| The kernel's two passes | 13.0 ms | 1.0x |
+| With conversion and the rest | 18.2 ms | 1.4x |
 
-- **The arithmetic's own structure costs more than the bookkeeping.** A column pair's 12 multiply-adds come with 8
-  additions, the chains' sums and the halves' sums, and on the Skylake family additions run on the two FMA units: 20
-  operations where the peak counts 12. The weights' load and spread take another quarter.
-- **The kernel runs at about two thirds of that practical ceiling in each pass.** With every bookkeeping instruction gone a resize
-  would take about 17 ms.
-- **The horizontal loop is at the core's width.** 81 instructions per column pair in about 22.5 cycles, 3.6 per cycle on
-  a core that retires 4: the same instructions cannot run meaningfully faster.
+- **The per-column loop runs at the ceiling program's rate, and the vertical pass at 89% of its.** The conversion and
+  the rest take 4.6 ms, the passes' bookkeeping 0.2 ms.
+- **The hot loops' bounds:**
+
+  | Loop, per iteration | Cycles | Bound | Events |
+  |---|---:|---|---|
+  | Per-column, a column pair: 46 instructions | 16.4 | Not established | 3.0 uops issued per cycle; the back end full 23% of cycles; 0.8 loads per column pair blocked by a 4K alias; every load an L1 hit; no port above 0.84 uops per cycle |
+  | Vertical, 4 taps of 6 accumulators: 35 instructions | 18 | Latency: 4 dependent multiply-adds per accumulator, 16 cycles | The back end full 43% of cycles; 1.3 multiply-adds per cycle |
+  | Conversion, 8 pixels: 23 instructions | 11.5 | Memory: the source streams from DRAM | Stalls on L1 misses 27% of cycles; the back end full 49% |
+
+- **The per-column loop, by the main doc's experiments 32, 34 and 35:**
+  - With no temp-pixel stores at all it takes 14.8 cycles, and the loads blocked by a 4K alias fall to a fifth.
+  - The weights' pointer, loaded per column ahead of their broadcast: 0.5-0.9 cycles.
+  - Not port 5: half the shuffles replaced by broadcasts from memory left the 8500T level.
+- **The ceiling program's vertical pass has the kernel's chains:** its 89% is of a latency-bound pass.
 - **The vertical pass is not bound by memory.** The ring in L2 costs 15-20% against L1. Packing the sums to bytes costs
   0-3%.
 
@@ -79,9 +92,9 @@ Cycles per column pair; the multiply-adds alone need 6:
 - **The pair assembled by an insert loses on both big cores** and gains on the E-core: it needs a load per row and per
   weight for every tap.
 - **Fewer chains gain here and not in the kernel:** two chains were level on the 12-tap rows and 5-12% worse on long
-  runs there (experiment 19 of the main doc). The additions saved are 4 of the real loop's 81 instructions.
-- **The P-core is 1.4x the 8500T per cycle on the arithmetic alone** and reaches 72-75% of its peak against 51-53%. It
-  is wider, has a third load port and separate adders; which of those gives the 1.4x is not separated. 2 cycles above
+  runs there (experiment 19 of the main doc). The additions saved are 4 of that form's 81 instructions in the kernel.
+- **The P-core is 1.6x the 8500T per cycle on the arithmetic alone** and reaches 72-75% of its peak against 46-48%. It
+  is wider, has a third load port and separate adders; which of those gives the 1.6x is not separated. 2 cycles above
   the multiply-adds' 6 remain.
 
 ## The vertical pass, by core
@@ -96,7 +109,7 @@ Cycles per column pair; the multiply-adds alone need 6:
 
 - Leaving L1 costs 15-20% on the 8500T, 25% on the P-core and 27-44% on the E-core.
 - 315 KB is past the 8500T's L2 and inside the 12600K's.
-- The kernel's vertical pass on the 8500T, 15.3 G/s, has the tap list's construction, RGB32's byte layout and the strip
+- The kernel's vertical pass on the 8500T, 21.3 G/s, has the tap list's construction, RGB32's byte layout and the strip
   loop on top of this arithmetic.
 
 ## The interleaved form closer to the kernel
@@ -394,8 +407,13 @@ with its change against the count read, and against the runs of two lengths: the
 
 ## What follows
 
-- More multiply-add throughput, wider vectors or more chains, would gain little on the Skylake family: its FMA units
-  are idle three quarters of the time.
+- More multiply-add throughput or wider vectors would gain little on the Skylake family: its FMA units are idle half
+  the time in the horizontal loop.
+- The column loop is 1.6 cycles per column pair short of no stores' 14.8; its 0.8 loads blocked by a 4K alias are
+  the candidate, untested.
+- The 8500T's bounds point at two untried changes:
+  - More independent accumulators, or two chains each, in the vertical pass: the FMA units' bound is 12 cycles.
+  - The next rows' source prefetched while the horizontal pass runs: the conversion's DRAM stalls.
 - The room is in the work per multiply-add. Stepped pointers in the passes and the block loop took 3-7% of it (the
   main doc's sections on them); the horizontal form itself is the larger term.
 - **The interleaved form is in the kernel** for the 4-float layouts' row pairs at padded lengths, with lane weights
