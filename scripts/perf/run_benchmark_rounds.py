@@ -14,6 +14,7 @@ from pathlib import Path
 
 
 NO_CONTROLS_VARIABLE = "IMAGE_PROCESSING_BENCHMARK_NO_CONTROLS"
+CONTROLS_ONLY_VARIABLE = "IMAGE_PROCESSING_BENCHMARK_CONTROLS_ONLY"
 # Other processes below this much CPU time over a run are not reported
 REPORTED_CPU_SECONDS = 0.5
 HIGH_PRIORITY_CLASS = 0x80
@@ -126,7 +127,9 @@ def main():
     parser.add_argument("binaries", nargs="+", type=Path, help="test executables, each built from one variant")
     parser.add_argument("--rounds", type=int, default=6)
     parser.add_argument("--results", type=Path, default=Path("benchmark-rounds"), help="directory for r<round>_<label>.xml (default: %(default)s)")
-    parser.add_argument("--no-controls", action="store_true", help="skip the QImage and SSE4.1 runs: about half the time")
+    controls = parser.add_mutually_exclusive_group()
+    controls.add_argument("--no-controls", action="store_true", help="skip the QImage and SSE4.1 runs: about half the time")
+    controls.add_argument("--controls-only", action="store_true", help="only the QImage runs: one binary times them for every build")
     parser.add_argument("--pinned", action="append", default=[], type=parse_pinned_series, metavar="NAME=MASK",
         help="a series pinned to a hexadecimal affinity mask, results in <results>/NAME; repeat for series that run at the same time")
     # Split by hand: argparse would take what follows -- as more binaries
@@ -156,6 +159,8 @@ def main():
     environment["QT_NO_GUI_THREADPOOL"] = "1"
     if arguments.no_controls:
         environment[NO_CONTROLS_VARIABLE] = "1"
+    if arguments.controls_only:
+        environment[CONTROLS_ONLY_VARIABLE] = "1"
     if environment.get("QT_ROOT_DIR"):
         environment["PATH"] = str(Path(environment["QT_ROOT_DIR"]) / "bin") + os.pathsep + environment["PATH"]
 

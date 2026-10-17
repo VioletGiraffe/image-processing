@@ -143,11 +143,17 @@ namespace
 
 			// An SSE4.1 run only where the default one takes the AVX2 kernels: scaled, on an AVX2 CPU.
 			// report_benchmark_ratios.py matches an SSE4.1 run to its default run by the scenario name.
-			// IMAGE_PROCESSING_BENCHMARK_NO_CONTROLS: only the default-level resizer runs, for comparing builds of it
+			// IMAGE_PROCESSING_BENCHMARK_NO_CONTROLS: only the default-level resizer runs, for comparing builds of it.
+			// IMAGE_PROCESSING_BENCHMARK_CONTROLS_ONLY: only the QImage controls run: every build times them alike.
 			const bool withControls = !qEnvironmentVariableIsSet("IMAGE_PROCESSING_BENCHMARK_NO_CONTROLS");
-			std::vector<std::optional<SimdLevel>> simdCaps{ std::nullopt };
-			if (withControls && supportedSimdLevels().size() > 1 && (sourceWidth != destWidth || sourceHeight != destHeight))
-				simdCaps.push_back(SimdLevel::Sse41);
+			const bool controlsOnly = qEnvironmentVariableIsSet("IMAGE_PROCESSING_BENCHMARK_CONTROLS_ONLY");
+			std::vector<std::optional<SimdLevel>> simdCaps;
+			if (!controlsOnly)
+			{
+				simdCaps.push_back(std::nullopt);
+				if (withControls && supportedSimdLevels().size() > 1 && (sourceWidth != destWidth || sourceHeight != destHeight))
+					simdCaps.push_back(SimdLevel::Sse41);
+			}
 
 			const auto resizerName = [name](std::optional<SimdLevel> simdCap) {
 				const std::string levelTag = simdCap ? std::string{ " [" } + ImageProcessing::simdLevelName(*simdCap) + "]" : std::string{};
