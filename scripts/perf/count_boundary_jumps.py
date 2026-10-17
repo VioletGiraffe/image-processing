@@ -5,7 +5,7 @@ import argparse
 import re
 from collections import Counter
 
-from kernel_listing import KERNEL_PATTERN, read_functions
+from kernel_listing import KERNEL_PATTERN, find_loops, is_innermost, is_multiply, read_functions
 
 
 # A conditional jump fuses with the flag-setting instruction before it, and the pair then counts as one jump.
@@ -34,6 +34,7 @@ def main():
     parser.add_argument("listing", help="dumpbin /disasm or objdump -d output, with instruction bytes")
     parser.add_argument("--functions", default=KERNEL_PATTERN, help="regex a function's name must contain (default: %(default)s)")
     parser.add_argument("--list", action="store_true", help="also print each such jump")
+    parser.add_argument("--loops", action="store_true", help="also print each loop holding such a jump, with its counts")
     arguments = parser.parse_args()
 
     functions = read_functions(arguments.listing, arguments.functions)
@@ -42,6 +43,7 @@ def main():
 
     total, affected = Counter(), Counter()
     for name, instructions in functions.items():
+        jump_indexes, affected_indexes = [], []
         for index, instruction in enumerate(instructions):
             kind = jump_kind(instruction.mnemonic)
             if not kind:
@@ -53,10 +55,22 @@ def main():
                 first_byte = previous.address
 
             total[kind] += 1
+            jump_indexes.append(index)
             if on_boundary(first_byte, instruction.end):
                 affected[kind] += 1
+                affected_indexes.append(index)
                 if arguments.list:
                     print(f"{instruction.address:X} {instruction.mnemonic} {instruction.operands}  [{first_byte:X}, {instruction.end:X})  {name[:60]}")
+
+        if arguments.loops:
+            loops = find_loops(instructions)
+            print(f"## {name}")
+            for first, last in loops:
+                affected_count = sum(first <= index <= last for index in affected_indexes)
+                if affected_count:
+                    kind = "inner" if is_innermost((first, last), loops) else "outer"
+                    print(f"  {instructions[first].address:X} {kind}: {last - first + 1} instructions, {sum(map(is_multiply, instructions[first:last + 1]))} multiplies, "
+                          f"{affected_count} of {sum(first <= index <= last for index in jump_indexes)} jumps on a boundary")
 
     print(f"{len(functions)} functions")
     for kind in ("conditional", "jmp", "call", "ret"):

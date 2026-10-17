@@ -6,6 +6,7 @@
 #   --debug     - the debug configuration; the default is release
 #   --no-build  - runs what is already built
 # The remaining arguments go to the Catch2 runner: a test spec narrows either mode, options such as --benchmark-samples 50 override the defaults.
+# Tests: exclusions alone, e.g. ~[slow], get ~[.] added; see the test run below.
 # No param block: the parameter binder would claim Catch2's options, e.g. --warn as an abbreviation of -WarningAction.
 #
 # The Qt kit comes from QT_ROOT_DIR, or from a git-ignored local-env.ps1 beside this script.
@@ -93,6 +94,11 @@ if (-not (Test-Path $executable)) { Fail-Environment "Not built: `"$executable`"
 
 if (-not $Benchmark)
 {
+	# Catch2 runs its hidden cases, the benchmarks among them, for a spec of exclusions alone: ~[.] keeps them out.
+	# Not beside a bare argument, an inclusion or an option's value: Catch2 ANDs the arguments, so ~[.] would drop the hidden cases an inclusion names.
+	$hasExclusion = @($CatchArguments | Where-Object { $_.StartsWith('~') }).Count -gt 0
+	$hasBareArgument = @($CatchArguments | Where-Object { -not $_.StartsWith('~') -and -not $_.StartsWith('-') }).Count -gt 0
+	if ($hasExclusion -and -not $hasBareArgument) { $CatchArguments += '~[.]' }
 	& $executable @CatchArguments
 	if ($LASTEXITCODE -ne 0) { exit 1 }
 	exit 0

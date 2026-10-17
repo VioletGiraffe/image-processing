@@ -16,13 +16,16 @@
 
 namespace ImageProcessing::Detail
 {
+	// The fewest taps x runs are padded to: an upscale's
+	inline constexpr size_t shortestPaddedXRun = 4;
+
 	// One destination coordinate's filter: weights for a contiguous run of source pixels (x axis) or rows (y axis).
 	// weights[i] applies to source index firstSource + i: border clamping is folded into the boundary weights at build
 	// time, and interior zero weights are kept, so runs have no gaps.
 	struct TapRun
 	{
 		size_t firstSource;
-		size_t firstWeight;
+		const float* weights;
 		size_t weightCount;
 	};
 
@@ -43,6 +46,7 @@ namespace ImageProcessing::Detail
 		[[nodiscard]] bool operator==(const CacheLineAllocator<U>&) const noexcept { return true; }
 	};
 
+	// The x axis's runs start in order: firstSource never decreases. The y axis's may not.
 	struct AxisWeights
 	{
 		// Every run's weights start at a multiple of this in the array: the horizontal kernels load 8 weights at offsets
@@ -50,54 +54,32 @@ namespace ImageProcessing::Detail
 		static constexpr size_t runAlignment = 8;
 		using WeightVector = std::vector<float, CacheLineAllocator<float>>;
 
+		AxisWeights() = default;
+		// Not copyable: the runs point into weights
+		AxisWeights(AxisWeights&&) = default;
+		AxisWeights& operator=(AxisWeights&&) = default;
+
 		struct Run
 		{
 			size_t firstSource;
 			std::span<const float> weights;
 		};
 
-		struct SourceSpan
+		[[nodiscard]] IMAGE_PROCESSING_FORCE_INLINE Run runFor(size_t coordinate) const noexcept
 		{
-			size_t begin;
-			size_t end;
-		};
-
-		// The array pointers by value: stores in the calling loop may alias the AxisWeights and would force a reload per iteration
-		struct RunLookup
-		{
-			[[nodiscard]] IMAGE_PROCESSING_FORCE_INLINE Run runFor(size_t coordinate) const noexcept
-			{
-				const TapRun& run = runs[coordinate];
-				return { run.firstSource, { weights + run.firstWeight, run.weightCount } };
-			}
-
-			const TapRun* runs;
-			const float* weights;
-		};
-
-		[[nodiscard]] RunLookup runLookup() const noexcept
-		{
-			return { runs.data(), weights.data() };
+			const TapRun& run = runs[coordinate];
+			return { run.firstSource, { run.weights, run.weightCount } };
 		}
 
-		[[nodiscard]] Run runFor(size_t coordinate) const noexcept
+		// The end of the source indices read by the runs of dest coordinates [destBegin, destEnd)
+		[[nodiscard]] size_t sourceEnd(size_t destBegin, size_t destEnd) const noexcept
 		{
-			return runLookup().runFor(coordinate);
-		}
-
-		// The source indices read by the runs of dest coordinates [destBegin, destEnd)
-		[[nodiscard]] SourceSpan sourceSpan(size_t destBegin, size_t destEnd) const noexcept
-		{
-			SourceSpan span{ SIZE_MAX, 0 };
-			// Every run is checked: end-trimming lets a run start before its predecessor
+			size_t end = 0;
+			// Every run is checked: trailing zero weights are trimmed, so a run may end before its predecessor
 			for (size_t coordinate = destBegin; coordinate < destEnd; ++coordinate)
-			{
-				const TapRun& run = runs[coordinate];
-				span.begin = std::min(span.begin, run.firstSource);
-				span.end = std::max(span.end, run.firstSource + run.weightCount);
-			}
+				end = std::max(end, runs[coordinate].firstSource + runs[coordinate].weightCount);
 
-			return span;
+			return end;
 		}
 
 		[[nodiscard]] size_t longestRun() const noexcept
@@ -111,8 +93,8 @@ namespace ImageProcessing::Detail
 
 		WeightVector weights;
 		std::vector<TapRun> runs;
-		// Set by padShortRunsToFourTaps: the horizontal passes for such runs load 4 source pixels per run unconditionally
-		bool everyRunHasFourTaps = false;
+		// Set by padRunsToOneLength: every run has this many taps, and the horizontal pass compiled for that length reads no count. 0: the lengths vary.
+		size_t paddedRunLength = 0;
 	};
 
 	struct AlignedFloatsDeleter
@@ -225,6 +207,8 @@ namespace ImageProcessing::Detail
 		template <size_t Channels, size_t PixelStride>
 		IMAGE_PROCESSING_AVX2_TARGET void resizeRows(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
+		// The longest AxisWeights::paddedRunLength resizeRows takes for the x axis
+		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
 	}
 
 	// Legacy-SSE encoded: every thread running it clears the upper YMM state first wherever AVX exists
@@ -233,6 +217,8 @@ namespace ImageProcessing::Detail
 		template <size_t Channels, size_t PixelStride>
 		IMAGE_PROCESSING_SSE41_TARGET void resizeRows(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
+		// As Avx2's
+		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
 	}
 #else
 	namespace Neon
@@ -240,6 +226,8 @@ namespace ImageProcessing::Detail
 		template <size_t Channels, size_t PixelStride>
 		void resizeRows(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
+		// The longest AxisWeights::paddedRunLength resizeRows takes for the x axis
+		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
 	}
 #endif
 }

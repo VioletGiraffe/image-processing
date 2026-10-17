@@ -89,10 +89,10 @@ In `scripts/perf/`, each with `--help`:
 
 | Script | Purpose |
 |---|---|
-| `run_benchmark_rounds.py` | Runs several builds' test executables in alternating rounds, one result file per run, and prints the other processes' CPU time over each run. `--no-controls` leaves out the QImage and SSE4.1 runs, about half of a round. |
-| `compare_benchmark_rounds.py` | Per benchmark, each build against a reference build: the median of same-round ratios and the minimum-to-minimum ratio, the two figures of the per-CPU logs' A/B tables. |
-| `count_boundary_jumps.py` | Counts the kernels' jumps that cross or end on a 32-byte boundary in a `dumpbin` or `objdump` listing. A padded build counts under 1%, a plain one 15-25%. |
-| `extract_kernels.py` | Prints a listing's kernels in a form two builds diff in: padding dropped, a jump's target as its distance in instructions. `--loops` prints each kernel's loops with their sizes and stack references. |
+| `run_benchmark_rounds.py` | Runs several builds' test executables in alternating rounds, one result file per run, and prints the other processes' CPU time over each run. `--no-controls` leaves out the QImage and SSE4.1 runs, about half of a round. `--pinned NAME=MASK`, repeatable, runs each build once per named series at the same time, each pinned to a hexadecimal affinity mask and at high priority on Windows, with results in a directory per series: a hybrid CPU's two core types in one run. |
+| `compare_benchmark_rounds.py` | Per benchmark, each build against a reference build: the median of same-round ratios and the minimum-to-minimum ratio, the two figures of the per-CPU logs' A/B tables. `--rounds` prints each build's time in each round instead: a row that reads two levels by launch shows there. |
+| `count_boundary_jumps.py` | Counts the kernels' jumps that cross or end on a 32-byte boundary in a `dumpbin` or x86 `objdump` listing. A padded build counts under 1%, a plain one 15-25%. `--loops` prints the loops holding such jumps. |
+| `extract_kernels.py` | Prints a listing's kernels in a form two builds diff in: padding dropped, a jump's target as its distance in instructions. `--loops` numbers each kernel's loops and prints their sizes, multiplies, calls and stack references, `--stack-references` the referencing instructions too. `--loop N` prints one loop's instructions. Takes ARM64 `objdump` listings as well. |
 | `annotate_vtune_hotspots.py` | Sums a VTune by-address hotspots report over the kernels' loops of a listing, or over each instruction. |
 | `multiply_add_ceiling.cpp` | A standalone program: the two passes' multiply-adds without the kernel's bookkeeping, and other forms of the horizontal pass, by section. Builds for AVX2, plain x64 and ARM64. Its header has the build commands. |
 
@@ -105,6 +105,10 @@ The builds to compare are made by hand, the toolchain paths differing per machin
 3. A variant that differs by a define takes it through `CL` (the notes on reading the generated code).
 4. A listing with `dumpbin /disasm` needs the `.pdb` beside the executable under the name the executable records,
    `image-processing-tests.pdb`: one directory per variant.
+5. A clang-cl build goes into a directory of its own, from a `vcvars64` prompt with Visual Studio's `VC\Tools\Llvm\x64\bin`
+   and Qt's `bin` on `PATH`. The AVX2 source's object path is set apart from `OBJECTS_DIR`:
+   `qmake -spec win32-clang-msvc CONFIG+=release CONFIG-=debug <tree>\tests\image-processing-tests.pro -after "OBJECTS_DIR=<dir>\obj"
+   "MOC_DIR=<dir>\moc" "DESTDIR=<dir>\bin" "avx2Compiler.output=<dir>\obj\cimageresizer_simd_avx2.obj"`, then `nmake release`.
 
 ## Machines
 
@@ -187,7 +191,7 @@ stopped paying. `SlidingSourceFloats` converts into a buffer of a few KB per row
 
 - Pi, 24 MP -> 1080p with threads, ms: 246 before, 462 with whole rows, 232 sliding. Single-threaded: 542, 427, 476.
 - Single-threaded, sliding keeps a third to two thirds of the whole-row gain.
-- Capacity is two of the longest runs, plus a back margin and a conversion chunk. The first version held one run plus
+- Capacity is two of the longest runs plus a conversion chunk. The first version held one run plus
   72 pixels. For 4K -> 64x64 (360-pixel windows), that copied every source pixel about 5 extra times per sweep.
 - CI runners with large private L2 prefer whole rows single-threaded: ARM Clang 4K -> 1080p 3.41 -> 3.64. The Pi decides:
   it is the target hardware, and its gain is far larger.
@@ -267,10 +271,10 @@ Against the scalar path it replaced:
 - Pi, Clang, resizer / QImage: 4K -> 1080p RGB24 3.76 -> 2.75, Grayscale8 1.19 -> 0.74.
 - SSE4.1 / AVX2 time under MSVC on the PC: Grayscale8 1.1x, RGB24 1.25-1.7x.
 
-### The run lookup holds its array pointers by value (f2f4569, 03113a6)
+### The horizontal passes read the runs' array pointer once (f2f4569, 03113a6)
 
-The horizontal pass looks up each output pixel's run through `AxisWeights::RunLookup`, a copy of the two array pointers.
-Through the `AxisWeights` reference the compiler reloads both per pixel: the loop's stores may alias the object.
+The horizontal passes take `AxisWeights::runs`' pointer into a local ahead of their loops.
+Through the `AxisWeights` reference the compiler reloads it per pixel: the loop's stores may alias the object.
 
 - The reload sits ahead of the load that yields the pixel's tap count, so every branch on that count resolves later.
 - x64 GCC kept the reference itself on the stack in the 3-channel AVX2 kernel at e5ea70d, a third load in that chain.
@@ -278,8 +282,8 @@ Through the `AxisWeights` reference the compiler reloads both per pixel: the loo
 Gains: x64 GCC on the EPYC 7763 5-8% on most AVX2 rows (4K -> 1080p RGB32 27.85 -> 25.82 ms), ARM GCC 1-16%, MSVC's AVX2
 downscales on the PC 3-6%. Clang: within 2% everywhere.
 
-`RunLookup::runFor` is force-inlined. MSVC's link-time code generation otherwise calls it once per output pixel in the
-SSE4.1 kernels, and did the same to a `std::span` constructor written directly in the loop (f2f4569): 4-6% on the SSE4.1
+`AxisWeights::runFor` is force-inlined. MSVC's link-time code generation called a lookup of its kind once per output
+pixel in the SSE4.1 kernels, and did the same to a `std::span` constructor written directly in the loop (f2f4569): 4-6% on the SSE4.1
 upscales on the PC, 4-18% on the EPYC 7763 runner, nothing on the N4100.
 
 Calls written in the hot loop bodies are forced inline at the call site as well (`IMAGE_PROCESSING_FORCE_INLINE_CALLS`),
@@ -358,25 +362,149 @@ run's length. The general pass reduces and stores each column on its own.
 - With that, clang-cl's 4K -> 1080p Grayscale8 is 3-4% slower on both machines; MSVC +2% on the 8500T. The row does not run
   the changed loop, and its own loops are the same size in the listing: open lead 18.
 
-### Short x runs are exactly 4 taps, and have their own passes
+### The x runs padded to one length, and a kernel per length
 
-In an upscale no x run exceeds 4 taps, and the general pass spends about 60 instructions per column pair on 10 of
-arithmetic: zeroed accumulators, the 8-, 4-, 2- and 1-tap steps' checks, the reduction. VTune on the 8500T, MSVC,
-720p -> 4K RGBA32: the horizontal filter loop was 38% of the kernel, the conversion 5%, the vertical taps 25%, the
-vertical output 27%.
+Where no x run exceeds the level's limit, every x run is padded to the longest, and the horizontal pass is compiled
+for that length: no count to read, no step to test. An upscale's runs are 4 taps; a Lanczos3 downscale's are 6-7 at
+the gentlest ratio, 12 at 2x, 17 at 3x, 24 at 4x, 32 at 5.3x. With the count read, a 4-tap column pair spent about
+60 instructions on 10 of arithmetic: zeroed accumulators, the steps' checks, the reduction. VTune on the 8500T, MSVC, 720p -> 4K RGBA32 then:
+the horizontal filter loop 38% of the kernel, the conversion 5%, the vertical taps 25%, the vertical output 27%.
 
-- `padShortRunsToFourTaps` gives every x run exactly 4 taps where none exceeds 4: zero weights after the run, or before
-  it where it would pass the source's end, so that all 4 source pixels exist. A 3x upscale's runs alternate 4 and 1
-  taps before it. The y axis is not padded: a zero tap there costs a row sweep.
-- `filterBufferedFourTapRuns` filters 4-float pixels with no count to branch on: a weight load, two spreads, and per row
-  a multiply, a multiply-add, the reduction and the store.
-- The one-channel pass needs no masking of the lanes past a run.
-- 2-float pixels take the general pass, their runs padded as well.
-- The kernel is compiled twice per pixel layout, `resizeRowsWith` with and without four-tap x runs, and `resizeRows`
-  picks one per call. As a flag carried through the kernel it cost MSVC a stack reload per column in the general
-  pass: 4K -> 1080p Grayscale8 +3% to +6%, 8K -> 4K and 4K -> 1080p RGB32 +2% to +4%, at any placement (the 8500T's log).
-  The two variants add 63 KB to MSVC's test executable and 115 KB to clang-cl's.
+- `padRunsToOneLength` pads every x run to the longest, 4 taps at least: zero weights after the run, or before it where
+  it would pass the source's end, so that all its source pixels exist. A 3x upscale's runs alternate 4 and 1 taps
+  before it. The y axis is not padded: a zero tap there costs a row sweep.
+- The limit, `longestPaddedXRun`: 1- and 4-float pixels up to the level's `longestFixedXRun`, 20 taps at AVX2, 32 at
+  NEON and 12 at SSE4.1. Past 12 taps at SSE4.1 MSVC's 4-float column runs out of registers; past 20 at AVX2 the
+  interleaved columns of the next section lose the 8500T 3-7% under MSVC (experiment 31); NEON gains up to 32, the
+  longest measured. 2-float pixels, a rare layout, read the count at every length.
+- `filterRun` takes the length as a template parameter, 0 where it reads the run's. Its blocks are written out by
+  `filterBlocksFrom` (MSVC keeps a loop over a known count as a loop), and its steps fold away. A run shorter than a
+  block starts its sums with its first step's products.
+- At 4 taps of 4-float pixels at the 128-bit levels that is a weight load, two spreads, and per row a multiply, a
+  multiply-add, the reduction and the store; at AVX2 see the next section. One-channel pixels at 4 taps take the pass of
+  the section above.
+- The kernel is compiled per pixel layout and run length, `resizeRowsWith`, and `resizeRows` takes one from a table per
+  call: 128 kernels per level at AVX2, 212 at NEON and 72 at SSE4.1, from 18. MSVC's objects with 4-float pixels alone
+  at their limits: AVX2 2.0 -> 8.2 MB, SSE4.1 1.8 -> 4.9 MB; clang-cl's 1.0 -> 5.3 and 0.8 -> 2.5 MB. The four build in
+  about 30 s. MSVC's test binary with link-time code generation: the 1-float lengths add 0.22 MB to 1.72. The Pi's test binary: GCC 1.11 -> 2.58 MB, Clang 1.12 -> 2.09 MB; of that the 1-float lengths 0.40 and
+  0.28 MB, NEON's 4-float lengths from 24 to 32 0.27 and 0.21 MB.
+- MSVC at SSE4.1 fences each written-out block (`std::atomic_signal_fence` in `filterBlocksFrom`). Without it MSVC
+  moves all of a column's weight broadcasts ahead of its products, and row A's run ahead of row B's. With it each
+  block's broadcasts sit beside both rows' products, as in the count-read loop. clang-cl orders the blocks so already.
+- A template parameter, not a flag: carried through the kernel, the choice of pass cost MSVC a stack reload per column
+  in the general one: 4K -> 1080p Grayscale8 +3% to +6%, 8K -> 4K and 4K -> 1080p RGB32 +2% to +4% (the 8500T's log).
+- Inlined, not a function of its own: split out, the general pass lost up to 22% (experiment 28). A split pass that
+  takes the source buffers by reference keeps the caller's in memory under MSVC, a load and a store per column.
 - Output bytes can differ from the unpadded runs' in the last bit: a tap lands in another accumulation chain.
+
+The column loop, RGBA32, row pair, instructions and stack references. With the count read, MSVC's AVX2 column loop is
+105 instructions and 2 stack references around a 21-instruction block loop. AVX2: the interleaved column of the next
+section, the kernel's form in brackets.
+
+| Taps | MSVC, AVX2 | clang-cl, AVX2 | MSVC, SSE4.1 | clang-cl, SSE4.1 |
+|---|---|---|---|---|
+| 4 | 21, 0 (25) | 21, 0 (23) | 42, 0 | 38, 0 |
+| 8 | 33, 0 (39) | 33, 0 (35) | 74, 0 | 66, 0 |
+| 12 | 42, 0 (46) | 42, 0 (42) | 106, 0 (108, 5 unfenced) | 94, 0 |
+| 16 | 51, 0 (52) | 51, 0 (48) | - | - |
+| 20 | 60, 0 (59) | 60, 0 (55) | - | - |
+
+Against the count read and the separate four-tap pass at 0cfe29f: the median of same-round ratios, three rounds of
+both builds alternated, the default level. The row's x run lengths in brackets.
+
+| Row | 8500T, MSVC | 8500T, clang-cl | E-core, MSVC | E-core, clang-cl | Pi, GCC | Pi, Clang |
+|---|---:|---:|---:|---:|---:|---:|
+| 2.8 MP -> 1920x1280 (6-7) | -9.3% | -9.4% | -3.8% | +0.9% | -8.6% | -11.0% |
+| 4K -> 1080p RGB32 (12) | -5.2% | -3.2% | -3.3% | -2.8% | -8.7% | -4.8% |
+| 4K -> 1080p RGBA32 (12) | -3.1% | -8.4% | -0.7% | -3.0% | -8.5% | -6.2% |
+| 4K -> 1080p RGB24 (12) | -4.6% | -6.7% | -2.8% | -1.1% | -9.8% | -4.7% |
+| 4K -> 1600x900 (14-15) | +0.1% | -0.6% | +1.2% | -2.2% | -9.7% | -4.4% |
+| 4K -> 720p (17) | -3.0% | -7.9% | -2.5% | -6.1% | -6.4% | -5.9% |
+
+SSE4.1, where the 14-15 and 17 tap rows keep the count read:
+
+| Row | 8500T, MSVC | 8500T, clang-cl | E-core, MSVC | E-core, clang-cl |
+|---|---:|---:|---:|---:|
+| 2.8 MP -> 1920x1280 (6-7) | -7.8% | -5.9% | -9.8% | -7.4% |
+| 4K -> 1080p RGB32 (12) | -9.1% | -13.6% | -16.2% | -13.9% |
+| 4K -> 1080p RGBA32 (12) | -9.5% | -12.2% | -12.4% | -15.1% |
+| 4K -> 1080p RGB24 (12) | -8.5% | -13.0% | -13.4% | -11.3% |
+
+- Rows that keep the count read moved within 1-2%: Grayscale8 2x, the thumbnails, 24 MP -> 1080p, 4K -> 64x64,
+  101 MP -> 720p, the SSE4.1 14-15 and 17 tap rows.
+- Upscales within noise. clang-cl's 720p -> 4K RGBA32 and RGB32 read +6% and +8.5% on the 8500T: per process the row
+  takes 14.4 or 15.3-15.9 ms in either build (open lead 24). Run alone, the fixed column loop takes 9% fewer
+  instructions and cycles, and the kernel 1% less time.
+- Padding against the gain: the 6-7 tap row pads about 60% of its runs and gains, the 14-15 tap row pads 40% and gains
+  nothing on x64. The Pi gains on both.
+- The 12600K's P-core is left out: in that session rows with unchanged code read +3% to +22%.
+- Pi, GCC, 720p -> 4K RGB32 +2%: not the column loop, which is the same 39 instructions in both builds, the pair's rows
+  written out though the 16-float step loops over them.
+
+Scratch run-length rows, RGB32 from 3840x2160, against the count read, without the fence. SSE4.1 past 12 taps is a
+build with the limit at 20:
+
+| Level, taps | 8500T, MSVC | 8500T, clang-cl | E-core, MSVC | E-core, clang-cl | N4100, MSVC | N4100, clang-cl |
+|---|---:|---:|---:|---:|---:|---:|
+| AVX2, 9 | -6.8% | -10.0% | +0.2% | -0.7% | | |
+| AVX2, 10-11 | -2.3% | -5.9% | -6.1% | -1.2% | | |
+| SSE4.1, 9 | -11.9% | -14.1% | -8.8% | -14.7% | +3.0% | -3.0% |
+| SSE4.1, 10-11 | -6.6% | -10.5% | -13.1% | -9.3% | +9.2% | -3.9% |
+| SSE4.1, 14-15, limit 20 | -2.5% | -8.0% | -11.3% | -7.6% | +8.2% | |
+| SSE4.1, 17, limit 20 | -2.8% | -13.5% | -13.6% | -10.1% | +2.0% | |
+
+- The N4100's column loop is at its multiply floor either way (VTune): a 4-float multiply per 2.24-2.25 cycles with
+  the count read, against 2.0 at the ceiling ([throughput-ceiling.md](throughput-ceiling.md), 48 taps). The fixed loop
+  retires 24% fewer instructions: the count read's extra ones ran beside the multiplies.
+- Cycles per multiply at 9, 10-11 and 12 taps: MSVC unfenced 2.41, 2.44, 2.10; fenced 2.35, 2.18, 2.06; clang-cl 2.12,
+  1.97, 1.99.
+
+The fence against the unfenced build, MSVC. The N4100 two rounds unthrottled, min to min; the others three rounds,
+median:
+
+| Taps | N4100, SSE4.1 | 8500T, SSE4.1 | E-core, SSE4.1 | 8500T, AVX2 | E-core, AVX2 |
+|---|---:|---:|---:|---:|---:|
+| 9 | +0.4% | -1.4% | 0.0% | -2.2% | -3.4% |
+| 10-11 | -6.4% | -4.2% | -0.1% | -0.3% | +1.9% |
+| 12, RGB32 | +1.6% | -3.5% | -0.2% | +1.9% | -0.3% |
+
+- The N4100's column loop in cycles (VTune): -2%, -10%, -2%. Untouched rows moved within 1% at SSE4.1 on x64, 2.5-3%
+  at AVX2, 4% on the N4100.
+- clang-cl fenced: within 2.6% everywhere, the 8500T's 12-tap SSE4.1 rows 0.4-2% slower.
+
+NEON, a build with the limit at 32, the Pi, against the count read:
+
+| Taps | 9 | 10-11 | 14-15 | 17 | 18-20 | 20-21 | 22-23 | 24 | 25-26 | 27-28 | 29-30 | 32 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| GCC 14.2 | -10% | -13% | -14% | -6% | -9% | -10% | -6% | -3% | -7% | -8% | -10% | -3% |
+| Clang 22 | -5% | -7% | -6% | -4% | -3% | -4% | -6% | -6% | -6% | -6% | -5% | -3% |
+
+- Whole blocks, 24 and 32 taps, gain least under GCC: the count read has no step to test there either.
+- A build with the limit at 24 agreed within 1-4 points up to 24 taps.
+
+Grayscale8, the same scratch rows, against the count read. x64: a build with the limit at 20, unfenced:
+
+| Level, taps | 8500T, MSVC | 8500T, clang-cl | E-core, MSVC | E-core, clang-cl | N4100, MSVC |
+|---|---:|---:|---:|---:|---:|
+| AVX2, 6-7 | -20.1% | -21.1% | -26.4% | -34.1% | |
+| AVX2, 9 | -30.0% | -29.2% | -28.3% | -31.7% | |
+| AVX2, 12 | -22.1% | -21.2% | -20.7% | -20.0% | |
+| AVX2, 17 | -25.5% | -25.6% | -27.9% | -38.2% | |
+| SSE4.1, 6-7 | -25.5% | -27.8% | -27.4% | -28.3% | -20.6% |
+| SSE4.1, 9 | -35.7% | -23.4% | -34.1% | -33.9% | -24.5% |
+| SSE4.1, 12 | -35.5% | -15.7% | -33.4% | -22.8% | -16.9% |
+| SSE4.1, 17, limit 20 | -28.2% | -29.5% | -32.0% | -29.5% | -16.7% |
+
+| NEON, the Pi, taps | 6-7 | 9 | 12 | 17 | 18-20 | 20-21 | 22-23 | 24 | 25-26 | 27-28 | 29-30 | 32 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| GCC 14.2 | -22% | -14% | -10% | -11% | -19% | -12% | -8% | -13% | -7% | -18% | -8% | -13% |
+| Clang 22 | -23% | -17% | -8% | -15% | -22% | -18% | -10% | -15% | -7% | -20% | -8% | -8% |
+
+- A 1-float run shorter than a block, 32 taps at AVX2 and NEON and 16 at SSE4.1, is all steps: the fixed form drops
+  their tests.
+- The gain swings with the length at NEON, 7% at 25-26 and 18-20% at 27-28 taps: unexamined.
+
+The four-tap pass against the count read, when it came in:
 
 | Machine, level | Compiler | Colour upscales | 720p -> 4K Grayscale8 |
 |---|---|---:|---:|
@@ -389,10 +517,80 @@ vertical output 27%.
 
 - With threads: -6% to -9% under MSVC, -6% to -11% under clang-cl; on the Pi -4% to +7% under GCC, -5% to -7% under Clang.
 - The N4100's rows are the flag form's.
-- Padding every x run to a multiple of 4 taps, downscales included, gains nothing and costs the thumbnail 3-5%
+- Padding every x run to a multiple of 4 taps, with the count still read, gains nothing and costs the thumbnail 3-5%
   (experiment 22).
-- The rows of a pair by name, not in a loop: GCC left that loop rolled at NEON, the row pointers reloaded from the stack
-  per row, and its 3-channel upscales lost 6-7% where Clang's gained.
+- That pass named a pair's rows: with a loop over them GCC left the loop rolled at NEON, the row pointers reloaded from
+  the stack per row, and its 3-channel upscales lost 6-7% where Clang's gained.
+
+### Row pairs interleaved at AVX2, at padded lengths
+
+Where the x runs are padded, a row pair of 4-float pixels is converted into one buffer, the rows' pixels alternating:
+a `Floats8` holds one pixel of each row. A tap is one multiply-add of that pair by the tap's weight, picked from 4
+loaded weights by an in-lane shuffle; the sum's halves are the two rows' temp pixels. The kernel's form spreads a
+weight over two pixels of one row with a cross-lane permute, and sums each row's halves at the end.
+
+- AVX2 only (`interleavedRowPairs`): at 128 bits a register is one pixel either way, and the micro-benchmark found the
+  form within 3% ([throughput-ceiling.md](throughput-ceiling.md)). Every level has the pair primitives: GCC and Clang
+  look up the outline's non-dependent names in discarded branches too.
+- The conversion unpacks the two rows' 16 loaded bytes into pixel pairs, then widens them (`convertPixelPairsToFloats`).
+- The column is written out per tap in 4 chains, 1 at 4 taps: 4 chains there take 4 multiplies and 3 adds.
+- The odd last row is filtered as a pair with itself.
+- Runs read per run keep the kernel's form: interleaved, the big cores lose up to 36% on long runs (experiment 30).
+
+Against 963e6bc, the median of same-round ratios: the 8500T 10 rounds, the 12600K's P-core 10 rounds of MSVC, its
+E-core 6 rounds. The rows the change does not reach (Grayscale8, native size, runs read per run) moved within 1% on the
+8500T and about 3% on the 12600K, minimum to minimum.
+
+| Row | 8500T, MSVC | 8500T, clang-cl | P-core, MSVC | E-core, MSVC | E-core, clang-cl |
+|---|---:|---:|---:|---:|---:|
+| 2.8 MP -> 1920x1280 (6-7) | -6.5% | -0.7% | -1.8% | -12.1% | -11.9% |
+| 4K -> 1080p RGB32 (12) | -3.9% | -0.9% | -4.3% | -20.7% | -19.7% |
+| 4K -> 1080p RGBA32 (12) | -2.0% | -0.6% | -2.7% | -17.6% | -18.9% |
+| 4K -> 1080p RGB24 (12) | -1.7% | -0.2% | -2.9% | -20.2% | -20.2% |
+| 4K -> 1600x900 (14-15) | -4.8% | -6.7% | -9.9% | -22.8% | -20.3% |
+| 4K -> 720p (17) | -0.5% | -1.2% | -11.9% | -13.4% | -18.9% |
+| 720p -> 4K RGB32 (4) | -2.5% | -1.9% | -3.6% | -11.5% | -10.5% |
+| 720p -> 4K RGBA32 (4) | +1.7% | +1.3% | +1.4% | -6.3% | -4.7% |
+| 720p -> 4K RGB24 (4) | -1.2% | -3.8% | -2.0% | -12.1% | -12.6% |
+
+- The 8500T gains least: it runs every shuffle on one port, and the form trades half a cross-lane permute per tap for a
+  whole in-lane shuffle. 720p -> 4K RGBA32 reads -1.5% minimum to minimum there, +1.7% by the median.
+- In the micro-benchmark the E-core took 2.8-3.2x the P-core's cycles for the kernel's form, 2.1-2.2x for this one.
+- In the P-core's 7-round clang-cl series the padded rows read -8% to +1% minimum to minimum; its medians spread too
+  wide to read.
+
+### 3-channel temp pixels stored whole, and the interleaved column's pixel pairs stepped
+
+- A 3-channel temp pixel is one 16-byte store, its fourth float the next pixel's first: the element stores and the
+  extract cost the 8500T's column loop more than any other part (experiment 35).
+- The temp rows end in 16 floats of slack, a cache line: with 1, the strides lose their 64-byte alignment and the
+  vertical pass's two loops took 48% more cycles on the 8500T, the column loop's gain undone.
+- The interleaved column steps its pixel-pair pointer from run to run (`keepInRegister` hides it from Clang and GCC):
+  from an origin, each compiler folds the offset into every load as an index, and Skylake splits an indexed
+  multiply-add in two uops. Alone it gained nothing (experiment 34); with the whole stores the 8500T's column loop took
+  16.4 cycles per column pair against 17.6 without it, 19.0 before both.
+
+Against 594a17b, the median of same-round ratios: the 8500T 12 rounds, the 12600K's cores 7 rounds each at once, the
+Pi 6 rounds of GCC and 12 of Clang. Minimum to minimum agrees within about 1 point on the rows below unless noted.
+
+| Row | 8500T, MSVC | 8500T, clang-cl | P-core, MSVC | P-core, clang-cl | E-core, MSVC | E-core, clang-cl | Pi, GCC | Pi, Clang |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2.8 MP -> 1920x1280 | -6.7% | -9.4% | -5.6% | -8.4% | -2.5% | -2.0% | -9.1% | -1.9% |
+| 4K -> 1080p RGB32 | -6.5% | -5.0% | -3.1% | -7.0% | -2.0% | -2.1% | -8.9% | -3.1% |
+| 4K -> 1080p RGB24 | -6.3% | -5.1% | -3.4% | -7.8% | -2.2% | -2.5% | -8.0% | -2.5% |
+| 4K -> 1080p RGBA32 | -2.1% | -0.6% | +1.0% | -1.6% | +0.7% | +1.4% | -0.5% | +0.3% |
+| 4K -> 1600x900 | -10.6% | -7.9% | -3.7% | -6.5% | -4.1% | -2.7% | -6.5% | -0.6% |
+| 4K -> 720p | -11.0% | -8.6% | -4.8% | -6.3% | -4.6% | -2.7% | -7.6% | -0.4% |
+| 720p -> 4K RGB32 | -5.8% | -12.1% | +0.2% | -0.4% | -0.1% | +0.9% | -5.6% | +2.5% |
+| 720p -> 4K RGBA32 | -0.1% | -3.9% | -0.3% | +0.7% | +1.6% | +1.3% | +0.5% | +1.6% |
+| 720p -> 4K RGB24 | -3.2% | -1.1% | -1.0% | +3.2% | -0.2% | +0.5% | -3.2% | +1.4% |
+
+- RGBA32 has only the stepped pointer. The E-core loses 0.7-1.6% on it, every round of both compilers.
+- At NEON only the whole stores apply. Clang's RGBA32 rows move as much as its RGB32 upscale, without a change to
+  their code.
+- 8500T clang-cl 720p -> 4K: RGB32 -9.9% and RGB24 -6.2% minimum to minimum. P-core clang-cl 720p -> 4K RGB24: +2.2%.
+- The N4100 at SSE4.1, the pixel-layout rows, MSVC 8 rounds / clang-cl 4: 4K -> 1080p RGB32 -5.8% / -1.9%, RGB24
+  -5.7% / -6.4% (-2.6% minimum to minimum), 720p -> 4K RGB24 -5.6% to -7.7% / -2.4%; RGBA32 and Grayscale8 within 1.5%.
 
 ### Two chains at SSE4.1, and a first block that assigns
 
@@ -538,7 +736,7 @@ Each primitives header states its level's form in `verticalTapsListed`. Both for
 `filterHorizontalRowGroup` prepares the source buffers for one column, then `filterBufferedRuns` filters every following
 column whose run lies in them. The buffers' pixel range reaches that loop as arguments: read through
 `SlidingSourceFloats` in a loop that also slides and converts, it was live state at every column. The same reason as for
-the run lookup's pointers above.
+the runs' array pointer above.
 
 | Machine, level | Compiler | 3- and 4-channel 4K downscales | Upscales |
 |---|---|---|---|
@@ -734,8 +932,9 @@ MSVC and clang-cl 22 alike, against d77c79c; eight rounds on the 8500T, five on 
 
 ### The upscale passes step their runs and temp pixels too
 
-`filterBufferedFourTapRuns` and `filterBufferedFourTapRunGroups` step their run and temp pixels as the general pass
-does, and read a run's fields from the table entry. The one-channel pass tests its four runs' ranges with `||`.
+`filterBufferedFourTapRunGroups` steps its run and temp pixels as the general pass does, reads a run's fields from the
+table entry, and tests its four runs' ranges with `||`. The 4-float rows below are of the separate four-tap pass, which
+the general pass at a fixed length has since replaced.
 
 AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-channel row: six to eight everywhere):
 
@@ -772,6 +971,95 @@ AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-ch
 - Pi, GCC, five rounds: the 4-float pass, 720p -> 4K RGB32 and 1080p -> 1440p +2.5%; the one-channel pass,
   720p -> 4K Grayscale8 +1.7%; the rest within 1.5%.
 - No row that does not run these passes moved by more than 2.6%.
+
+### The block loop steps its pointers where a level has four chains
+
+Past its first block, `filterRun` steps a weights pointer and a pixel pointer per row beside the tap counter at
+AVX2 and NEON. At SSE4.1 it indexes the three by the counter.
+
+- MSVC addresses an indexed loop's loads by base and scaled index, and keeps a second counter for the bound. On
+  Skylake a multiply-add with such an operand is two micro-ops. Its AVX2 block loop: 21 instructions and no indexed
+  operand, from 20 and 9. A 12-tap column, one block, does not enter the loop: one instruction shorter.
+- At SSE4.1 a block is 4 taps, so a 12-tap run takes the loop twice. Stepped there, MSVC's column loop has 13
+  instructions and 5 stack references more, and its plain loads gain nothing from the operand.
+- Clang and GCC fold the stepped pointers back into the counter, so the loop hides the pixel pointers from them every
+  block (`keepInRegister`). clang-cl's AVX2 row-pair loop then has no indexed operand: 19 instructions a block from 17
+  with all 8 multiply-adds indexed for 1-float pixels, 21 from 19 with 4 indexed for 4-float ones.
+- The counter stays: an end pointer computed ahead of the loop cost MSVC's short runs 4 instructions
+  (experiment 27).
+- The second row at a constant distance from the first, as Clang's code has it: MSVC masks the distance every
+  block and keeps 4 operands indexed.
+
+Against 1e18e27; six rounds on the 8500T, four on the 12600K, five on the Pi:
+
+| Row, MSVC, AVX2 | 8500T | P-core | E-core |
+|---|---:|---:|---:|
+| 1080p -> 120 px wide thumbnail (16x) | -9.3% | -9.0% | level |
+| 21 MP photo -> 175 px wide thumbnail (32x) | -11.6% | -2.8% | level |
+| 4K -> 64x64 (60x) | -11.5% | -1.6% | level |
+| 101 MP -> 720p | -1.8% | | |
+
+- MSVC's other AVX2 rows within 2.5%. Its SSE4.1 rows, the same code: within 0.6% on the 8500T and the E-core, +1%
+  to +3% on the P-core, that session's noise there.
+- clang-cl, both levels: within 2.2%. Pi, GCC: within 2%.
+- WSL 2 on the 8500T, six rounds. GCC 14.3 at AVX2 indexed the loop as MSVC did, 17 instructions a block and 9
+  indexed operands; now 20 and 1: the 16x and 32x thumbnails -7% and -9%, 4K -> 64x64 -9%, the rest within 3%.
+  Clang 22's AVX2 kernel is the same code but for two instructions' order: within 1.5%, 1080p -> 1440p +4%.
+  Both compilers' SSE4.1 kernels are the same code: within 1.7%.
+- MSVC's 32x thumbnail on the 8500T is at clang-cl's time: 26.5 ms against 26.4, from 29.9.
+- Counters on the 8500T, the 32x thumbnail, MSVC: the block loop retires 1.25 slots an instruction indexed and 0.97
+  stepped, 25 and 20 a block; 6.8 and 5.75 cycles a block, about a quarter of the slots plus half a cycle. The loop
+  is bound by the 4 slots a cycle the core renames, and an indexed multiply-add takes two.
+
+The pixel pointers hidden from Clang and GCC, against 560ca96; 12 rounds on the 8500T, eight on the 12600K, five on the
+Pi. Under MSVC the barrier is empty.
+
+| Row | 8500T, clang-cl | P-core, clang-cl | E-core, clang-cl | Pi, GCC | Pi, Clang |
+|---|---:|---:|---:|---:|---:|
+| 1080p -> 240p thumbnail | +0.7% / +0.2% | -2.2% / -1.0% | +0.1% / -0.4% | -3.5% / -1.9% | -0.1% / -1.8% |
+| 1080p -> 120 px wide thumbnail (16x) | -2.1% / -3.0% | -6.3% / -7.2% | +0.1% / -0.2% | -4.5% / -4.5% | -0.2% / -1.0% |
+| 21 MP photo -> 175 px wide thumbnail (32x) | -2.4% / -2.6% | -4.7% / -4.2% | +0.3% / -0.3% | -0.3% / -0.4% | -1.1% / -1.3% |
+| 4K -> 64x64 (60x) | -2.5% / -2.3% | -4.9% / -4.7% | +0.1% / +0.1% | -0.6% / +0.1% | -6.9% / -3.3% |
+
+- The 8500T's other rows within 1% by the minimums; the medians of its upscales vary up to 4.3%.
+- The 12600K's other rows within 1.6% by the minimums, but for the P-core's 24 MP -> 1080p, -0.9% / -2.4%.
+- The Pi's other rows within 2%, but for Clang's 720p -> 4K Grayscale8, +0.9% / +4.9%.
+
+### A run holds its weights' address, and the x runs start in order
+
+Two values the x64 column loops no longer hold (open lead 26: more live values than registers).
+
+- `TapRun::weights` is an address, not an index into the array: no base to keep, no add per column. The builder
+  works by index while the array grows (`IndexedAxisWeights`), and `withRunAddresses` converts at the end.
+  `AxisWeights` is move-only for it.
+- The x axis's runs never decrease in `firstSource`. Zero weights at a run's start are kept there: trimmed, a run at
+  a whole-pixel phase started after the next one. `filterBufferedRuns` tests a run against the buffered range's end
+  only, and `SlidingSourceFloats` slides to a run's first pixel with no room kept behind it.
+- The y axis's runs are trimmed at both ends and may start out of order. NEON's vertical pass walks its window,
+  zeros included: kept there, the zero was a second tap on every third row of a 3x upscale, and 720p -> 4K
+  Grayscale8 read +3% on the Pi.
+
+MSVC at AVX2: the RGB32 column loop loads nothing from the stack on a run under 16 taps (3 loads before) and is 3
+instructions shorter; the one-channel upscale loop 45 instructions from 49. clang-cl: 92 from 98, and 48 from 56.
+
+Six rounds, both "Common" sections, against 2e606ac:
+- 8500T, AVX2: the 4K -> 1080p rows of 3 and 4 channels -3.1% to -3.9% under MSVC and -2.8% to -3.9% under clang-cl;
+  24 MP -> 1080p -1.6% and -3.3%; the 8x thumbnail -2% to -3%; the rest within 2%.
+- 12600K: the P-core agrees within its noise. The E-core within 1%, but: clang-cl's Grayscale8 rows -3% to -7%,
+  and MSVC's 4K -> 1080p Grayscale8 +3.4% at AVX2 and -4.3% at SSE4.1 (open lead 22's row).
+- SSE4.1 on the 12600K: within 2%. On the 8500T that level's rows moved by up to +12% in a prototype build whose
+  jumps fell on 32-byte boundaries, in loops with unchanged instructions: it is built without the padding, and is no
+  reading of a change there.
+- A prototype of each half on the 8500T, MSVC: the address alone -1% to -2.6%, the test alone about -1%.
+
+With the y runs trimmed again and no room behind a run in the source buffers, against 2e606ac:
+- Pi (GCC), five rounds: the 3- and 4-channel downscales and thumbnails -1% to -3.6%, RGBA32's downscale level;
+  720p -> 4K Grayscale8 level.
+- N4100 (SSE4.1), five rounds: downscales -1% to -2%, Grayscale8's -3.4%; upscales level by their minimums.
+- 8500T, AVX2, six rounds: the 4K -> 1080p rows -2.9% to -5.6% (MSVC). Its upscale rows read two levels by launch in
+  that session, one binary 13.2 and 14.1 ms (open lead 24).
+- The source buffers' change alone, against the commit before it: within 2% on the 8500T and the E-core at both
+  levels; on the Pi 4K -> 1080p RGB32 -2.5%.
 
 ## Experiments that lost
 
@@ -874,7 +1162,76 @@ AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-ch
     - GCC steps the block loop's pointers itself and MSVC does not: the long runs' gain is MSVC's alone. AArch64 has
       no base + index + offset operand and pairs loads only from a base: there the steps after the loop gain.
     - On these columns one instruction is about 1.2% of the 4K -> 1080p rows: short runs and long runs want
-      different code (open lead 25).
+      different code ("The x runs padded to one length, and a kernel per length", and the block loop's design entry).
+28. **The horizontal pass as a function of its own** (against 1e18e27, not committed): `filterHorizontal` not
+    inlined into `resizeRowsWith`, the sliding source buffers passed by reference as they are. Meant to keep one
+    pass's change out of another's code, as 7a873c8's reached the upscales' at SSE4.1, and to free registers.
+    Six rounds on the 8500T, four on the 12600K, AVX2 and SSE4.1:
+    - MSVC: the SSE4.1 downscales and thumbnails +6% to +7% on the 8500T and +2% to +8% on the P-core; AVX2
+      4K -> 1080p Grayscale8 +6% on the P-core and +22% on the E-core. 720p -> 4K Grayscale8 -9% at AVX2 on the 8500T.
+    - clang-cl: the AVX2 16x and 32x thumbnails +10% and +12% (8500T), the SSE4.1 downscales +2% to +9%.
+      720p -> 4K Grayscale8 -10% on the E-core at AVX2, which undoes its +5% of "The upscale passes".
+    - MSVC's two-row loops, instructions and stack references, inlined against split: the one-channel upscale pass
+      49 and 4 against 45 and 0 at AVX2; the general pass 114 and 1 against 105 and 3 at AVX2, 131 and 2 against 142
+      and 2 at SSE4.1. The general pass is short of registers on its own values.
+    - MSVC's SSE4.1 block loop in the split pass: four of the eight chains are summed through a second register,
+      four moves a block and four before the loop, 43 instructions a block from 39. A 12-tap run is three blocks
+      there: about 12 instructions a column. The same habit as `RowChains` guards against.
+    - clang-cl's AVX2 block loop in the split pass addresses both rows by base and scaled index, all 8 multiply-adds;
+      inlined, it steps row A's pointer and reaches row B at a constant distance from it, 4 indexed. On Skylake an
+      indexed multiply-add is two micro-ops: the 8500T's thumbnails. The 12600K's were not run.
+    - Neither comes from the buffers' state reaching the pass through a reference, the first suspect.
+29. **The weight spread's indices hidden from MSVC too** (against 2e606ac, not committed): a `volatile` zero added
+    to them in `spreadIndices`. MSVC loads a known vector constant ahead of the innermost loop that uses it, so
+    the RGB32 column loop reloaded the four indices every column, into registers it holds for them alone, and the
+    4-tap pass two.
+    - Hidden, they are formed once per row: the general column loop 4 instructions shorter, the 4-tap loop 26 from 28.
+    - Six rounds, both "Common" sections: no row moved on the 8500T or the 12600K's E-core; the P-core's -1.5% to
+      -3% is its Grayscale8 rows' too, whose code has no spread.
+    - A removed instruction is not a gain by itself in these loops: these loads cost less than the rows' noise.
+30. **Interleaved row pairs on runs read per run** (against 963e6bc, not committed): blocks of 8 taps in 4 chains, then
+    steps of 4, 2 and 1 tap. Medians against the kernel's form:
+    - E-core: -22% to -30% from 22 taps up, both compilers.
+    - 8500T: -2% to +3% at 22-28 taps, +15% to +20% at 96-360 taps, both compilers.
+    - P-core, MSVC: -5% to -7% at 22-28 taps, +18% to +36% at 96-360.
+    - 8 chains, a block's halves in two sets: the P-core +8% to +13% at 96-360 under MSVC, +7% to +8% under clang-cl;
+      the 8500T unchanged; the E-core 3 points less gain.
+    - Every other weight broadcast from memory, half the shuffles: the 8500T +3% to +7% at 22-28 taps, its long runs
+      unchanged; with 8 chains +7.5% to +14% on the 8500T, +2.6% to +9.6% on the P-core.
+    - The likely causes, not profiled: one register holds both rows, 4 sums per column where the kernel's form has 8,
+      too few once a column is too long for the next one to overlap it; and a weight shuffle per tap where the kernel's
+      form has half a permute. The 8500T runs shuffles on one port, the P-core on two, one of them a multiply-add port.
+31. **The AVX2 limit at 32 taps with the interleaved columns** (not committed). MSVC, 24 MP -> 1080p (22-23 taps) and
+    the 240p thumbnail (27-28): the 8500T +3% and +7%, the P-core -3% and -2%, the E-core -21% and -15%. clang-cl: the
+    8500T -1.5% and +1.5%, the E-core -26% and -24%.
+32. **Every other weight broadcast in the padded columns too** (not committed): against the shuffles alone, the E-core
+    4 points more gain on 4K -> 1080p, the P-core 3 points less, the 8500T level.
+33. **Two chains at 5-8 taps of the interleaved column** (not committed): no change on the 7-tap row on either machine.
+34. **The interleaved column's pixel pairs by a stepped pointer** (not committed): MSVC then addresses every load by one
+    register and a constant, no index. 8500T, 12 rounds: 4K -> 1080p RGB32 -0.9% / -1.2%; the
+    others from -6.6% / -2.0% to +6.8% / +4.2%, as wide as Grayscale8's +7.9% / +1.2%, a layout the change leaves alone.
+    The column loop issues 51.5 uops per column pair against 59, and takes the same 18.3 cycles: the front end leaves
+    2% of the issue slots empty against 15%, and the back end is full 23.5% of cycles against 3%.
+35. **Diagnostics of the interleaved column, 4K -> 1080p RGB32** (not committed, wrong pixels): one weights pointer for
+    every column, and the sums kept in a register in place of the temp-pixel stores, each with and without
+    experiment 34's stepped pointer. 8500T, 20 rounds; cycles per column pair from the hardware events:
+
+    | Build | Whole resize | Cycles | Uops issued | Loads blocked by a 4K alias |
+    |---|---:|---:|---:|---:|
+    | Indexed loads | +0.9% / +0.7% | 18.6 | 61.2 | 0.97 |
+    | Stepped pointer, the reference | 19.45 ms | 18.4 | 52.4 | 0.95 |
+    | One weights pointer, indexed / stepped | -1.8% / -3.0% | 18.1 / 17.5 | 60.1 / 51.5 | 0.98 |
+    | No stores, indexed / stepped | -5.5% / -10.7% | 16.5 / 14.8 | 52.7 / 44.4 | 0.19 |
+    | Both, indexed / stepped | -9.3% / -14.6% | 15.4 / 13.5 | 50.7 / 42.9 | 0.17 |
+
+    - The stores cost the most: without them the 4K aliases fall by four fifths and port 5 does 3 uops fewer per pair.
+    - The stepped pointer gains only without the stores: with the indexed loads the front end then leaves 14-18% of
+      the issue slots empty.
+36. **The general column's row pointers stepped as the interleaved column's** (against 560ca96, not committed): two
+    pointers stepped by each run's start, hidden from Clang. The 1-float kernels' column loops lose their 2-6 indexed
+    multiply-adds and gain 6 instructions under MSVC, 4-6 under clang-cl. The unpadded kernels' tail steps stay indexed by
+    the tap counter, and their column loops gain up to 13 instructions. 8500T, 12 rounds: 4K -> 1080p Grayscale8 +12.6%
+    under MSVC, +8.6% under clang-cl; MSVC's 4K -> 720p and -> 1600x900 RGB32 +3% to +4%.
 
 ## Open leads
 
@@ -954,27 +1311,19 @@ AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-ch
     - The vertical pass reads no state through a structure in its tap loop: nothing to take by value there.
     - NEON stores a 3-float temp pixel through the stack, a 16-byte store then 8 and 4 bytes copied out (GCC's listing
       on the Pi): untried.
-19. **A tap per multiply-add with the row pair's pixels interleaved** ([throughput-ceiling.md](throughput-ceiling.md)): the
-    horizontal arithmetic alone at a fixed 12 taps, against the kernel's form, is +3% to +17% on the 8500T, +17% to +29%
-    on the 12600K's P-cores and +61% to +73% on its E-cores. Untried in the kernel.
-    - With the tap count read per column and the conversion included, without the run lookup, at 2x, 3x, 1.5x and 4x:
-      - E-core: 14-29% off the pass under MSVC, 22-31% under clang-cl.
-      - P-core: -5%, -2%, -13%, +2% under MSVC; 16-27% off under clang-cl.
-      - 8500T: 2-12% off under MSVC, 10-22% under clang-cl, 1-11% under GCC.
-    - MSVC's shortfall against clang-cl is outside the taps, in code only the benchmark has: the kernel may differ.
-    - The taps in `filterRun`'s steps are the shape. No weight source suits every core: broadcast from memory is best
-      on the E-core, weights permuted in-lane on the 8500T, and the P-core changes sides with the run length.
-    - Four-tap runs gain 12-16% of their arithmetic under MSVC on all three cores.
-    - The 128-bit levels' form is already a tap per multiply-add, and an interleaved span costs them nothing: one
-      outline for every level is possible.
+19. **The interleaved row pairs past 20 taps.** In the kernel at padded lengths ("Row pairs interleaved at AVX2, at
+    padded lengths"). On runs read per run the E-core would gain 22-30%, where the big cores lose up to 36% to the
+    kernel's form (experiment 30). No form tried keeps both big cores level there; the threads of one resize run on
+    both core types, so the form cannot follow the core.
 20. **An AVX level for CPUs with AVX and no AVX2** (Sandy Bridge, Ivy Bridge). Prototypes with 256-bit floats and
     128-bit integer steps, in the SSE4.1 level's place, at e8d2d15 and at 1e18e27: the i3-2310M's log has their shape
     and figures. The 1e18e27 one is `resize/experimental/simd_primitives_avx.h`.
     - At 1e18e27 on the i3-2310M: thumbnails, 24 MP -> 1080p, 4K -> 64x64 and 101 MP -> 720p -18% to -31%; 4K -> 1080p
       -5% to -13%; the threaded downscales -13% to -23%. Upscales -2% to +4% against plain SSE4.1.
     - The upscales are 2-6% behind the SSE4.1 kernels VEX-encoded. One vertical block per step and the ring 16 bytes past
-      a boundary each recover at most 3%. Unmeasured suspects, in the 4-tap horizontal pass: its 32-byte loads, which
-      cross a cache line in half its columns, and its weight spread without `vpermps`. Untried: that pass at 128 bits.
+      a boundary each recover at most 3%. Unmeasured suspects, in 1e18e27's 4-float 4-tap pass: its 32-byte loads, which
+      cross a cache line in half its columns, and its weight spread without `vpermps`. The interleaved row pairs that
+      replaced it at AVX2 have neither: untried at AVX.
     - Also in the upscales' time, neither shortened by wider multiplies: the vertical pass reading the ring from L2 (64 KB
       on the i3-2310M), and the first touch of a destination 9x the source. Their shares are unmeasured.
     - The widening, packing, layout and alpha-cap steps have no cheaper FP form at AVX: its FP shuffles move whole floats.
@@ -1014,15 +1363,21 @@ AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-ch
 24. **Two timing levels the weights do not explain** (8500T): 720p -> 4K Grayscale8 at 5.25 and 5.54 ms and native size
     at 1.96 and 2.2 ms, by launch, before and after "Where the weights start". Not investigated. The larger weight
     table on the i3-2310M is measured only together with cbbd718 and 5e3c797: 720p -> 4K Grayscale8 +6%.
-25. **MSVC's block loop costs Skylake 11-14% on downscales of 16x and more** (experiment 27): the thumbnail rows
-    and 4K -> 64x64 on the 8500T. Not on the 12600K, and not under clang-cl, whose build of the same source has the
-    gain on the 8500T with no row worse than +3% against MSVC's (the 8500T's log).
-    - The cause is not confirmed with counters. MSVC addresses the loop's 8 multiply-adds by base and index and
-      keeps a second counter for the bound; stepped pointers written by hand remove both.
-    - Hand-stepped, the loop costs MSVC's short runs 3-8 instructions a column, each about 1.2% of 4K -> 1080p.
-    - Not taken: a horizontal pass per run length (a template parameter as `FourTapXRuns` is, the stepped loop for
-      long runs and no block loop for short ones). It would buy MSVC what clang-cl has without it.
-    - Open: a form of the loop MSVC compiles well that leaves the short runs' column as it is.
+    - The other upscale rows there do the same in some sessions: 720p -> 4K RGB24 at 13.2 and 14.1 ms from one binary.
+    - Pi, 720p -> 4K RGBA32: 88 ms for the 2e606ac binary within a run of both "Common" sections and 92 ms as the
+      only row run; three later builds 91-95 ms and 90-91 ms. Same user and system time and page faults (127.8
+      thousand) for all, and the kernel's code is the same or shorter: what ran before the row in the process
+      decides, the heap's state the likely carrier. A row's reading across builds is not safe from it.
+25. **The limits of the kernel per x run length** ("The x runs padded to one length, and a kernel per length").
+    - 1-float pixels at 18-20 taps at AVX2: measured up to 17.
+    - 2-float pixels read the count at every length: a build with a limit of 20 for them gained 1-25% at 6-17 taps, the
+      N4100 least (3-6%).
+    - NEON past 32.
+    - SSE4.1 past 12: a limit of 20 is the candidate, pending the big cores' run of the fenced build. 4-float pixels: the
+      big cores gain 3-14% at 14-17 taps unfenced; the N4100 loses 2-8% unfenced, and fenced reads -0.1% and -3.1% (its
+      noise 4%). Unmeasured: the big cores fenced, and the i3-2310M. 1-float pixels gain 17-32% at 17 taps.
+    - Mixed lengths mid-range: runs of 14 and 15 taps gain nothing on x64 once padded, where 6 and 7 gain 9%.
+    - Unexplained: on the 12600K's P-core the 16x thumbnail gained 9% and the 32x one 3% from the block loop's steps.
 26. **The x64 column loop holds more live values than registers** (MSVC). Of a 12-tap RGB32 column's 81
     instructions at d77c79c, 25 are arithmetic. Per column, outside it:
     - 5-6 loads of loop constants from the stack: the weights' base, row B's base, both temp rows' bases, the
@@ -1033,10 +1388,13 @@ AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-ch
     - Lead: fewer live values per column. Output pointers stepped per column in place of base and offset, as the
       model benchmark of `throughput-ceiling.md` has them, remove two bases, the offset and the address arithmetic.
     - Done for `filterBufferedRuns` ("The general pass steps its run and temp pixels"): 72 instructions, 1 load.
-    - Done for both upscale passes ("The upscale passes step their runs and temp pixels too").
-    - Left: the spread constants reloaded every column in the general and the 4-float pass (2 of the latter's 25
-      instructions); the weights' base in the general pass and row B's base in both upscale passes loaded from the
-      stack. The one-channel pass is as short of registers under Clang as under MSVC.
+    - Done for the one-channel upscale pass ("The upscale passes step their runs and temp pixels too").
+    - The spread constants reloaded every column: removing the reloads gains nothing (experiment 29).
+    - Done for the weights' base and the range's first pixel ("A run holds its weights' address, and the x runs
+      start in order").
+    - Left in the two-row loops (MSVC): at AVX2 the general pass reloads the loop bound and row B's origin after a
+      block loop, nothing on a run under 16 taps (Grayscale8's loop holds 3 loads); the one-channel upscale pass 1 at
+      SSE4.1; the RGBA32 upscale pass 1. The one-channel pass is as short of registers under Clang as under MSVC.
 27. **A batch API for a caller that knows it has many resizes in a row** (not designed), a folder's thumbnails for one.
     Each `resize()` call builds both axes' weights and allocates the source float buffers and the temp ring per band;
     a 1080p -> 120 px thumbnail is under 2 ms in all, so that setup may be a visible share. Unmeasured.

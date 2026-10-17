@@ -178,6 +178,48 @@ list; b8bdd30, 93b1b79 and 8d72f9b change nothing here and stay within 2%, a few
 - Clang's 720p -> 4K RGBA32 took +14.6% at 1917611 and gave 12.2% back at 1ed9965, which does not touch what that row
   runs; 24 MP -> 1080p, 4K -> 64x64 and 101 MP -> 720p moved 4-5% the same way. Code placement.
 
+## CI, eeb1af6 to 3c33ab0 (2026-10-08 to 2026-10-16)
+
+Three attempts per run, 1-7 samples per commit on this CPU. A run covers every commit pushed with its tip. Each column's
+median against the previous CI run's; runs with no step here are left out.
+- e60816d: upscales' x runs padded to 4 taps.
+- 64af30d: output blocks packed whole.
+- e8d2d15: vertical taps listed, the first one assigned.
+- 3d1717b: against cbbd718; the weights on a 64-byte boundary and the last 1-3 taps without a loop (19bf5da, 5e3c797).
+- 02510a2: the general and the 4-float horizontal passes step their pointers (7a873c8, 02510a2).
+- d5da600: the block loop steps its pointers (2e606ac); a run holds its weights' address.
+- 32b0a2f: only the x runs kept in order; 0cfe29f's run, the same code, counted with it.
+- 963e6bc: the compile-time tap count.
+- 560ca96: 3-channel temp pixels as one 4-float write; against 594a17b, which changes only AVX2.
+- 3c33ab0: the block loop's pointers hidden from the compiler.
+
+| Scenario | e60816d GCC, Clang | 64af30d | e8d2d15 | 3d1717b | 02510a2 | d5da600 | 32b0a2f | 963e6bc | 560ca96 | 3c33ab0 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | -0.4%, +0.7% | +0.1%, +0.8% | -0.4%, -0.5% | -1.2%, -5.3% | -0.1%, -0.5% | -0.7%, -3.8% | -1.0%, -0.8% | -0.4%, +3.1% | -7.0%, -4.2% | +0.2%, 0.0% |
+| 4K -> 1080p RGB32 | +1.1%, +1.8% | -0.2%, -0.2% | -0.7%, -0.2% | -0.4%, -1.7% | -0.9%, -2.9% | -0.6%, -0.5% | -1.9%, -1.0% | -5.0%, -1.4% | -7.2%, -2.9% | +0.9%, +0.3% |
+| 4K -> 1080p RGBA32 | -0.4%, -1.1% | -0.6%, -0.9% | 0.0%, -1.0% | -0.7%, -0.3% | +0.4%, -2.7% | -0.5%, -0.1% | -1.3%, -1.0% | -5.5%, -0.5% | -1.0%, -0.3% | +0.8%, +0.1% |
+| 4K -> 1080p RGB24 | +1.8%, -0.6% | -0.5%, -1.5% | 0.0%, -1.6% | -0.8%, -2.0% | -0.6%, -3.3% | +0.3%, -1.1% | -2.8%, -1.2% | -3.7%, -1.0% | -8.3%, -1.7% | +1.6%, -0.4% |
+| 4K -> 1080p Grayscale8 | +0.5%, -2.2% | 0.0%, -0.3% | +0.4%, -1.2% | -2.6%, -2.0% | +2.2%, -3.5% | -1.5%, +2.3% | -4.6%, -4.1% | -4.1%, -8.3% | -1.7%, +0.8% | +1.3%, -1.4% |
+| 1080p -> 240p | +2.8%, +3.2% | -1.1%, -1.3% | +1.4%, -0.4% | -1.7%, -8.4% | 0.0%, -0.9% | -1.0%, -1.7% | -2.7%, +0.5% | -6.6%, -1.4% | -5.5%, -1.5% | +0.9%, -1.7% |
+| 4K -> 64x64 | +1.2%, -9.3% | -0.7%, -1.6% | +2.8%, 0.0% | -3.0%, -9.3% | +2.6%, +2.3% | +2.6%, -1.4% | -7.8%, +2.0% | +7.4%, +1.8% | -3.2%, +6.8% | +3.5%, -2.0% |
+| 101 MP -> 720p | 0.0%, +0.3% | +1.0%, -0.1% | +0.2%, -0.6% | -1.8%, -4.4% | +0.6%, -0.9% | 0.0%, -1.2% | -3.2%, -2.5% | +0.8%, 0.0% | -4.8%, +0.6% | +0.2%, -1.7% |
+| 2.8 MP -> 1920x1280 | - | - | - | - | - | - | - | -1.7%, -5.3% | -9.2%, -3.2% | +1.0%, -0.2% |
+| 4K -> 1600x900 | - | - | - | - | - | - | - | -5.5%, +0.2% | -5.9%, -3.5% | +0.5%, +0.1% |
+| 4K -> 720p | - | - | - | - | - | - | - | -8.3%, -3.0% | -7.1%, -4.6% | +1.2%, +0.2% |
+| 720p -> 4K RGB32 | -4.3%, -9.8% | -0.2%, -0.1% | -1.2%, -3.5% | -0.3%, -1.1% | +2.6%, -0.8% | +2.8%, +3.4% | -4.7%, -3.2% | +1.4%, -0.5% | -11.5%, -3.5% | +0.5%, +0.5% |
+| 720p -> 4K RGBA32 | -6.0%, -7.6% | -7.3%, -8.1% | -4.0%, -5.6% | -0.2%, -1.0% | +1.3%, -0.6% | +4.0%, +3.3% | -3.1%, -3.1% | -0.8%, -0.6% | -0.9%, -0.8% | +1.4%, -0.3% |
+| 720p -> 4K RGB24 | -4.3%, -10.7% | +0.1%, -1.0% | -2.9%, -3.2% | -0.6%, -1.3% | +1.1%, -0.4% | +2.7%, +2.7% | -3.7%, -3.7% | -0.1%, +0.4% | -12.0%, -3.4% | +0.1%, 0.0% |
+| 720p -> 4K Grayscale8 | -8.9%, -14.8% | +1.1%, -0.2% | -3.7%, -1.8% | +0.7%, -0.5% | -0.4%, -0.4% | +3.6%, +1.9% | -6.8%, -6.4% | +1.5%, 0.0% | +0.3%, +0.2% | +0.1%, -0.1% |
+| 24 MP -> 1080p, threads | +0.5%, +0.7% | +0.1%, -0.6% | -0.8%, -1.4% | -1.3%, -6.3% | -0.3%, +0.5% | -1.5%, -3.7% | -1.7%, -1.2% | -0.9%, +3.0% | -7.3%, -3.4% | -0.1%, -0.4% |
+| 720p -> 4K RGBA32, threads | -5.5%, -7.8% | -8.1%, -8.4% | -2.7%, -6.8% | -2.0%, -1.5% | +1.1%, -0.7% | +4.1%, +5.8% | -3.3%, -6.5% | +1.0%, +0.8% | -0.7%, -0.3% | +1.6%, +0.2% |
+
+- eeb1af6 -> 3c33ab0: GCC -7% to -18%, Clang -6% to -19%; 4K -> 64x64 0% and -7%.
+- d5da600 cost the upscales 2-6% under both compilers; 32b0a2f restores them.
+- 963e6bc under Clang: 24 MP -> 1080p +3.1% and +3.0% threaded, 3 samples against 7, held at 594a17b (68.06 ms against
+  66.10). The other rows are level or faster. Unexplained.
+- 4K -> 64x64 moves up to 9% between runs in both directions: not readable.
+- 3c33ab0, aimed at the x64 cores' indexed multiply-add: within 1.7% here.
+
 ## Experiments that lost
 
 **1. Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted). GCC SIMD speedup 0.86-1.25x before,

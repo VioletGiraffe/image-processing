@@ -23,10 +23,15 @@ class Instruction:
 _DUMPBIN_INSTRUCTION = re.compile(r"\s+([0-9A-F]{8,16}): ((?:[0-9A-F]{2} ?)+?)\s+([a-z][a-z0-9]*)\s*(.*)")
 _DUMPBIN_MORE_BYTES = re.compile(r"\s+((?:[0-9A-F]{2} ?)+)")
 _OBJDUMP_LABEL = re.compile(r"[0-9a-f]+ <(.+)>:")
+# x86 jumps; ARM64 branches, without the calls (bl, blr) and the computed ones (br)
+_JUMP_MNEMONIC = re.compile(r"j[a-z]+|b|b\.[a-z]+|cbn?z|tbn?z")
+_MULTIPLY_MNEMONIC = re.compile(r"v?mul[ps]s|vfn?m(?:add|sub)\d+[ps]s|fmul|fmla|fmls|fmadd")
+_CALL_MNEMONIC = re.compile(r"call[a-z]*|blr?")
 
 
+# objdump prints an ARM64 instruction's bytes as one word
 def _byte_count(text):
-    return len(text.split())
+    return len(text.replace(" ", "")) // 2
 
 
 # Functions in listing order: name -> instructions, padding included
@@ -57,7 +62,8 @@ def read_functions(path, name_pattern=KERNEL_PATTERN):
                     if current:
                         current[-1].length += _byte_count(fields[1])
                     continue
-                mnemonic, _, operands = fields[2].strip().partition(" ")
+                # ARM64 listings separate the mnemonic from its operands with a tab, x86 ones with spaces
+                mnemonic, _, operands = " ".join(fields[2:]).strip().partition(" ")
                 current.append(Instruction(int(fields[0].strip()[:-1], 16), _byte_count(fields[1]), mnemonic, operands.strip()))
                 continue
 
@@ -77,9 +83,10 @@ def is_padding(instruction):
 
 # The index of the instruction a jump goes to, None for a target outside the function or a computed one
 def jump_target_index(instruction, index_by_address):
-    if not instruction.mnemonic.startswith("j"):
+    if not _JUMP_MNEMONIC.fullmatch(instruction.mnemonic):
         return None
-    target = re.match(r"(?:0x)?([0-9A-Fa-f]{5,16})\b", instruction.operands)
+    # The target is the last operand: ARM64's compare-and-branch forms put a register before it. objdump appends <symbol+offset>.
+    target = re.fullmatch(r"(?:0x)?([0-9A-Fa-f]{4,16})h?", instruction.operands.split("<")[0].split(",")[-1].strip())
     return index_by_address.get(int(target.group(1), 16)) if target else None
 
 
@@ -99,4 +106,12 @@ def is_innermost(loop, loops):
 
 
 def references_stack(instruction):
-    return re.search(r"\[(rsp|rbp)\b|\((%rsp|%rbp)", instruction.operands) is not None
+    return re.search(r"\[(rsp|rbp|sp|x29)\b|\((%rsp|%rbp)", instruction.operands) is not None
+
+
+def is_multiply(instruction):
+    return _MULTIPLY_MNEMONIC.fullmatch(instruction.mnemonic) is not None
+
+
+def is_call(instruction):
+    return _CALL_MNEMONIC.fullmatch(instruction.mnemonic) is not None

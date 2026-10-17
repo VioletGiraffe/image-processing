@@ -27,11 +27,18 @@ namespace ImageProcessing::Detail::Avx2
 	using Floats4 = __m128;
 	// 8 consecutive filter weights
 	using WeightBlock = __m256;
+	// 4 consecutive filter weights, in both halves
+	using FourWeights = __m256;
 	// The alpha bytes writeEightRgb32Pixels sets
 	using Rgb32PixelTails = __m256i;
 
 	// The horizontal pass's accumulation chains per row, a Floats8 each
 	inline constexpr size_t horizontalChainCount = 4;
+	// A row pair of 4-float pixels in padded x runs is interleaved, a pixel pair per Floats8: a tap is one multiply-add, with no weight spread and no halves' sum
+	inline constexpr bool interleavedRowPairs = true;
+	// The longest x run of 1- or 4-float pixels with a horizontal pass compiled for its length.
+	// 20: at 22-28 taps the interleaved form loses Skylake 3-7% under MSVC to the read count.
+	inline constexpr size_t longestFixedXRun = 20;
 	// Blocks the vertical pass filters per step. 2: a block's taps go through only 3-4 registers here, and a pair shares each tap's weight and zero test
 	inline constexpr size_t verticalBlocksPerStep = 2;
 	// The vertical pass reads a dest row's nonzero taps from a list, not from the ring's rows in order: a third fewer instructions in the tap loop
@@ -77,6 +84,9 @@ namespace ImageProcessing::Detail::Avx2
 	{
 		return _mm_add_ps(_mm256_castps256_ps128(values), _mm256_extractf128_ps(values, 1));
 	}
+
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 lowHalf(Floats8 values) noexcept { return _mm256_castps256_ps128(values); }
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 highHalf(Floats8 values) noexcept { return _mm256_extractf128_ps(values, 1); }
 
 	// Sums a Floats4's 4 / FloatsPerPixel pixels into its first FloatsPerPixel lanes
 	template <size_t FloatsPerPixel>
@@ -169,6 +179,25 @@ namespace ImageProcessing::Detail::Avx2
 		}
 	};
 
+	// Hidden from Clang's optimizer: it rewrites weightOfTap's shuffles of a loaded register as broadcasts from memory, a second load per tap
+	IMAGE_PROCESSING_SIMD_INLINE FourWeights loadFourWeights(const float* weights) noexcept
+	{
+		FourWeights fourWeights = _mm256_broadcast_ps(reinterpret_cast<const __m128*>(weights));
+#ifdef __clang__
+		__asm__ volatile("" : "+x"(fourWeights));
+#endif
+		return fourWeights;
+	}
+
+	// Weight Tap of 4 in all 8 floats.
+	// _mm256_shuffle_ps, not _mm256_permute_ps: MSVC emits vpermilps for that, which a 12600K P-core runs at one per cycle.
+	template <size_t Tap>
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 weightOfTap(FourWeights fourWeights) noexcept
+	{
+		static_assert(Tap < 4);
+		return _mm256_shuffle_ps(fourWeights, fourWeights, Tap * 0x55);
+	}
+
 	// 16 bytes as 16 floats: the first 8 go to first
 	IMAGE_PROCESSING_SIMD_INLINE void loadSixteenBytesAsFloats(const uint8_t* bytes, Floats8& first, Floats8& second) noexcept
 	{
@@ -177,17 +206,46 @@ namespace ImageProcessing::Detail::Avx2
 		second = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_unpackhi_epi64(loaded, loaded)));
 	}
 
-	// 4 RGB pixels as 4 floats each, the 4th 0: pixels 0 and 1 go to pixels01. Reads 16 bytes, 4 past the pixels.
-	IMAGE_PROCESSING_SIMD_INLINE void loadFourRgbPixelsAsFloats(const uint8_t* pixels, Floats8& pixels01, Floats8& pixels23) noexcept
+	// 4 RGB pixels as 4 bytes each, the 4th 0. Reads 16 bytes, 4 past the pixels.
+	IMAGE_PROCESSING_SIMD_INLINE __m128i loadFourRgbPixelsAsRgb0(const uint8_t* pixels) noexcept
 	{
 		const __m128i rgbToRgb0 = _mm_setr_epi8(
 			0, 1, 2, -1,
 			3, 4, 5, -1,
 			6, 7, 8, -1,
 			9, 10, 11, -1);
-		const __m128i bytes = _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels)), rgbToRgb0);
+		return _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels)), rgbToRgb0);
+	}
+
+	// 4 RGB pixels as 4 floats each, the 4th 0: pixels 0 and 1 go to pixels01. Reads 16 bytes, 4 past the pixels.
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourRgbPixelsAsFloats(const uint8_t* pixels, Floats8& pixels01, Floats8& pixels23) noexcept
+	{
+		const __m128i bytes = loadFourRgbPixelsAsRgb0(pixels);
 		pixels01 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(bytes));
 		pixels23 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_unpackhi_epi64(bytes, bytes)));
+	}
+
+	// 4 pixels of 4 bytes from each of two rows as floats, a pixel pair per Floats8: row A's pixel i in pairI's low half, row B's in its high half
+	IMAGE_PROCESSING_SIMD_INLINE void fourPixelPairsAsFloats(__m128i pixelsA, __m128i pixelsB, Floats8& pair0, Floats8& pair1, Floats8& pair2, Floats8& pair3) noexcept
+	{
+		const __m128i pairs01 = _mm_unpacklo_epi32(pixelsA, pixelsB);
+		const __m128i pairs23 = _mm_unpackhi_epi32(pixelsA, pixelsB);
+		pair0 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(pairs01));
+		pair1 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_unpackhi_epi64(pairs01, pairs01)));
+		pair2 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(pairs23));
+		pair3 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_unpackhi_epi64(pairs23, pairs23)));
+	}
+
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourPixelPairsAsFloats(const uint8_t* pixelsA, const uint8_t* pixelsB, Floats8& pair0, Floats8& pair1, Floats8& pair2, Floats8& pair3) noexcept
+	{
+		fourPixelPairsAsFloats(
+			_mm_loadu_si128(reinterpret_cast<const __m128i*>(pixelsA)), _mm_loadu_si128(reinterpret_cast<const __m128i*>(pixelsB)), pair0, pair1, pair2, pair3);
+	}
+
+	// loadFourPixelPairsAsFloats of RGB pixels, the 4th float 0. Reads 16 bytes per row, 4 past the pixels.
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourRgbPixelPairsAsFloats(const uint8_t* pixelsA, const uint8_t* pixelsB, Floats8& pair0, Floats8& pair1, Floats8& pair2, Floats8& pair3) noexcept
+	{
+		fourPixelPairsAsFloats(loadFourRgbPixelsAsRgb0(pixelsA), loadFourRgbPixelsAsRgb0(pixelsB), pair0, pair1, pair2, pair3);
 	}
 
 	// Each pixel's alpha, the last of its FloatsPerPixel floats, in all of its lanes

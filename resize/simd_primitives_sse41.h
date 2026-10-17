@@ -32,11 +32,18 @@ namespace ImageProcessing::Detail::Sse41
 	using Floats4 = __m128;
 	// 8 consecutive filter weights
 	using WeightBlock = Floats8;
+	// 4 consecutive filter weights
+	using FourWeights = __m128;
 	// The alpha bytes writeEightRgb32Pixels sets
 	using Rgb32PixelTails = __m128i;
 
 	// The horizontal pass's accumulation chains per row, a Floats8 each: a row pair's must fit the 16 XMM registers
 	inline constexpr size_t horizontalChainCount = 2;
+	// Not interleaved: a register is one pixel either way, and the micro-benchmark found the form within 3%.
+	// The pair primitives exist for the outline: GCC and Clang look its non-dependent names up in discarded branches too.
+	inline constexpr bool interleavedRowPairs = false;
+	// The longest x run of 1- or 4-float pixels with a horizontal pass compiled for its length: a longer 4-float run's written-out blocks outgrow the registers under MSVC
+	inline constexpr size_t longestFixedXRun = 12;
 	// Blocks the vertical pass filters per step: one block already has 6-8 accumulators, two registers per Floats8
 	inline constexpr size_t verticalBlocksPerStep = 1;
 	// As at AVX2. A list costs a load per tap: Goldmont Plus pays 2-4% for it on downscales, Sandy Bridge nothing.
@@ -102,6 +109,8 @@ namespace ImageProcessing::Detail::Sse41
 
 	// The sum of the first 4 floats and the last 4
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 sumHalves(Floats8 values) noexcept { return _mm_add_ps(values.low, values.high); }
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 lowHalf(Floats8 values) noexcept { return values.low; }
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 highHalf(Floats8 values) noexcept { return values.high; }
 
 	// Sums a Floats4's 4 / FloatsPerPixel pixels into its first FloatsPerPixel lanes
 	template <size_t FloatsPerPixel>
@@ -148,6 +157,17 @@ namespace ImageProcessing::Detail::Sse41
 		}
 	};
 
+	IMAGE_PROCESSING_SIMD_INLINE FourWeights loadFourWeights(const float* weights) noexcept { return _mm_loadu_ps(weights); }
+
+	// Weight Tap of 4 in all 8 floats
+	template <size_t Tap>
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 weightOfTap(FourWeights fourWeights) noexcept
+	{
+		static_assert(Tap < 4);
+		const __m128 weight = _mm_shuffle_ps(fourWeights, fourWeights, Tap * 0x55);
+		return { weight, weight };
+	}
+
 	// 16 bytes as 16 floats: the first 8 go to first
 	IMAGE_PROCESSING_SIMD_INLINE void sixteenBytesAsFloats(__m128i bytes, Floats8& first, Floats8& second) noexcept
 	{
@@ -171,6 +191,33 @@ namespace ImageProcessing::Detail::Sse41
 			6, 7, 8, -1,
 			9, 10, 11, -1);
 		sixteenBytesAsFloats(_mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels)), rgbToRgb0), pixels01, pixels23);
+	}
+
+	// Two rows' 4 pixels each as pixel pairs: row A's pixel i in pairI's low half, row B's in its high half
+	IMAGE_PROCESSING_SIMD_INLINE void pairPixels(Floats8 pixelsA01, Floats8 pixelsA23, Floats8 pixelsB01, Floats8 pixelsB23, Floats8& pair0, Floats8& pair1, Floats8& pair2, Floats8& pair3) noexcept
+	{
+		pair0 = { pixelsA01.low, pixelsB01.low };
+		pair1 = { pixelsA01.high, pixelsB01.high };
+		pair2 = { pixelsA23.low, pixelsB23.low };
+		pair3 = { pixelsA23.high, pixelsB23.high };
+	}
+
+	// 4 pixels of 4 bytes from each of two rows as floats, a pixel pair per Floats8: see pairPixels
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourPixelPairsAsFloats(const uint8_t* pixelsA, const uint8_t* pixelsB, Floats8& pair0, Floats8& pair1, Floats8& pair2, Floats8& pair3) noexcept
+	{
+		Floats8 pixelsA01, pixelsA23, pixelsB01, pixelsB23;
+		loadSixteenBytesAsFloats(pixelsA, pixelsA01, pixelsA23);
+		loadSixteenBytesAsFloats(pixelsB, pixelsB01, pixelsB23);
+		pairPixels(pixelsA01, pixelsA23, pixelsB01, pixelsB23, pair0, pair1, pair2, pair3);
+	}
+
+	// loadFourPixelPairsAsFloats of RGB pixels, the 4th float 0. Reads 16 bytes per row, 4 past the pixels.
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourRgbPixelPairsAsFloats(const uint8_t* pixelsA, const uint8_t* pixelsB, Floats8& pair0, Floats8& pair1, Floats8& pair2, Floats8& pair3) noexcept
+	{
+		Floats8 pixelsA01, pixelsA23, pixelsB01, pixelsB23;
+		loadFourRgbPixelsAsFloats(pixelsA, pixelsA01, pixelsA23);
+		loadFourRgbPixelsAsFloats(pixelsB, pixelsB01, pixelsB23);
+		pairPixels(pixelsA01, pixelsA23, pixelsB01, pixelsB23, pair0, pair1, pair2, pair3);
 	}
 
 	// Each pixel's alpha, the last of its FloatsPerPixel floats, in all of its lanes

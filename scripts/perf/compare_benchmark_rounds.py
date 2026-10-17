@@ -28,13 +28,27 @@ def percent(ratio):
     return f"{(ratio - 1) * 100:+.1f}%"
 
 
+# A row that reads two levels by launch shows here, and only as noise in the ratios
+def print_round_times(names, prefix, builds):
+    round_numbers = sorted(set().union(*builds.values()))
+    print("| Scenario | Build | " + " | ".join(f"r{round_number}, ms" for round_number in round_numbers) + " |")
+    print("|---|---|" + "---:|" * len(round_numbers))
+    for name in names:
+        for label, rounds in builds.items():
+            cells = [f"{rounds[round_number][name] / 1e6:.2f}" if name in rounds.get(round_number, {}) else "-" for round_number in round_numbers]
+            print(f"| {name[len(prefix):]} | {label} | " + " | ".join(cells) + " |")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Per resizer benchmark: each build's time against the reference build's.")
     parser.add_argument("reference", help="label of the build the others are compared to")
-    parser.add_argument("labels", nargs="+", help="labels of the builds to compare")
+    parser.add_argument("labels", nargs="*", help="labels of the builds to compare")
     parser.add_argument("--results", type=Path, default=Path("benchmark-rounds"), help="directory of r<round>_<label>.xml (default: %(default)s)")
     parser.add_argument("--sse41", action="store_true", help="the SSE4.1 runs instead of the default-level ones")
+    parser.add_argument("--rounds", action="store_true", help="each build's time in each round, the reference's too, instead of the ratios")
     arguments = parser.parse_args()
+    if not arguments.labels and not arguments.rounds:
+        parser.error("no build to compare to the reference")
 
     prefix = SSE41_RESIZER_PREFIX if arguments.sse41 else RESIZER_PREFIX
     reference = read_rounds(arguments.results, arguments.reference)
@@ -42,6 +56,10 @@ def main():
     names = [name for name in reference[min(reference)] if name.startswith(prefix)]
     if not names:
         raise SystemExit(f"The reference build's results hold no '{prefix.strip()}' benchmark")
+
+    if arguments.rounds:
+        print_round_times(names, prefix, {arguments.reference: reference, **builds})
+        return
 
     print(f"| Scenario | {arguments.reference}, min ms | " + " | ".join(f"{label}: median of ratios / min to min" for label in builds) + " |")
     print("|---|---:|" + "---:|" * len(builds))

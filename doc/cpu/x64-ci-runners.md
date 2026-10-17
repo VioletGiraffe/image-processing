@@ -272,3 +272,50 @@ GCC and Clang, the strip floor, and the range by value in both horizontal passes
 - MSVC's threaded upscales read -8% to -19% at 1917611 and 1ed9965 and back near 0% at eeb1af6, which changes no x64
   instruction: two samples, not resolved.
 - CPUs seen on these labels in these runs: EPYC 7763, 9V74, 9V45; Xeon Platinum 8573C, 8370C; Xeon 6973P-C.
+
+## CI, eeb1af6 to 3c33ab0 (2026-10-08 to 2026-10-16)
+
+EPYC 7763, 0-6 samples per commit. A run covers every commit pushed with its tip. 560ca96's median against eeb1af6's,
+AVX2:
+
+| Scenario | MSVC | clang-cl | GCC | Clang |
+|---|---:|---:|---:|---:|
+| 24 MP -> 1080p | -7.3% | -10.6% | -11.1% | -12.3% |
+| 4K -> 1080p RGB32 | -25.5% | -31.7% | -34.7% | -30.4% |
+| 4K -> 1080p RGB24 | -27.1% | -30.5% | -33.2% | -30.3% |
+| 4K -> 1080p RGBA32 | -22.7% | -23.2% | -21.4% | -25.6% |
+| 4K -> 1080p Grayscale8 | -39.8% | -34.3% | -28.2% | -28.4% |
+| 1080p -> 240p | -7.6% | -13.2% | -7.5% | -8.2% |
+| 4K -> 64x64 | -3.7% | +1.8% | -3.7% | +0.6% |
+| 101 MP -> 720p | -3.4% | -6.0% | -9.4% | -6.7% |
+| 720p -> 4K RGBA32 | -22.1% | -21.5% | -32.1% | -30.8% |
+| 720p -> 4K RGB32 | -22.2% | -22.1% | -40.5% | -32.4% |
+| 720p -> 4K RGB24 | -26.0% | -24.0% | -38.5% | -31.0% |
+| 720p -> 4K Grayscale8 | -26.9% | -10.9% | -20.4% | -13.0% |
+| 4K -> 1080p RGB24, threads | -27.8% | -29.4% | -25.7% | -23.2% |
+| 720p -> 4K RGBA32, threads | -30.9% | -22.2% | -30.5% | -30.9% |
+| 720p -> 4K RGB24, threads | -35.4% | -21.9% | -40.4% | -30.7% |
+
+- Samples: MSVC 2 and 2, clang-cl 3 and 3, GCC 1 and 2, Clang 2 and 2. The resizer / QImage ratios show the same
+  gains within 10 points; MSVC's 24 MP -> 1080p is level by ratio.
+- SSE4.1: 2x downscales and upscales -10% to -32%, 24 MP -> 1080p -9% to -15%, 101 MP -> 720p -6% to -11%.
+- Padded upscale runs and whole packed blocks (e60816d, 64af30d): 720p -> 4K -7% to -22%; GCC's RGBA32 11.34 -> 8.80 ms.
+- Clang's one `vpermps` per chain and scalar conversion tail (17d2fa0, b1395f9): Clang's 24 MP -> 1080p 50.6 -> 47.5 ms.
+- The ring on a 64-byte boundary (2577296): Clang's 4K -> 1080p rows -4% to -6%, GCC's RGB32 -6%.
+- Clang, cbbd718 -> 02510a2 (the last taps without a loop, aligned weights, stepped pointers in the horizontal passes): 2x
+  downscales -7% to -8%, Grayscale8 -17%.
+- The stepped block loop and the run's weights address (2e606ac, d5da600): GCC's 2x downscales -1% to -5%.
+- The compile-time tap count (963e6bc): 4K -> 1080p Grayscale8 -17% to -18% under GCC, Clang and MSVC; other rows flat.
+- Interleaved row pairs (594a17b), the 2x, 2.4x, 3x and 1.07x downscales: GCC -16% to -26%,
+  MSVC -13% to -21%, Clang -11% to -16%, clang-cl -8% to -18%. Upscales -5% to -11% under GCC and Clang. 24 MP, 101 MP,
+  the thumbnails and 4K -> 64x64: flat.
+- 3-channel temp pixels as one 4-float write (560ca96): GCC's RGB32 and RGB24 rows -7% to -18%, 24 MP -> 1080p -10%,
+  101 MP -> 720p -8%; Clang's -2% to -8%. RGBA32 and Grayscale8: flat.
+- The block loop's pointers hidden from the compiler (3c33ab0): not resolved. Only clang-cl ran it on this CPU:
+  mostly -1% to -5% in ms, within noise against the QImage controls. No GCC or Clang run of it landed on a Xeon that
+  also ran 560ca96.
+- 5e3c797 failed to build under GCC, Clang and clang-cl: an `always_inline` target mismatch, fixed by 3d1717b.
+- Hosts of one model differ in clock: Clang on the 9V74 read -17% to -24% on every row at 3c33ab0 against 560ca96, its
+  QImage controls -22% with it.
+- 1080p at native size under GCC and Clang on the EPYC 7763: 2.8 ms against QImage::copy's 0.33 in every run; 0.17-0.38 ms
+  on the 9V74 and 9V45. Unexplained.
