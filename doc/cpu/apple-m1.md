@@ -31,3 +31,10 @@ of a row span up to 2x (720p -> 4K RGBA32 with threads at eeb1af6: 6.75, 10.79, 
 ratios move 20-40% between adjacent commits in both directions.
 
 `STNP` (eeb1af6) shows no collapse: each row's best sample is at or below 1ed9965's on the upscales, threaded or not.
+
+## CI, eeb1af6 to 3c33ab0 (2026-10-08 to 2026-10-16)
+
+Three attempts per commit; the one on an M2 Pro is left out. No step is readable. Medians, 3c33ab0 against eeb1af6:
+- Upscales -25% to -40%, 2x downscales -22% to -45%.
+- 24 MP -> 1080p -24%, 101 MP -> 720p -12%, 1080p -> 240p -8%, 4K -> 64x64 0%.
+- 1080p at native size: +24%, against +3% and 0% on the Neoverse N2.
