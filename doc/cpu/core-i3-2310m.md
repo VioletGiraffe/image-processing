@@ -242,3 +242,83 @@ Eight alternating rounds of the threaded rows, 4K -> 64x64 and 101 MP -> 720p, 1
 
 - Every run had "System" at 1-1.6 s of CPU.
 - The tests pass at 1e18e27.
+
+## AVX primitives in the SSE4.1 level's place, 1e18e27 (not adopted)
+
+1e18e27 with `/arch:AVX` on every source and `resize/experimental/simd_primitives_avx.h` in place of the SSE4.1
+primitives, MSVC 19.51, built on the 12600K:
+
+- 256-bit floats: loads, stores, multiply and add separate, premultiply, the rounding conversion.
+- The weight spread: `vperm2f128` puts a 128-bit half in both lanes, `vpermilps` picks each lane's weights.
+- The byte widening: two 128-bit widenings, one 256-bit conversion. The output's packing, layout and alpha cap stay
+  128-bit.
+- 4 horizontal chains and 2 vertical blocks per step, as at AVX2; the ring on a 64-byte boundary.
+
+"vex" is 1e18e27 with `/arch:AVX` alone. Six alternating rounds of the single-threaded display and layout rows: median
+of same-round ratios / minimum to minimum.
+
+| Scenario | Plain, ms | AVX, ms | vex / plain | AVX / plain | AVX / vex |
+|---|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | 185.3 | 145.4 | -5.6% / -5.9% | -20.1% / -21.5% | -15.2% / -16.6% |
+| 4K -> 1080p RGB32 | 75.0 | 65.5 | -3.9% / -3.7% | -12.6% / -12.7% | -9.2% / -9.3% |
+| 4K -> 1080p RGBA32 | 85.2 | 80.5 | -0.1% / +0.2% | -5.8% / -5.5% | -5.8% / -5.7% |
+| 4K -> 1080p RGB24 | 73.9 | 64.8 | -0.9% / -0.3% | -12.8% / -12.3% | -11.7% / -12.1% |
+| 4K -> 1080p Grayscale8 | 33.9 | 31.0 | -2.8% / -2.1% | -4.7% / -8.5% | -6.6% / -6.5% |
+| 1080p -> 240p | 15.4 | 12.4 | -6.5% / -6.2% | -18.5% / -19.2% | -12.0% / -13.9% |
+| 1080p -> 120 px | 13.7 | 9.84 | -11.0% / -10.7% | -28.2% / -28.1% | -19.3% / -19.5% |
+| 21 MP -> 175 px | 133.1 | 92.3 | -11.8% / -11.9% | -30.2% / -30.6% | -21.0% / -21.2% |
+| 720p -> 4K RGBA32 | 49.2 | 48.7 | -4.8% / -3.6% | -2.0% / -0.9% | +3.8% / +2.8% |
+| 720p -> 4K RGB32 | 44.3 | 44.5 | -1.8% / -1.8% | +1.3% / +0.4% | +3.6% / +2.2% |
+| 720p -> 4K RGB24 | 39.2 | 39.8 | -0.9% / -1.2% | +2.0% / +1.7% | +3.3% / +2.9% |
+| 720p -> 4K Grayscale8 | 13.1 | 13.4 | +0.2% / -1.0% | +1.8% / +2.5% | +1.4% / +3.5% |
+| 1080p -> 1440p | 30.6 | 31.4 | -0.4% / -0.7% | +3.9% / +2.4% | +5.6% / +3.1% |
+
+Eight alternating rounds of the threaded rows, 4K -> 64x64 and 101 MP -> 720p:
+
+| Scenario | Plain, ms | AVX, ms | AVX / plain |
+|---|---:|---:|---:|
+| 4K -> 64x64 | 51.3 | 35.6 | -29.9% / -30.6% |
+| 101 MP -> 720p | 695.2 | 521.5 | -22.5% / -25.0% |
+| 24 MP -> 1080p, threads | 85.8 | 70.8 | -18.0% / -17.5% |
+| 4K -> 1080p RGBA32, threads | 42.1 | 35.1 | -15.4% / -16.7% |
+| 4K -> 1080p RGB24, threads | 36.2 | 31.2 | -13.3% / -13.9% |
+| 720p -> 4K RGBA32, threads | 24.6 | 23.8 | -5.6% / -3.3% |
+| 720p -> 4K RGB24, threads | 19.4 | 19.8 | +0.5% / +2.1% |
+| 1080p -> 1440p, threads | 14.6 | 14.9 | +3.6% / +2.2% |
+| 1080p -> 240p, threads | 7.53 | 6.25 | -17.0% / -16.9% |
+| 4K -> 64x64, threads | 29.8 | 23.4 | -22.9% / -21.5% |
+| 101 MP -> 720p, threads | 332.8 | 264.8 | -20.7% / -20.4% |
+
+- Minimum ms, the e8d2d15 prototype -> this one: 24 MP -> 1080p 157.0 -> 145.4, 4K -> 64x64 36.4 -> 35.6,
+  101 MP -> 720p 531.4 -> 521.5, 1080p -> 240p 13.0 -> 12.4.
+- vex: level to -12% on the downscales, where e8d2d15's was -5% to +4% on every row.
+- The display rows' 4K -> 1080p RGB32 agrees with the layout rows' within 0.6 points. Native size: within the row's
+  two levels.
+- 4K -> 1080p RGB32 does not vary by round as under the e8d2d15 prototype: -12.5% median, -12.6% by minimum.
+- The tests pass under this build on the i3-2310M, and on the 12600K at both levels.
+
+### Upscale probes
+
+One change each against the build above, through the header's defines, six alternating rounds of the same rows, a second
+session: "1 block", one vertical block per step; "ring + 16", the ring 16 bytes past a 64-byte boundary, as at SSE4.1.
+Against the build above:
+
+| Scenario | AVX, ms | vex | 1 block | ring + 16 |
+|---|---:|---:|---:|---:|
+| 24 MP -> 1080p | 145.4 | +15.5% / +20.6% | +2.8% / +4.9% | +2.4% / +4.5% |
+| 4K -> 1080p RGB32 | 65.6 | +10.2% / +10.1% | +0.2% / +0.1% | +0.2% / -1.5% |
+| 4K -> 1080p RGBA32 | 80.6 | +6.2% / +6.5% | +0.9% / +0.8% | -0.2% / -0.8% |
+| 4K -> 1080p RGB24 | 64.9 | +14.1% / +14.7% | +0.4% / +0.3% | -1.4% / -0.9% |
+| 4K -> 1080p Grayscale8 | 31.0 | +6.7% / +7.2% | +8.3% / +1.1% | +14.6% / +0.5% |
+| 1080p -> 240p | 12.7 | +12.8% / +13.5% | -0.7% / -0.4% | -1.6% / -1.3% |
+| 1080p -> 120 px | 9.82 | +24.4% / +24.1% | +2.8% / +2.9% | +0.1% / +0.2% |
+| 21 MP -> 175 px | 92.1 | +27.6% / +27.5% | +3.6% / +3.2% | +0.4% / -0.0% |
+| 720p -> 4K RGBA32 | 47.0 | -3.2% / -3.4% | -0.7% / +0.6% | -0.7% / -0.4% |
+| 720p -> 4K RGB32 | 43.9 | -3.2% / -5.9% | -2.3% / -2.8% | -2.8% / -2.6% |
+| 720p -> 4K RGB24 | 39.1 | -0.9% / -2.7% | +3.0% / +2.4% | -1.0% / +0.2% |
+| 720p -> 4K Grayscale8 | 13.9 | +0.7% / -1.4% | +1.8% / -2.2% | +0.4% / -0.4% |
+| 1080p -> 1440p | 31.6 | -5.0% / -5.9% | -1.9% / -1.9% | -1.6% / -0.5% |
+
+- Neither probe closes the gap to vex on the colour upscales: at most -3%. One block costs the strong downscales 3-5%.
+- The build's minimums on these rows agree with the first session's within 3.5%.
+- 4K -> 1080p Grayscale8: medians and minimums disagree by up to 14 points.
