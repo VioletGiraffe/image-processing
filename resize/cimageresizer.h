@@ -62,6 +62,7 @@ namespace ImageProcessing
 	enum class SimdLevel : uint8_t
 	{
 		Sse41,
+		Avx, // Without AVX2
 		Avx2, // With FMA
 		Neon,
 	};
@@ -71,13 +72,14 @@ namespace ImageProcessing
 		switch (level)
 		{
 		case SimdLevel::Sse41: return "SSE4.1";
+		case SimdLevel::Avx: return "AVX";
 		case SimdLevel::Avx2: return "AVX2";
 		case SimdLevel::Neon: return "NEON";
 		}
 		return "unknown";
 	}
 
-	// This CPU's best level. Empty on an x64 CPU without SSE4.1: resize() refuses to run there.
+	// This CPU's best level, except AVX on AMD's CPUs, which take SSE4.1. Empty on an x64 CPU without SSE4.1: resize() refuses to run there.
 	[[nodiscard]] std::optional<SimdLevel> detectedSimdLevel() noexcept;
 
 	// The callback must run body(0) .. body(count - 1) concurrently and must not return until all of them have completed.
@@ -86,7 +88,7 @@ namespace ImageProcessing
 
 	// Requires 1-4 one-byte channels, laid out the same in both views; release builds return on other channel counts or sizes, dest untouched.
 	// The output is premultiplied, so an alpha destination must be marked Premultiplied; a straight source is premultiplied as it is read.
-	// simdCap: the highest level to use, empty for detectedSimdLevel(); it must be one of this CPU's levels.
+	// simdCap: the highest level to use, empty for detectedSimdLevel(); it must not exceed that level.
 	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, const ParallelForFn& parallelFor = {},
 		ResizeKernel kernel = ResizeKernel::Auto, std::optional<SimdLevel> simdCap = {});
 }

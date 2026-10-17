@@ -10,7 +10,8 @@ Image resizer with hand-optimized SIMD kernels for x64 and ARM64
   premultiplied as it is read.
 - SIMD kernels for every pixel layout: one outline, `resize/cimageresizer_simd.inl`, compiled per instruction set against that
   set's `simd_primitives_*.h` by a `cimageresizer_simd_*.cpp`.
-  - x64: AVX2 + FMA where the CPU has them, SSE4.1 otherwise, chosen at runtime. Below SSE4.1, `resize()` refuses to run.
+  - x64: AVX2 + FMA where the CPU has them, AVX on Intel's CPUs without them, SSE4.1 otherwise, chosen at runtime.
+    Below SSE4.1, `resize()` refuses to run.
   - ARM64: NEON.
   - Other architectures are not supported.
   - Tight packing and RGB32 read and write whole vectors; other pixel strides convert and store pixel by pixel.

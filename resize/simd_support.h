@@ -52,11 +52,15 @@
 	// GCC and Clang allow intrinsics above the baseline only in functions with the matching target
 	#define IMAGE_PROCESSING_AVX2_TARGET __attribute__((target("avx2,fma"), noinline))
 	#define IMAGE_PROCESSING_AVX2_INLINE inline __attribute__((target("avx2,fma"), always_inline))
+	#define IMAGE_PROCESSING_AVX_TARGET __attribute__((target("avx"), noinline))
+	#define IMAGE_PROCESSING_AVX_INLINE inline __attribute__((target("avx"), always_inline))
 	#define IMAGE_PROCESSING_SSE41_TARGET __attribute__((target("sse4.1"), noinline))
 	#define IMAGE_PROCESSING_SSE41_INLINE inline __attribute__((target("sse4.1"), always_inline))
 #elif IMAGE_PROCESSING_X64 && defined(_MSC_VER)
 	#define IMAGE_PROCESSING_AVX2_TARGET __declspec(noinline)
 	#define IMAGE_PROCESSING_AVX2_INLINE __forceinline
+	#define IMAGE_PROCESSING_AVX_TARGET __declspec(noinline)
+	#define IMAGE_PROCESSING_AVX_INLINE __forceinline
 	#define IMAGE_PROCESSING_SSE41_TARGET __declspec(noinline)
 	#define IMAGE_PROCESSING_SSE41_INLINE __forceinline
 #elif IMAGE_PROCESSING_ARM64 && defined(_MSC_VER)
@@ -82,7 +86,7 @@ namespace ImageProcessing::SimdSupport
 {
 #if IMAGE_PROCESSING_X64
 	// A function, not a macro: GCC and Clang expose vzeroupper only inside a target-attributed function
-	IMAGE_PROCESSING_AVX2_TARGET inline void clearAvxUpperState() noexcept
+	IMAGE_PROCESSING_AVX_TARGET inline void clearAvxUpperState() noexcept
 	{
 		_mm256_zeroupper();
 	}

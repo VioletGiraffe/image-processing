@@ -199,15 +199,24 @@ namespace ImageProcessing::Detail
 	// The target attributes forbid inlining into the baseline dispatcher, keeping the runtime level check in control of what executes.
 	// PixelStride 0 takes the image's stride at runtime; the tight strides and RGB32's 4 are instantiated.
 #if IMAGE_PROCESSING_X64
-	// MSVC compiles cimageresizer_simd_avx2.cpp with /arch:AVX2 so that its 128-bit intrinsics are VEX-encoded too:
-	// a legacy SSE encoding stalls for tens of cycles per instruction whenever the process left the upper YMM state dirty,
-	// which any AVX-using host does. GCC and Clang get that from the target attribute.
+	// MSVC compiles cimageresizer_simd_avx2.cpp with /arch:AVX2 and cimageresizer_simd_avx.cpp with /arch:AVX, so that their
+	// 128-bit intrinsics are VEX-encoded too: a legacy SSE encoding stalls for tens of cycles per instruction whenever the
+	// process left the upper YMM state dirty, which any AVX-using host does. GCC and Clang get that from the target attribute.
 	namespace Avx2
 	{
 		template <size_t Channels, size_t PixelStride>
 		IMAGE_PROCESSING_AVX2_TARGET void resizeRows(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 		// The longest AxisWeights::paddedRunLength resizeRows takes for the x axis
+		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
+	}
+
+	namespace Avx
+	{
+		template <size_t Channels, size_t PixelStride>
+		IMAGE_PROCESSING_AVX_TARGET void resizeRows(const ImageView<true>& source, Rect srcRect, ImageView<false>& dest, const AxisWeights& xWeights,
+			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
+		// As Avx2's
 		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
 	}
 

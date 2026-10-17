@@ -32,6 +32,7 @@ namespace
 		bool sse41 = false;
 		bool avx = false; // With the OS saving the YMM state
 		bool avx2Fma = false;
+		bool amd = false;
 	};
 
 	// Detected here, in a file compiled for the baseline instruction set: a kernel file's copy could hold instructions the CPU lacks
@@ -43,6 +44,12 @@ namespace
 			int registers[4];
 			__cpuid(registers, 0);
 			const int highestLeaf = registers[0];
+			// The vendor string is in EBX, EDX, ECX
+			char vendor[12];
+			memcpy(vendor, &registers[1], 4);
+			memcpy(vendor + 4, &registers[3], 4);
+			memcpy(vendor + 8, &registers[2], 4);
+			detected.amd = memcmp(vendor, "AuthenticAMD", 12) == 0;
 
 			__cpuidex(registers, 1, 0);
 			const int leaf1Ecx = registers[2];
@@ -63,6 +70,7 @@ namespace
 			detected.sse41 = __builtin_cpu_supports("sse4.1");
 			detected.avx = __builtin_cpu_supports("avx");
 			detected.avx2Fma = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+			detected.amd = __builtin_cpu_is("amd");
 #endif
 			return detected;
 		}();
@@ -432,7 +440,12 @@ namespace
 	[[nodiscard]] RowResizer* rowResizerFor([[maybe_unused]] SimdLevel simdLevel) noexcept
 	{
 #if IMAGE_PROCESSING_X64
-		return simdLevel == SimdLevel::Avx2 ? &Avx2::resizeRows<Channels, PixelStride> : &Sse41::resizeRows<Channels, PixelStride>;
+		switch (simdLevel)
+		{
+		case SimdLevel::Avx2: return &Avx2::resizeRows<Channels, PixelStride>;
+		case SimdLevel::Avx: return &Avx::resizeRows<Channels, PixelStride>;
+		default: return &Sse41::resizeRows<Channels, PixelStride>;
+		}
 #else
 		return &Neon::resizeRows<Channels, PixelStride>;
 #endif
@@ -441,7 +454,12 @@ namespace
 	[[nodiscard]] size_t longestPaddedXRun([[maybe_unused]] SimdLevel simdLevel, size_t channels) noexcept
 	{
 #if IMAGE_PROCESSING_X64
-		return simdLevel == SimdLevel::Avx2 ? Avx2::longestPaddedXRun(channels) : Sse41::longestPaddedXRun(channels);
+		switch (simdLevel)
+		{
+		case SimdLevel::Avx2: return Avx2::longestPaddedXRun(channels);
+		case SimdLevel::Avx: return Avx::longestPaddedXRun(channels);
+		default: return Sse41::longestPaddedXRun(channels);
+		}
 #else
 		return Neon::longestPaddedXRun(channels);
 #endif
@@ -542,6 +560,9 @@ std::optional<SimdLevel> ImageProcessing::detectedSimdLevel() noexcept
 	const X64Features& features = x64Features();
 	if (features.avx2Fma)
 		return SimdLevel::Avx2;
+	// AMD's CPUs with AVX and no AVX2 split 256-bit operations in two: unmeasured, they keep SSE4.1
+	if (features.avx && !features.amd)
+		return SimdLevel::Avx;
 	if (features.sse41)
 		return SimdLevel::Sse41;
 	return std::nullopt;

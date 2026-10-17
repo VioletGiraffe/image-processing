@@ -425,7 +425,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				filterBlock<Block == 0, Rows>(spreader, runWeights + Block * blockTaps, runPixelsA + firstFloat, runPixelsB + firstFloat, chainsA, chainsB);
 				// No load moves across the fence, so a block's weight broadcasts stay beside its products.
 				// MSVC at SSE4.1 otherwise hoists all of a column's broadcasts ahead of its products: up to 6% slower on Goldmont Plus.
-				if constexpr (simdLevel == SimdLevel::Sse41 && compilerIsMsvc)
+				// At AVX the fence measured slightly faster on Sandy Bridge.
+				if constexpr ((simdLevel == SimdLevel::Sse41 || simdLevel == SimdLevel::Avx) && compilerIsMsvc)
 					std::atomic_signal_fence(std::memory_order_seq_cst);
 
 				filterBlocksFrom<Block + 1, BlockCount, Rows>(spreader, runWeights, runPixelsA, runPixelsB, chainsA, chainsB);

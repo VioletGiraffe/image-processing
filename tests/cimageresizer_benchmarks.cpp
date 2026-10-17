@@ -5,7 +5,6 @@ DISABLE_COMPILER_WARNINGS
 RESTORE_COMPILER_WARNINGS
 
 #include "resize/cimageresizer.h"
-#include "simd_levels.h"
 
 #include "threading/cthreadpool.h"
 
@@ -151,7 +150,7 @@ namespace
 			if (!controlsOnly)
 			{
 				simdCaps.push_back(std::nullopt);
-				if (withControls && supportedSimdLevels().size() > 1 && (sourceWidth != destWidth || sourceHeight != destHeight))
+				if (withControls && ImageProcessing::detectedSimdLevel() == SimdLevel::Avx2 && (sourceWidth != destWidth || sourceHeight != destHeight))
 					simdCaps.push_back(SimdLevel::Sse41);
 			}
 

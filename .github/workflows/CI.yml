@@ -105,23 +105,23 @@ jobs:
       if: startsWith(matrix.os, 'windows')
       run: ./tests/bin/release/image-processing-tests.exe
 
-    # MSVC compiles the AVX2 kernel file with /arch:AVX2: the linker may keep that file's AVX2 copy of an inline function the baseline code calls
+    # MSVC compiles the AVX and AVX2 kernel files with /arch: the linker may keep either file's copy of an inline function the baseline code calls
     - name: Set up Intel SDE
       if: startsWith(matrix.os, 'windows')
       uses: petarpetrovt/setup-sde@v6.0
 
-    # The emulated CPUs lack AVX2, so the resizer takes its SSE4.1 kernels, and SDE flags any instruction the chip lacks:
-    #   -glp: Goldmont Plus, the Celeron N4100's core, without AVX
-    #   -snb: Sandy Bridge, with AVX: the upper YMM state gets cleared before the legacy-SSE code
+    # The emulated CPUs lack AVX2, and SDE flags any instruction the chip lacks:
+    #   -glp: Goldmont Plus, the Celeron N4100's core, without AVX: the SSE4.1 kernels
+    #   -snb: Sandy Bridge, with AVX: the AVX kernels, and the upper YMM state cleared before the legacy-SSE code
     # -chip-check-exe-only: the resizer is linked into the executable, and the Qt and system DLLs are not ours to check
     # SDE's exit status on a flagged instruction is undocumented: the log is checked too
     - name: Run the tests on emulated CPUs without AVX2
       if: startsWith(matrix.os, 'windows')
       shell: bash
-      env:
-        IMAGE_PROCESSING_EXPECTED_SIMD_LEVEL: SSE4.1
       run: |
-        for chip in glp snb; do
+        for chipLevel in glp:SSE4.1 snb:AVX; do
+          chip=${chipLevel%%:*}
+          export IMAGE_PROCESSING_EXPECTED_SIMD_LEVEL=${chipLevel#*:}
           "$SDE_PATH/sde.exe" -$chip -chip-check-exe-only -- ./tests/bin/release/image-processing-tests.exe "~[!benchmark] ~[threading] ~[slow]" 2>&1 | tee "sde-$chip.log"
           if grep -q SDE-ERROR "sde-$chip.log"; then exit 1; fi
         done

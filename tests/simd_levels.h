@@ -13,10 +13,12 @@
 	if (!detected)
 		return {};
 
-	if (*detected == SimdLevel::Avx2)
-		return { SimdLevel::Avx2, SimdLevel::Sse41 };
-
-	return { *detected };
+	switch (*detected)
+	{
+	case SimdLevel::Avx2: return { SimdLevel::Avx2, SimdLevel::Avx, SimdLevel::Sse41 };
+	case SimdLevel::Avx: return { SimdLevel::Avx, SimdLevel::Sse41 };
+	default: return { *detected };
+	}
 }
 
 // An empty cap stands for the detected level

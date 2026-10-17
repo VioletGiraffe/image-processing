@@ -8,7 +8,7 @@ The measurement log for this CPU. Conclusions that shape the design are summariz
 | | |
 |---|---|
 | CPU | Core i3-2310M (Sandy Bridge), 2 cores, 4 threads, 2.1 GHz, no turbo |
-| SIMD | AVX; no AVX2, no FMA. The SSE4.1 kernels are the only level it runs |
+| SIMD | AVX; no AVX2, no FMA. It runs the AVX kernels, the SSE4.1 ones when capped; up to ad7966e SSE4.1 was its only level |
 | Caches | 32 KB L1D, 256 KB private L2 per core, 3 MB L3 |
 | Toolchain | None used on it: it runs binaries built on the 8500T or the 12600K (MSVC 19.51 and clang-cl, Qt 6.11.2) |
 | OS | Windows 11 |
@@ -245,8 +245,8 @@ Eight alternating rounds of the threaded rows, 4K -> 64x64 and 101 MP -> 720p, 1
 
 ## AVX primitives in the SSE4.1 level's place, 1e18e27 (not adopted)
 
-1e18e27 with `/arch:AVX` on every source and `resize/experimental/simd_primitives_avx.h` in place of the SSE4.1
-primitives, MSVC 19.51, built on the 12600K:
+1e18e27 with `/arch:AVX` on every source and the 1e18e27 form of `resize/simd_primitives_avx.h` in place of the
+SSE4.1 primitives, MSVC 19.51, built on the 12600K:
 
 - 256-bit floats: loads, stores, multiply and add separate, premultiply, the rounding conversion.
 - The weight spread: `vperm2f128` puts a 128-bit half in both lanes, `vpermilps` picks each lane's weights.
@@ -323,7 +323,7 @@ Against the build above:
 - The build's minimums on these rows agree with the first session's within 3.5%.
 - 4K -> 1080p Grayscale8: medians and minimums disagree by up to 14 points.
 
-## AVX primitives in the SSE4.1 level's place, ad7966e (not adopted)
+## AVX primitives in the SSE4.1 level's place, ad7966e (adopted as the AVX level)
 
 The header above ported to ad7966e's outline, MSVC 19.51, built on the 12600K: `interleavedRowPairs` and a
 `longestFixedXRun` of 20 as at AVX2, the pixel pairs widened by 128-bit steps. "Not interleaved" is the same build

@@ -1,11 +1,10 @@
 #pragma once
 
-// EXPERIMENT, not production: AVX (no AVX2, no FMA) primitives in the SSE4.1 level's place, for Sandy Bridge and Ivy Bridge.
-// Not built. To measure: cimageresizer_simd_sse41.cpp includes this in place of simd_primitives_sse41.h, every source
-// compiles with /arch:AVX (the CL variable). Figures: the i3-2310M's log.
+// The AVX primitives cimageresizer_simd.inl is written against, for CPUs with AVX and no AVX2; only cimageresizer_simd_avx.cpp includes this.
 // Floats are 256-bit; byte widening and packing stay 128-bit: AVX has no 256-bit integer instructions.
+// No FMA at this level: a multiply-add rounds twice.
 
-#include "../simd_support.h"
+#include "simd_support.h"
 
 #include "compiler/compiler_warnings_control.h"
 
@@ -15,17 +14,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#ifndef __AVX__
-	#error "The AVX primitives need /arch:AVX on every source"
-#endif
-
 // The loadu/storeu intrinsics take unaligned memory through __m128i pointers
 DISABLE_CLANG_GCC_WARNING("-Wcast-align")
 
-#define IMAGE_PROCESSING_SIMD_TARGET IMAGE_PROCESSING_SSE41_TARGET
-#define IMAGE_PROCESSING_SIMD_INLINE IMAGE_PROCESSING_SSE41_INLINE
+#define IMAGE_PROCESSING_SIMD_TARGET IMAGE_PROCESSING_AVX_TARGET
+#define IMAGE_PROCESSING_SIMD_INLINE IMAGE_PROCESSING_AVX_INLINE
 
-namespace ImageProcessing::Detail::Sse41
+namespace ImageProcessing::Detail::Avx
 {
 	// 8 consecutive floats: two RGBA pixels, or a run of channel values
 	using Floats8 = __m256;
@@ -38,25 +33,18 @@ namespace ImageProcessing::Detail::Sse41
 	// The alpha bytes writeEightRgb32Pixels sets
 	using Rgb32PixelTails = __m128i;
 
-#ifndef IMAGE_PROCESSING_EXPERIMENT_AVX_INTERLEAVED
-	#define IMAGE_PROCESSING_EXPERIMENT_AVX_INTERLEAVED true
-#endif
-#ifndef IMAGE_PROCESSING_EXPERIMENT_AVX_VERTICAL_BLOCKS
-	#define IMAGE_PROCESSING_EXPERIMENT_AVX_VERTICAL_BLOCKS 2
-#endif
-#ifndef IMAGE_PROCESSING_EXPERIMENT_AVX_RING_OFFSET
-	#define IMAGE_PROCESSING_EXPERIMENT_AVX_RING_OFFSET 0
-#endif
-
-	// As at AVX2 by default; the defines probe SSE4.1's values
+	// The tuning is AVX2's; the alternatives measured on Sandy Bridge:
+	//   not interleaved - the padded 4-float rows 3-12% slower, the upscales level with SSE4.1
+	//   one vertical block per step - the strong downscales 3-5% slower
+	//   the temp ring 16 bytes past a 64-byte boundary - within 3%
 	inline constexpr size_t horizontalChainCount = 4;
-	inline constexpr bool interleavedRowPairs = IMAGE_PROCESSING_EXPERIMENT_AVX_INTERLEAVED;
+	inline constexpr bool interleavedRowPairs = true;
 	inline constexpr size_t longestFixedXRun = 20;
-	inline constexpr size_t verticalBlocksPerStep = IMAGE_PROCESSING_EXPERIMENT_AVX_VERTICAL_BLOCKS;
+	inline constexpr size_t verticalBlocksPerStep = 2;
 	inline constexpr bool verticalTapsListed = true;
-	inline constexpr size_t tempRingStartOffset = IMAGE_PROCESSING_EXPERIMENT_AVX_RING_OFFSET;
+	inline constexpr size_t tempRingStartOffset = 0;
 
-	// Qt's legacy-SSE code stalls while the upper YMM state is dirty
+	// The code after the kernel is legacy-SSE encoded, and stalls while the upper YMM state is dirty
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept { SimdSupport::clearAvxUpperState(); }
 
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 zeroFloats8() noexcept { return _mm256_setzero_ps(); }
@@ -179,9 +167,14 @@ namespace ImageProcessing::Detail::Sse41
 		}
 	};
 
+	// Hidden from Clang's optimizer, as at AVX2
 	IMAGE_PROCESSING_SIMD_INLINE FourWeights loadFourWeights(const float* weights) noexcept
 	{
-		return _mm256_broadcast_ps(reinterpret_cast<const __m128*>(weights));
+		FourWeights fourWeights = _mm256_broadcast_ps(reinterpret_cast<const __m128*>(weights));
+#ifdef __clang__
+		__asm__ volatile("" : "+x"(fourWeights));
+#endif
+		return fourWeights;
 	}
 
 	// Weight Tap of 4 in all 8 floats
