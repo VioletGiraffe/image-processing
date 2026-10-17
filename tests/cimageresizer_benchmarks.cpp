@@ -248,7 +248,10 @@ TEST_CASE("Very large image downscale", "[!benchmark][resize]")
 
 TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 {
-	CThreadPool pool(std::max(std::thread::hardware_concurrency(), 2u) - 1, "Resize benchmark pool");
+	// IMAGE_PROCESSING_BENCHMARK_THREADS: the executors, the calling thread included; one per logical processor by default
+	const int requestedExecutors = qEnvironmentVariableIntValue("IMAGE_PROCESSING_BENCHMARK_THREADS");
+	const unsigned executors = requestedExecutors >= 2 ? static_cast<unsigned>(requestedExecutors) : std::max(std::thread::hardware_concurrency(), 2u);
+	CThreadPool pool(executors - 1, "Resize benchmark pool");
 	pool.waitUntilStarted();
 	// The scenario names carry no thread count, to keep them comparable across machines
 	std::cout << "Parallel resize benchmarks: " << pool.maxWorkersCount() + 1 << " executors\n";
