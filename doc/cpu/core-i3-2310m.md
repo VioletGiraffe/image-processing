@@ -10,7 +10,7 @@ The measurement log for this CPU. Conclusions that shape the design are summariz
 | CPU | Core i3-2310M (Sandy Bridge), 2 cores, 4 threads, 2.1 GHz, no turbo |
 | SIMD | AVX; no AVX2, no FMA. The SSE4.1 kernels are the only level it runs |
 | Caches | 32 KB L1D, 256 KB private L2 per core, 3 MB L3 |
-| Toolchain | None used on it: it runs binaries built on the 8500T (MSVC 19.51 and clang-cl, Qt 6.11.2) |
+| Toolchain | None used on it: it runs binaries built on the 8500T or the 12600K (MSVC 19.51 and clang-cl, Qt 6.11.2) |
 | OS | Windows 11 |
 
 ## Reading this machine's numbers
@@ -193,3 +193,52 @@ plain one: median of same-round ratios / minimum to minimum.
 - The `QImage::scaled` controls of the three binaries: within 2.5% by minimum. The tests pass under the prototype.
 - The same three binaries on the 12600K, SSE4.1-capped, one pinned core, minimum of three rounds, prototype against plain:
   a P-core -12% to -32%; an E-core -6% to +18%, the upscales slower.
+
+## Revisions up to 1e18e27
+
+MSVC 19.51 binaries built on the 12600K, Qt 6.11.2, no QImage controls. 25cb0e5 has e8d2d15's SSE4.1 code under MSVC.
+Six alternating rounds of the single-threaded display and layout rows: median of same-round ratios / minimum to
+minimum, each build against the one before, and 1e18e27 against 25cb0e5. A run takes 19 s.
+
+| Scenario | 25cb0e5, ms | fdd5aec | 5e3c797 | 1e18e27 | 1e18e27 / 25cb0e5 |
+|---|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | 189.7 | +0.3% / +0.7% | -1.3% / -0.8% | -2.7% / -2.6% | -3.3% / -2.7% |
+| 4K -> 1080p RGB32 | 76.8 | +0.9% / +1.7% | -1.3% / -1.2% | -3.5% / -2.9% | -3.8% / -2.4% |
+| 4K -> 1080p RGBA32 | 92.3 | -1.0% / -0.8% | -3.0% / -1.8% | -5.0% / -5.0% | -9.2% / -7.4% |
+| 4K -> 1080p RGB24 | 78.7 | +0.2% / +0.6% | -5.3% / -3.6% | -3.6% / -3.6% | -8.4% / -6.6% |
+| 4K -> 1080p Grayscale8 | 39.2 | +1.8% / +1.7% | -2.3% / -5.9% | -13.3% / -10.1% | -14.3% / -13.9% |
+| 720p -> 4K RGBA32 | 49.2 | -2.5% / +0.1% | -0.4% / -0.3% | +1.1% / +1.0% | -0.7% / +0.8% |
+| 720p -> 4K RGB32 | 46.2 | -0.3% / -0.1% | -0.2% / +0.2% | -3.5% / -3.7% | -4.4% / -3.7% |
+| 720p -> 4K RGB24 | 41.2 | -2.0% / -0.2% | -0.2% / -0.2% | -5.2% / -4.4% | -6.2% / -4.9% |
+| 720p -> 4K Grayscale8 | 13.8 | -0.3% / +1.0% | +5.9% / +6.4% | -11.5% / -11.2% | -7.9% / -4.6% |
+| 1080p -> 1440p | 32.6 | -1.3% / -1.1% | +1.8% / +1.1% | -5.9% / -5.6% | -6.6% / -5.6% |
+| 1080p -> 240p | 15.9 | +1.1% / +1.5% | -3.0% / -2.8% | -1.9% / -2.0% | -3.5% / -3.4% |
+| 1080p, native size | 4.00 | +0.8% / -1.0% | -4.5% / -0.9% | +4.5% / +2.2% | +9.9% / +0.3% |
+
+- fdd5aec, the ring 16 bytes past a 64-byte boundary (and 2577296's allocations on one): within 2.5% on every row.
+  Goldmont Plus gains 2-6% from it.
+- fdd5aec -> 5e3c797 also holds cbbd718 and 19bf5da, not separated: 720p -> 4K Grayscale8 +6%.
+- 5e3c797 -> 1e18e27, the stepped-pointer passes: the Grayscale8 rows -10% to -13%, 720p -> 4K RGBA32 +1%.
+- Native size: medians and minimums disagree by up to 10 points, the row's two levels.
+- The display rows' 4K -> 1080p RGB32 agrees with the layout rows' within 1.2 points in every column.
+- 1e18e27's thumbnail rows, added at d77c79c: 1080p -> 120 px 13.7 ms, 21 MP -> 175 px 132.7 ms.
+
+Eight alternating rounds of the threaded rows, 4K -> 64x64 and 101 MP -> 720p, 1e18e27 against 25cb0e5. A run takes
+28 s.
+
+| Scenario | 25cb0e5, ms | 1e18e27 |
+|---|---:|---:|
+| 4K -> 64x64 | 51.5 | -0.9% / -0.6% |
+| 101 MP -> 720p | 706.2 | -2.1% / -2.2% |
+| 24 MP -> 1080p, threads | 90.6 | -5.0% / -5.3% |
+| 4K -> 1080p RGBA32, threads | 43.6 | -5.2% / -4.6% |
+| 4K -> 1080p RGB24, threads | 38.2 | -4.6% / -6.5% |
+| 720p -> 4K RGBA32, threads | 24.7 | -1.7% / -2.1% |
+| 720p -> 4K RGB24, threads | 20.4 | -4.9% / -5.7% |
+| 1080p -> 1440p, threads | 15.4 | -6.8% / -6.1% |
+| 1080p -> 240p, threads | 7.99 | -5.7% / -6.3% |
+| 4K -> 64x64, threads | 30.4 | -5.0% / -2.7% |
+| 101 MP -> 720p, threads | 351.3 | -4.6% / -4.6% |
+
+- Every run had "System" at 1-1.6 s of CPU.
+- The tests pass at 1e18e27.

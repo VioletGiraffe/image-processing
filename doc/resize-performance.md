@@ -113,7 +113,7 @@ The builds to compare are made by hand, the toolchain paths differing per machin
 | [PC](cpu/core-i5-12600k.md) | Core i5-12600K, P-cores | 48 KB L1D, 1.25 MB private L2 per P-core | MSVC 19.51 (toolset v145), Qt 6.11.2 |
 | [Raspberry Pi 4](cpu/raspberry-pi-4.md) | 4x Cortex-A72, 1.8 GHz | 32 KB L1D, 1 MB L2 shared by all cores | Clang 22 unless noted |
 | [Celeron N4100](cpu/celeron-n4100.md) | 4x Goldmont Plus, no AVX: SSE4.1 is its only level | 24 KB L1D, 4 MB L2 shared by all cores | MSVC 19.51, Qt 6.12.0 |
-| [Core i3-2310M](cpu/core-i3-2310m.md) | 2x Sandy Bridge, 4 threads, no AVX2: SSE4.1 is its only level | 32 KB L1D, 256 KB private L2 per core, 3 MB L3 | Runs the 8500T's builds |
+| [Core i3-2310M](cpu/core-i3-2310m.md) | 2x Sandy Bridge, 4 threads, no AVX2: SSE4.1 is its only level | 32 KB L1D, 256 KB private L2 per core, 3 MB L3 | Runs the 8500T's and the 12600K's builds |
 | [Core i5-8500T](cpu/core-i5-8500t.md) | 6x Coffee Lake | 32 KB L1D, 256 KB private L2 per core, 9 MB L3 | MSVC 19.51, Qt 6.11.2; clang-cl where noted |
 | [ubuntu-24.04-arm](cpu/neoverse-n2.md) | Cobalt 100 (Neoverse N2), 4 cores | 1 MB private L2 per core | GCC and Clang jobs |
 | [ubuntu-latest, windows-latest](cpu/x64-ci-runners.md) | 2 cores, 4 threads, varying by run. Seen: AMD EPYC 9V45 (Zen 5), 9V74 (Zen 4), 7763 (Zen 3); Xeon Platinum 8573C, 8370C, Xeon 6973P-C | Private L2 per core: 1 MB on Zen 4 and 5, 512 KB on Zen 3, 2 MB on the Xeons (1.25 MB on the 8370C) | GCC and Clang; MSVC and clang-cl |
@@ -758,6 +758,8 @@ AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-ch
 - SSE4.1, MSVC, 02510a2 (the one-channel pass's index kept) against 19bf5da, on the N4100, the 8500T and the 12600K's
   cores: 720p -> 4K Grayscale8 +12% to +18%; the colour upscales -4% to +1%; 4K -> 1080p Grayscale8 -7% to -13.5%;
   the RGB downscales -1% to -6%.
+- SSE4.1, MSVC, 1e18e27 against 5e3c797 on the i3-2310M: the Grayscale8 rows -10% to -13%, the other rows -2% to -6%,
+  720p -> 4K RGBA32 +1%.
 - `|` between the four range comparisons: MSVC sets a register per comparison and ORs them, 15 instructions; with
   `||`, four compares and branches, 8. Clang emits the branches for either. `||` with the index kept: MSVC -7%,
   -6% and -3% at AVX2, clang-cl level.
@@ -999,12 +1001,12 @@ AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-ch
       after other code, where every line of the kernel is newly loaded.
     - The state of 4K -> 1080p RGB32 and RGB24 that followed the process's heap layout was not this effect: "Where the
       weights start".
-23. **Why Goldmont Plus prefers the temp ring 16 bytes past a cache line** is not known. Unmeasured: the committed
-    form anywhere but the N4100, rows other than 4K -> 1080p RGBA32 on the 8500T at SSE4.1, and any start but the
-    boundary at NEON.
+23. **Why Goldmont Plus prefers the temp ring 16 bytes past a cache line** is not known. The committed form on the
+    i3-2310M: within 2.5% on every row. Unmeasured: rows other than 4K -> 1080p RGBA32 on the 8500T at SSE4.1, and
+    any start but the boundary at NEON.
 24. **Two timing levels the weights do not explain** (8500T): 720p -> 4K Grayscale8 at 5.25 and 5.54 ms and native size
-    at 1.96 and 2.2 ms, by launch, before and after "Where the weights start". Not investigated. Also unmeasured: the
-    larger weight table on the i3-2310M.
+    at 1.96 and 2.2 ms, by launch, before and after "Where the weights start". Not investigated. The larger weight
+    table on the i3-2310M is measured only together with cbbd718 and 5e3c797: 720p -> 4K Grayscale8 +6%.
 25. **MSVC's block loop costs Skylake 11-14% on downscales of 16x and more** (experiment 27): the thumbnail rows
     and 4K -> 64x64 on the 8500T. Not on the 12600K, and not under clang-cl, whose build of the same source has the
     gain on the 8500T with no row worse than +3% against MSVC's (the 8500T's log).
