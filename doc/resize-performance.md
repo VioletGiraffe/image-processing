@@ -1316,22 +1316,22 @@ With the y runs trimmed again and no room behind a run in the source buffers, ag
     kernel's form (experiment 30). No form tried keeps both big cores level there; the threads of one resize run on
     both core types, so the form cannot follow the core.
 20. **An AVX level for CPUs with AVX and no AVX2** (Sandy Bridge, Ivy Bridge). Prototypes with 256-bit floats and
-    128-bit integer steps, in the SSE4.1 level's place, at e8d2d15 and at 1e18e27: the i3-2310M's log has their shape
-    and figures. The 1e18e27 one is `resize/experimental/simd_primitives_avx.h`.
-    - At 1e18e27 on the i3-2310M: thumbnails, 24 MP -> 1080p, 4K -> 64x64 and 101 MP -> 720p -18% to -31%; 4K -> 1080p
-      -5% to -13%; the threaded downscales -13% to -23%. Upscales -2% to +4% against plain SSE4.1.
-    - The upscales are 2-6% behind the SSE4.1 kernels VEX-encoded. One vertical block per step and the ring 16 bytes past
-      a boundary each recover at most 3%. Unmeasured suspects, in 1e18e27's 4-float 4-tap pass: its 32-byte loads, which
-      cross a cache line in half its columns, and its weight spread without `vpermps`. The interleaved row pairs that
-      replaced it at AVX2 have neither: untried at AVX.
+    128-bit integer steps, in the SSE4.1 level's place, at e8d2d15, 1e18e27 and ad7966e: the i3-2310M's log has their
+    shape and figures. The ad7966e one is `resize/experimental/simd_primitives_avx.h`, with AVX2's interleaved row pairs.
+    - At ad7966e on the i3-2310M, against plain SSE4.1: single-threaded downscales -8% to -35%, threaded ones -18% to
+      -26%, the colour upscales -2% to -7%, Grayscale8's level. Of QImage's time: 24 MP -> 1080p 2.61 -> 2.12,
+      4K -> 1080p RGBA32 1.30 -> 1.01.
+    - The interleaved row pairs give 3-12% on the rows with padded runs of 4-float pixels. Without them, at 1e18e27 and at
+      ad7966e, the upscales are level with plain, and at 1e18e27 2-6% behind the SSE4.1 kernels VEX-encoded.
     - Also in the upscales' time, neither shortened by wider multiplies: the vertical pass reading the ring from L2 (64 KB
       on the i3-2310M), and the first touch of a destination 9x the source. Their shares are unmeasured.
     - The widening, packing, layout and alpha-cap steps have no cheaper FP form at AVX: its FP shuffles move whole floats.
-    - The e8d2d15 prototype's single-threaded 4K -> 1080p rows varied by round, -2% to -9%; the 1e18e27 one's do not.
+    - Untried at AVX: other `longestFixedXRun` limits than AVX2's 20; dropping the SSE4.1 level's MSVC fence in
+      `filterBlocksFrom`, which applies to this header too.
     - A core that splits 256-bit operations gains nothing: the 12600K's E-core loses 4-18% on upscales (the PC's log).
       AMD's CPUs with AVX and no AVX2 split them too; none is measured.
-    - The SSE4.1 kernels VEX-encoded, with no other change, on the i3-2310M: -5% to +4% at e8d2d15, level to -12% on the
-      downscales at 1e18e27. +5% to +57% on the PC's P-core.
+    - The SSE4.1 kernels VEX-encoded, with no other change, on the i3-2310M: -5% to +4% at e8d2d15, -12% to +2% at
+      ad7966e. +5% to +57% on the PC's P-core.
 21. **32-byte loads that the float buffers' 64-byte start does not align.** Unmeasured:
     - The horizontal pass, a run at an odd pixel offset: 16 bytes off for 4-float pixels.
     - The vertical pass, a temp row stride that is not a multiple of 32 bytes: a strip as wide as a destination whose

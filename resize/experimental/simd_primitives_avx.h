@@ -33,9 +33,14 @@ namespace ImageProcessing::Detail::Sse41
 	using Floats4 = __m128;
 	// 8 consecutive filter weights
 	using WeightBlock = __m256;
+	// 4 consecutive filter weights, in both halves
+	using FourWeights = __m256;
 	// The alpha bytes writeEightRgb32Pixels sets
 	using Rgb32PixelTails = __m128i;
 
+#ifndef IMAGE_PROCESSING_EXPERIMENT_AVX_INTERLEAVED
+	#define IMAGE_PROCESSING_EXPERIMENT_AVX_INTERLEAVED true
+#endif
 #ifndef IMAGE_PROCESSING_EXPERIMENT_AVX_VERTICAL_BLOCKS
 	#define IMAGE_PROCESSING_EXPERIMENT_AVX_VERTICAL_BLOCKS 2
 #endif
@@ -45,6 +50,8 @@ namespace ImageProcessing::Detail::Sse41
 
 	// As at AVX2 by default; the defines probe SSE4.1's values
 	inline constexpr size_t horizontalChainCount = 4;
+	inline constexpr bool interleavedRowPairs = IMAGE_PROCESSING_EXPERIMENT_AVX_INTERLEAVED;
+	inline constexpr size_t longestFixedXRun = 20;
 	inline constexpr size_t verticalBlocksPerStep = IMAGE_PROCESSING_EXPERIMENT_AVX_VERTICAL_BLOCKS;
 	inline constexpr bool verticalTapsListed = true;
 	inline constexpr size_t tempRingStartOffset = IMAGE_PROCESSING_EXPERIMENT_AVX_RING_OFFSET;
@@ -87,6 +94,9 @@ namespace ImageProcessing::Detail::Sse41
 	{
 		return _mm_add_ps(_mm256_castps256_ps128(values), _mm256_extractf128_ps(values, 1));
 	}
+
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 lowHalf(Floats8 values) noexcept { return _mm256_castps256_ps128(values); }
+	IMAGE_PROCESSING_SIMD_INLINE Floats4 highHalf(Floats8 values) noexcept { return _mm256_extractf128_ps(values, 1); }
 
 	// Sums a Floats4's 4 / FloatsPerPixel pixels into its first FloatsPerPixel lanes
 	template <size_t FloatsPerPixel>
@@ -169,6 +179,19 @@ namespace ImageProcessing::Detail::Sse41
 		}
 	};
 
+	IMAGE_PROCESSING_SIMD_INLINE FourWeights loadFourWeights(const float* weights) noexcept
+	{
+		return _mm256_broadcast_ps(reinterpret_cast<const __m128*>(weights));
+	}
+
+	// Weight Tap of 4 in all 8 floats
+	template <size_t Tap>
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 weightOfTap(FourWeights fourWeights) noexcept
+	{
+		static_assert(Tap < 4);
+		return _mm256_shuffle_ps(fourWeights, fourWeights, Tap * 0x55);
+	}
+
 	// Two 128-bit widenings joined into one 256-bit conversion
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 eightDwordsAsFloats(__m128i low, __m128i high) noexcept
 	{
@@ -193,6 +216,31 @@ namespace ImageProcessing::Detail::Sse41
 		const __m128i bytes = _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pixels)), rgbToRgb0);
 		pixels01 = eightDwordsAsFloats(_mm_cvtepu8_epi32(bytes), _mm_cvtepu8_epi32(_mm_srli_si128(bytes, 4)));
 		pixels23 = eightDwordsAsFloats(_mm_cvtepu8_epi32(_mm_srli_si128(bytes, 8)), _mm_cvtepu8_epi32(_mm_srli_si128(bytes, 12)));
+	}
+
+	// 4 pixels of 4 bytes from each of two rows as floats, a pixel pair per Floats8: row A's pixel i in pairI's low half, row B's in its high half
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourPixelPairsAsFloats(const uint8_t* pixelsA, const uint8_t* pixelsB, Floats8& pair0, Floats8& pair1, Floats8& pair2, Floats8& pair3) noexcept
+	{
+		pair0 = eightDwordsAsFloats(_mm_cvtepu8_epi32(_mm_loadu_si32(pixelsA)), _mm_cvtepu8_epi32(_mm_loadu_si32(pixelsB)));
+		pair1 = eightDwordsAsFloats(_mm_cvtepu8_epi32(_mm_loadu_si32(pixelsA + 4)), _mm_cvtepu8_epi32(_mm_loadu_si32(pixelsB + 4)));
+		pair2 = eightDwordsAsFloats(_mm_cvtepu8_epi32(_mm_loadu_si32(pixelsA + 8)), _mm_cvtepu8_epi32(_mm_loadu_si32(pixelsB + 8)));
+		pair3 = eightDwordsAsFloats(_mm_cvtepu8_epi32(_mm_loadu_si32(pixelsA + 12)), _mm_cvtepu8_epi32(_mm_loadu_si32(pixelsB + 12)));
+	}
+
+	// loadFourPixelPairsAsFloats of RGB pixels, the 4th float 0. Reads 16 bytes per row, 4 past the pixels.
+	// One shuffle per pixel and row both picks its 3 bytes and zero-extends them to dwords.
+	IMAGE_PROCESSING_SIMD_INLINE void loadFourRgbPixelPairsAsFloats(const uint8_t* pixelsA, const uint8_t* pixelsB, Floats8& pair0, Floats8& pair1, Floats8& pair2, Floats8& pair3) noexcept
+	{
+		const __m128i bytesA = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pixelsA));
+		const __m128i bytesB = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pixelsB));
+		const __m128i pixel0 = _mm_setr_epi8(0, -1, -1, -1, 1, -1, -1, -1, 2, -1, -1, -1, -1, -1, -1, -1);
+		const __m128i pixel1 = _mm_setr_epi8(3, -1, -1, -1, 4, -1, -1, -1, 5, -1, -1, -1, -1, -1, -1, -1);
+		const __m128i pixel2 = _mm_setr_epi8(6, -1, -1, -1, 7, -1, -1, -1, 8, -1, -1, -1, -1, -1, -1, -1);
+		const __m128i pixel3 = _mm_setr_epi8(9, -1, -1, -1, 10, -1, -1, -1, 11, -1, -1, -1, -1, -1, -1, -1);
+		pair0 = eightDwordsAsFloats(_mm_shuffle_epi8(bytesA, pixel0), _mm_shuffle_epi8(bytesB, pixel0));
+		pair1 = eightDwordsAsFloats(_mm_shuffle_epi8(bytesA, pixel1), _mm_shuffle_epi8(bytesB, pixel1));
+		pair2 = eightDwordsAsFloats(_mm_shuffle_epi8(bytesA, pixel2), _mm_shuffle_epi8(bytesB, pixel2));
+		pair3 = eightDwordsAsFloats(_mm_shuffle_epi8(bytesA, pixel3), _mm_shuffle_epi8(bytesB, pixel3));
 	}
 
 	// Each pixel's alpha, the last of its FloatsPerPixel floats, in all of its lanes

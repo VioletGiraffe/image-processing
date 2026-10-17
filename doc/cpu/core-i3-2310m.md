@@ -322,3 +322,56 @@ Against the build above:
 - Neither probe closes the gap to vex on the colour upscales: at most -3%. One block costs the strong downscales 3-5%.
 - The build's minimums on these rows agree with the first session's within 3.5%.
 - 4K -> 1080p Grayscale8: medians and minimums disagree by up to 14 points.
+
+## AVX primitives in the SSE4.1 level's place, ad7966e (not adopted)
+
+The header above ported to ad7966e's outline, MSVC 19.51, built on the 12600K: `interleavedRowPairs` and a
+`longestFixedXRun` of 20 as at AVX2, the pixel pairs widened by 128-bit steps. "Not interleaved" is the same build
+with `interleavedRowPairs` off.
+
+Single-threaded display and layout rows: six alternating rounds of plain, AVX and not interleaved, median of same-round
+ratios / minimum to minimum. vex: a separate session of six rounds against plain. QImage: the best of three
+controls-only runs.
+
+| Scenario | QImage, ms | Plain, ms | AVX, ms | Plain / QImage | AVX / QImage | AVX / plain | Not interleaved / plain | vex / plain |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | 68.1 | 178.0 | 144.8 | 2.61 | 2.12 | -18.2% / -18.7% | -19.0% / -19.0% | -7.1% / -7.6% |
+| 2.8 MP -> 1920x1280 | 33.8 | 32.8 | 28.7 | 0.97 | 0.85 | -12.6% / -12.5% | -4.5% / -4.0% | -2.4% / -3.1% |
+| 4K -> 1600x900 | 35.5 | 68.1 | 52.4 | 1.92 | 1.47 | -23.0% / -23.1% | -17.4% / -17.7% | -3.7% / -4.2% |
+| 4K -> 720p | 20.1 | 60.6 | 45.0 | 3.01 | 2.23 | -25.5% / -25.8% | -16.7% / -17.4% | -5.5% / -6.2% |
+| 4K -> 1080p RGB32 | 28.0 | 64.6 | 57.3 | 2.30 | 2.05 | -10.8% / -11.2% | -5.1% / -4.8% | -3.3% / -2.7% |
+| 4K -> 1080p RGBA32 | 67.9 | 88.3 | 68.7 | 1.30 | 1.01 | -22.6% / -22.2% | -13.1% / -12.9% | -11.7% / -11.5% |
+| 4K -> 1080p RGB24 | 61.2 | 63.9 | 56.3 | 1.04 | 0.92 | -11.9% / -11.9% | -5.4% / -5.2% | -0.0% / -0.1% |
+| 4K -> 1080p Grayscale8 | 75.4 | 27.9 | 25.6 | 0.37 | 0.34 | -8.3% / -8.2% | -8.5% / -7.7% | -8.4% / -8.3% |
+| 1080p -> 240p | 4.56 | 15.1 | 12.3 | 3.30 | 2.70 | -17.5% / -18.4% | -17.8% / -18.1% | -7.2% / -6.8% |
+| 1080p -> 120 px | 3.67 | 13.6 | 9.34 | 3.69 | 2.55 | -31.1% / -31.1% | -31.2% / -31.1% | -11.0% / -11.3% |
+| 21 MP -> 175 px | 41.8 | 132.2 | 86.6 | 3.17 | 2.07 | -34.5% / -34.5% | -34.4% / -34.4% | -11.9% / -11.8% |
+| 720p -> 4K RGBA32 | 198.6 | 48.1 | 46.0 | 0.24 | 0.23 | -5.7% / -4.4% | -2.7% / +0.7% | -5.0% / -5.7% |
+| 720p -> 4K RGB32 | 84.9 | 41.3 | 40.1 | 0.49 | 0.47 | -3.5% / -2.9% | +1.5% / +2.2% | -3.0% / -2.8% |
+| 720p -> 4K RGB24 | 100.2 | 36.9 | 36.0 | 0.37 | 0.36 | -5.5% / -2.5% | -3.6% / +3.0% | -1.6% / -2.3% |
+| 720p -> 4K Grayscale8 | 84.6 | 13.5 | 13.5 | 0.16 | 0.16 | +0.2% / -0.4% | -0.9% / -0.3% | +1.5% / +2.1% |
+
+Eight alternating rounds of plain and AVX: the threaded rows, 4K -> 64x64 and 101 MP -> 720p.
+
+| Scenario | QImage, ms | Plain, ms | AVX, ms | Plain / QImage | AVX / QImage | AVX / plain |
+|---|---:|---:|---:|---:|---:|---:|
+| 4K -> 64x64 | 23.6 | 51.5 | 34.3 | 2.19 | 1.45 | -33.3% / -33.4% |
+| 101 MP -> 720p | 182.0 | 679.7 | 514.1 | 3.73 | 2.82 | -22.3% / -24.4% |
+| 24 MP -> 1080p, threads | 68.1 | 84.2 | 66.0 | 1.24 | 0.97 | -21.2% / -21.7% |
+| 4K -> 1080p RGBA32, threads | 67.9 | 39.9 | 30.2 | 0.59 | 0.44 | -24.4% / -24.5% |
+| 4K -> 1080p RGB24, threads | 61.2 | 32.2 | 25.8 | 0.53 | 0.42 | -20.3% / -20.0% |
+| 720p -> 4K RGBA32, threads | 198.6 | 24.4 | 22.9 | 0.12 | 0.12 | -6.8% / -6.5% |
+| 720p -> 4K RGB24, threads | 100.2 | 19.0 | 18.3 | 0.19 | 0.18 | -4.8% / -3.9% |
+| 1080p -> 240p, threads | 4.56 | 7.32 | 5.98 | 1.61 | 1.31 | -18.8% / -18.4% |
+| 4K -> 64x64, threads | 23.6 | 29.8 | 21.9 | 1.27 | 0.93 | -26.4% / -26.5% |
+| 101 MP -> 720p, threads | 182.0 | 316.5 | 241.9 | 1.74 | 1.33 | -23.5% / -23.6% |
+
+- Interleaving: 3-12% on the rows with padded runs of 4-float pixels; the rows without them read alike either way.
+- MSVC's 4-tap column for a row pair, interleaved: 28 instructions, 4 multiplies, 4 `vshufps` from one
+  `vbroadcastf128`, no stack references. Not interleaved: indexed loads at 16-byte steps, `vperm2f128` and two
+  `vpermilps` for the weights, two `vextractf128` and adds for the halves.
+- The controls-only runs spread by at most 2.6%, 1080p -> 240p 12.9%. They agree with e8d2d15's session within about 3%.
+- Plain's minimums in the AVX and vex sessions agree within 1.4%, native size aside.
+- Plain 4K -> 1080p RGBA32: 88.3 ms, against 85.2 at 1e18e27 in another session; VEX encoding alone takes 11.7% off
+  it. Not investigated.
+- The tests pass under both builds on the 12600K at both levels.
