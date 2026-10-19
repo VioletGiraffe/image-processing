@@ -222,34 +222,43 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				{
 					// Two-argument min: the initializer-list overload is a library call under MSVC
 					const size_t convertedTarget = std::min(std::min(std::max(end, converted + conversionChunk), base + capacity), pixelEnd);
-					const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
-					if constexpr (Interleaved)
+					if constexpr (hasAlphaChannel(Channels))
 					{
-						const uint8_t* pixelsA = pixels[0] + converted * pixelStride;
-						const uint8_t* pixelsB = pixels[1] + converted * pixelStride;
-						float* pairFloats = floats[0] + (converted - base) * pixelFloats;
-						if (hasAlphaChannel(Channels) && premultiplyAlpha)
-							convertPixelPairsToFloats<Channels, PixelStride, hasAlphaChannel(Channels)>(pixelsA, pixelsB, pixelStride, pairFloats, convertedTarget - converted);
+						if (premultiplyAlpha)
+							convertPixelsUpTo<true>(convertedTarget);
 						else
-							convertPixelPairsToFloats<Channels, PixelStride, false>(pixelsA, pixelsB, pixelStride, pairFloats, convertedTarget - converted);
+							convertPixelsUpTo<false>(convertedTarget);
 					}
 					else
-					{
-						for (size_t row = 0; row < Rows; ++row)
-						{
-							const uint8_t* rowPixels = pixels[row] + converted * pixelStride;
-							float* rowFloats = floats[row] + (converted - base) * floatsPerPixel;
-							if (hasAlphaChannel(Channels) && premultiplyAlpha)
-								convertPixelsToFloats<Channels, PixelStride, hasAlphaChannel(Channels)>(rowPixels, pixelStride, rowFloats, convertedTarget - converted);
-							else
-								convertPixelsToFloats<Channels, PixelStride, false>(rowPixels, pixelStride, rowFloats, convertedTarget - converted);
-						}
-					}
+						convertPixelsUpTo<false>(convertedTarget);
 
 					converted = convertedTarget;
 				}
 
 				return (first - base) * pixelFloats;
+			}
+
+			// Converts pixels [converted, end) into the buffers
+			template <bool PremultiplyAlpha>
+			IMAGE_PROCESSING_SIMD_INLINE void convertPixelsUpTo(size_t end) noexcept
+			{
+				const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
+				if constexpr (Interleaved)
+				{
+					const uint8_t* pixelsA = pixels[0] + converted * pixelStride;
+					const uint8_t* pixelsB = pixels[1] + converted * pixelStride;
+					float* pairFloats = floats[0] + (converted - base) * pixelFloats;
+					convertPixelPairsToFloats<Channels, PixelStride, PremultiplyAlpha>(pixelsA, pixelsB, pixelStride, pairFloats, end - converted);
+				}
+				else
+				{
+					for (size_t row = 0; row < Rows; ++row)
+					{
+						const uint8_t* rowPixels = pixels[row] + converted * pixelStride;
+						float* rowFloats = floats[row] + (converted - base) * floatsPerPixel;
+						convertPixelsToFloats<Channels, PixelStride, PremultiplyAlpha>(rowPixels, pixelStride, rowFloats, end - converted);
+					}
+				}
 			}
 
 			const uint8_t* const pixels[Rows];
