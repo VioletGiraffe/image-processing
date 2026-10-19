@@ -30,8 +30,7 @@ namespace ImageProcessing
 		// pixelStrideBytes is the format's whole pixel size: RGB32 and RGBX64 pad theirs beyond the channels they expose.
 		switch (image.format())
 		{
-		case QImage::Format_Grayscale8: [[fallthrough]];
-		case QImage::Format_Indexed8:
+		case QImage::Format_Grayscale8:
 			view.channels = 1;
 			view.bytesPerChannel = 1;
 			view.pixelStrideBytes = 1;
@@ -99,7 +98,8 @@ namespace ImageProcessing
 		}
 	}
 
-	// False when either format has no view: the caller picks the fallback, QImage::scaled typically.
+	// False, dest untouched, when either format has no view, the channels are wider than a byte, or detectedSimdLevel() is empty:
+	// the caller picks the fallback, QImage::scaled typically.
 	// dest arrives at the target size; an empty srcRect means the whole source.
 	// A straight-alpha dest is switched to premultipliedFormat(): the output is premultiplied.
 	[[nodiscard]] inline bool resize(QImage& dest, const QImage& source, const QRect& srcRect = {}, const ParallelForFn& parallelFor = {},
@@ -108,7 +108,7 @@ namespace ImageProcessing
 		assert(srcRect.isEmpty() || source.rect().contains(srcRect));
 
 		const auto sourceView = imageView<true>(source);
-		if (!sourceView.data)
+		if (!sourceView.data || sourceView.bytesPerChannel != 1 || !detectedSimdLevel())
 			return false;
 
 		dest.reinterpretAsFormat(premultipliedFormat(dest.format()));

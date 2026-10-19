@@ -35,7 +35,6 @@ namespace
 
 	constexpr FormatMapping mappedFormats[] = {
 		{ QImage::Format_Grayscale8, "Grayscale8", 1, 1, 1 },
-		{ QImage::Format_Indexed8, "Indexed8", 1, 1, 1 },
 		{ QImage::Format_Grayscale16, "Grayscale16", 1, 2, 2 },
 		{ QImage::Format_RGB888, "RGB888", 3, 1, 3 },
 		{ QImage::Format_RGB32, "RGB32", 3, 1, 4 },
@@ -49,6 +48,7 @@ namespace
 
 	constexpr QImage::Format unmappedFormats[] = {
 		QImage::Format_Mono,
+		QImage::Format_Indexed8, // Palette indices, not levels
 		QImage::Format_RGB16,
 		QImage::Format_RGB666,
 		QImage::Format_BGR30,
@@ -223,6 +223,28 @@ TEST_CASE("A format with no view resizes nothing and reports failure", "[resize]
 	SECTION("A null image")
 	{
 		requireNoView(QImage());
+	}
+}
+
+TEST_CASE("Two-byte channels resize nothing and report failure", "[resize][qimage][validation]")
+{
+	for (const FormatMapping& mapping : mappedFormats)
+	{
+		if (mapping.bytesPerChannel == 1)
+			continue;
+
+		CAPTURE(mapping.name);
+
+		QImage source(testWidth, testHeight, mapping.format);
+		REQUIRE(!source.isNull());
+		writeBytePattern(source);
+
+		QImage dest(4, 3, mapping.format);
+		dest.fill(0);
+		const QImage untouched = dest.copy();
+
+		CHECK(!ImageProcessing::resize(dest, source));
+		CHECK(dest == untouched);
 	}
 }
 
