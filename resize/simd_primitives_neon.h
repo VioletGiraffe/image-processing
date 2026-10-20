@@ -347,4 +347,34 @@ namespace ImageProcessing::Detail::Neon
 		storeThirtyTwoBytesNonTemporal(dest,
 			vorrq_u8(vqtbl1q_u8(firstSixteenRgbBytes, rgbToRgb32), pixelTails), vorrq_u8(vqtbl1q_u8(lastTwelveRgbBytes, rgbToRgb32), pixelTails));
 	}
+
+	// The bytes premultiplyBlock takes
+	inline constexpr size_t premultiplyBlockBytes = 16;
+
+	// premultiplyPixelsScalar of the block at source, stored at dest; dest may be source.
+	// The rounding narrow of t + ((t + 128) >> 8) is t / 255 rounded to nearest for t up to 255 * 255: the scalar result, t / 255 never ending in .5.
+	template <size_t Channels>
+	IMAGE_PROCESSING_SIMD_INLINE void premultiplyBlock(uint8_t* dest, const uint8_t* source) noexcept
+	{
+		static_assert(Channels == 2 || Channels == 4);
+		const uint8x16_t pixels = vld1q_u8(source);
+		uint8x16_t alphas;
+		uint8x16_t alphaBytes;
+		if constexpr (Channels == 4)
+		{
+			static constexpr uint8_t alphaOfEachByte[16] = { 3, 3, 3, 3, 7, 7, 7, 7, 11, 11, 11, 11, 15, 15, 15, 15 };
+			alphas = vqtbl1q_u8(pixels, vld1q_u8(alphaOfEachByte));
+			alphaBytes = vreinterpretq_u8_u32(vdupq_n_u32(0xff000000u));
+		}
+		else
+		{
+			alphas = vtrn2q_u8(pixels, pixels);
+			alphaBytes = vreinterpretq_u8_u16(vdupq_n_u16(0xff00u));
+		}
+
+		const uint16x8_t productsLow = vmull_u8(vget_low_u8(pixels), vget_low_u8(alphas));
+		const uint16x8_t productsHigh = vmull_high_u8(pixels, alphas);
+		const uint8x16_t premultiplied = vcombine_u8(vrshrn_n_u16(vrsraq_n_u16(productsLow, productsLow, 8), 8), vrshrn_n_u16(vrsraq_n_u16(productsHigh, productsHigh, 8), 8));
+		vst1q_u8(dest, vbslq_u8(alphaBytes, pixels, premultiplied));
+	}
 }

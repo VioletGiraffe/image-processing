@@ -165,6 +165,17 @@ namespace ImageProcessing::Detail
 		return hasAlphaChannel(image.channels) && image.alphaKind == AlphaKind::Straight;
 	}
 
+	// Color times alpha / 255 in place, rounded to nearest as the float premultiply of the filtering paths does
+	inline void premultiplyPixelsScalar(uint8_t* pixels, size_t pixelCount, size_t pixelStride, size_t channels) noexcept
+	{
+		for (uint8_t* pixel = pixels, *end = pixels + pixelCount * pixelStride; pixel != end; pixel += pixelStride)
+		{
+			const unsigned alpha = pixel[channels - 1];
+			for (size_t channel = 0; channel + 1 < channels; ++channel)
+				pixel[channel] = static_cast<uint8_t>((pixel[channel] * alpha + 127) / 255);
+		}
+	}
+
 	[[nodiscard]] IMAGE_PROCESSING_FORCE_INLINE uint8_t clampToByte(float value) noexcept
 	{
 		value = std::min(std::max(value, 0.0f), 255.0f);
@@ -209,6 +220,9 @@ namespace ImageProcessing::Detail
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 		// The longest AxisWeights::paddedRunLength resizeRows takes for the x axis
 		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
+		// premultiplyPixelsScalar of tightly packed Channels-byte pixels, Channels 2 or 4, from source to dest; dest may be source
+		template <size_t Channels>
+		IMAGE_PROCESSING_AVX2_TARGET void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
 	}
 
 	namespace Avx
@@ -218,6 +232,8 @@ namespace ImageProcessing::Detail
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 		// As Avx2's
 		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
+		template <size_t Channels>
+		IMAGE_PROCESSING_AVX_TARGET void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
 	}
 
 	// Legacy-SSE encoded: every thread running it clears the upper YMM state first wherever AVX exists
@@ -228,6 +244,8 @@ namespace ImageProcessing::Detail
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 		// As Avx2's
 		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
+		template <size_t Channels>
+		IMAGE_PROCESSING_SSE41_TARGET void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
 	}
 #else
 	namespace Neon
@@ -237,6 +255,9 @@ namespace ImageProcessing::Detail
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 		// The longest AxisWeights::paddedRunLength resizeRows takes for the x axis
 		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
+		// premultiplyPixelsScalar of tightly packed Channels-byte pixels, Channels 2 or 4, from source to dest; dest may be source
+		template <size_t Channels>
+		void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
 	}
 #endif
 }

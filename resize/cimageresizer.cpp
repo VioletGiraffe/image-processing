@@ -371,18 +371,45 @@ namespace
 		return buildAxisWeights<BicubicKernel>(srcSize, dstSize, runsStartInOrder);
 	}
 
-	// Rounds to nearest, as the float premultiply of the filtering paths does
-	inline void premultiplyPixels(uint8_t* pixels, size_t pixelCount, size_t pixelStride, size_t channels) noexcept
+	using PixelPremultiplier = void(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
+
+	template <size_t Channels>
+	[[nodiscard]] PixelPremultiplier* pixelPremultiplierFor([[maybe_unused]] SimdLevel simdLevel) noexcept
 	{
-		for (uint8_t* pixel = pixels, *end = pixels + pixelCount * pixelStride; pixel != end; pixel += pixelStride)
+#if IMAGE_PROCESSING_X64
+		switch (simdLevel)
 		{
-			const unsigned alpha = pixel[channels - 1];
-			for (size_t channel = 0; channel + 1 < channels; ++channel)
-				pixel[channel] = static_cast<uint8_t>((pixel[channel] * alpha + 127) / 255);
+		case SimdLevel::Avx2: return &Avx2::premultiplyPixels<Channels>;
+		case SimdLevel::Avx: return &Avx::premultiplyPixels<Channels>;
+		default: return &Sse41::premultiplyPixels<Channels>;
 		}
+#else
+		return &Neon::premultiplyPixels<Channels>;
+#endif
 	}
 
-	inline void copyUnscaledCrop(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, size_t pixelStride)
+	// premultiplyPixelsScalar from source to dest, through the SIMD level's code for tightly packed 2 and 4 channels; dest may be source
+	void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount, size_t pixelStride, size_t channels, SimdLevel simdLevel) noexcept
+	{
+		if (pixelStride == channels && channels == 4)
+		{
+			pixelPremultiplierFor<4>(simdLevel)(dest, source, pixelCount);
+			return;
+		}
+
+		if (pixelStride == channels && channels == 2)
+		{
+			pixelPremultiplierFor<2>(simdLevel)(dest, source, pixelCount);
+			return;
+		}
+
+		if (dest != source)
+			::memcpy(dest, source, pixelCount * pixelStride);
+
+		premultiplyPixelsScalar(dest, pixelCount, pixelStride, channels);
+	}
+
+	inline void copyUnscaledCrop(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, size_t pixelStride, SimdLevel simdLevel)
 	{
 		const bool premultiplyAlpha = hasStraightAlpha(source);
 		const size_t logicalRowBytes = static_cast<size_t>(dest.width) * pixelStride;
@@ -390,10 +417,10 @@ namespace
 		{
 			const auto* srcRow = source.scanLine<uint8_t>(srcRect.top + y) + srcRect.left * pixelStride;
 			auto* dstRow = dest.scanLine<uint8_t>(y);
-			::memcpy(dstRow, srcRow, logicalRowBytes);
-
 			if (premultiplyAlpha)
-				premultiplyPixels(dstRow, static_cast<size_t>(dest.width), pixelStride, source.channels);
+				premultiplyPixels(dstRow, srcRow, static_cast<size_t>(dest.width), pixelStride, source.channels, simdLevel);
+			else
+				::memcpy(dstRow, srcRow, logicalRowBytes);
 		}
 	}
 
@@ -405,7 +432,7 @@ namespace
 
 	// PixelStride 0: the stride is read from the views at run time
 	template <size_t PixelStride>
-	void resizeNearestNeighbor(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor)
+	void resizeNearestNeighbor(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, SimdLevel simdLevel)
 	{
 		const size_t pixelStride = PixelStride != 0 ? PixelStride : source.pixelStrideBytes;
 		assert(pixelStride == source.pixelStrideBytes);
@@ -439,8 +466,7 @@ namespace
 				const uint8_t* sourceSpan = source.scanLine<uint8_t>(srcRect.top + sourceRow) + srcRect.left * pixelStride;
 				if (premultiplySourceSpan)
 				{
-					::memcpy(premultipliedSpan.data(), sourceSpan, premultipliedSpan.size());
-					premultiplyPixels(premultipliedSpan.data(), sourceSpanPixels, pixelStride, source.channels);
+					premultiplyPixels(premultipliedSpan.data(), sourceSpan, sourceSpanPixels, pixelStride, source.channels, simdLevel);
 					sourceSpan = premultipliedSpan.data();
 				}
 
@@ -448,7 +474,7 @@ namespace
 					::memcpy(destRow + dx * pixelStride, sourceSpan + sourceOffsets[dx], pixelStride);
 
 				if (premultiplyAlpha && !premultiplySourceSpan)
-					premultiplyPixels(destRow, destWidth, pixelStride, source.channels);
+					premultiplyPixels(destRow, destRow, destWidth, pixelStride, source.channels, simdLevel);
 			}
 		});
 	}
@@ -540,7 +566,7 @@ namespace
 
 		if (srcRect.w == dest.width && srcRect.h == dest.height)
 		{
-			copyUnscaledCrop(dest, source, srcRect, pixelStride);
+			copyUnscaledCrop(dest, source, srcRect, pixelStride, simdLevel);
 			return;
 		}
 
@@ -548,11 +574,11 @@ namespace
 		{
 			// Tight packing and four-byte pixels get a compile-time stride: a pixel then copies as one load and one store
 			if (pixelStride == Channels)
-				resizeNearestNeighbor<Channels>(dest, source, srcRect, parallelFor);
+				resizeNearestNeighbor<Channels>(dest, source, srcRect, parallelFor, simdLevel);
 			else if (pixelStride == 4)
-				resizeNearestNeighbor<4>(dest, source, srcRect, parallelFor);
+				resizeNearestNeighbor<4>(dest, source, srcRect, parallelFor, simdLevel);
 			else
-				resizeNearestNeighbor<0>(dest, source, srcRect, parallelFor);
+				resizeNearestNeighbor<0>(dest, source, srcRect, parallelFor, simdLevel);
 			return;
 		}
 

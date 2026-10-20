@@ -162,15 +162,19 @@ Resizer / QImage, lower is better. "T": with threads. "-": no such benchmark.
 
 ### Nearest neighbor
 
-Against `QImage::scaled` with `Qt::FastTransformation`, PC, one run at the commit adding the kernel, ms. "T": with threads.
+Against `QImage::scaled` with `Qt::FastTransformation`, ms, minimum of three rounds. "T": with threads, one run on the PC.
+- PC: MSVC, Qt 6.11.2.
+- Pi: Clang 22, Qt 6.8.2.
 
-| Scenario | Ours | Ours, T | Qt | Ours / Qt |
-|---|---|---|---|---|
-| 1080p -> 4K RGB32 | 6.76 | 3.78 | 9.09 | 0.74 |
-| 1080p -> 4K RGBA32 | 11.12 | 4.35 | 23.60 | 0.47 |
-| 640x480 -> 1080p RGB32 | 1.72 | - | 1.93 | 0.89 |
-| 640x480 -> 1080p RGBA32 | 2.33 | - | 6.00 | 0.39 |
+| Scenario | PC | PC, T | PC, Qt | Pi | Pi, T | Pi, Qt |
+|---|---|---|---|---|---|---|
+| 1080p -> 4K RGB32 | 7.76 | 3.23 | 7.97 | 21.6 | 16.9 | 22.0 |
+| 1080p -> 4K RGBA32 | 8.14 | 3.91 | 24.5 | 25.3 | 16.4 | 196.0 |
+| 640x480 -> 1080p RGB32 | 1.55 | - | 2.28 | 5.19 | - | 5.51 |
+| 640x480 -> 1080p RGBA32 | 1.63 | - | 6.27 | 5.77 | - | 49.1 |
 
+- Opaque RGB32 is level with Qt's dedicated loop: both copy pixel by pixel.
+- Threads gain 2.1-2.4x on the PC, 1.3-1.5x on the Pi.
 - Qt scales RGB32 and the premultiplied formats in dedicated loops. Straight alpha, RGB888, Grayscale8 and the 16-bit
   formats take its generic span pipeline, which converts to premultiplied ARGB32 and back for every pixel.
 - Qt runs the generic pipeline on its GUI thread pool. The controls disable that pool, so a viewer's straight-alpha
@@ -1100,6 +1104,28 @@ With the y runs trimmed again and no room behind a run in the source buffers, ag
   that session, one binary 13.2 and 14.1 ms (open lead 23).
 - The source buffers' change alone, against the commit before it: within 2% on the 8500T and the E-core at both
   levels; on the Pi 4K -> 1080p RGB32 -2.5%.
+
+### Straight alpha premultiplied in integer outside the filters
+
+Nearest neighbor and the unscaled copy premultiply bytes to bytes, in 16-bit words: the product, then an exact division
+by 255, a multiply-high by 0x8081 on x64 and a rounding narrow on NEON. Reusing the filters' float conversion and
+premultiply instead loses: every byte widens to a float and packs back.
+
+Prototype, RGBA, a 1920-pixel row in L1, ns per pixel, median of 31:
+
+| Variant | 12600K P-core | 12600K E-core | 8500T |
+|---|---|---|---|
+| Scalar | 1.75 | 3.33 | 3.90 |
+| Integer SSE4.1 | 0.30 | 0.47 | 0.51 |
+| Float SSE4.1 | 0.70 | 1.18 | 0.98 |
+| Float AVX2 | 0.40 | 1.31 | 0.60 |
+| Integer AVX2 | 0.15 | 0.47 | 0.26 |
+
+- The E-core gains nothing from AVX2: Gracemont splits 256-bit operations.
+- Nearest neighbor, straight RGBA32, scalar -> NEON on the Pi (Clang, three rounds): 1080p -> 4K 42.9 -> 25.3 ms,
+  640x480 -> 1080p 8.6 -> 5.8 ms; with threads 16.9 -> 16.4 ms.
+- On the PC the straight-alpha rows now cost what the opaque ones do. The scalar premultiply added 4.4 ms at
+  1080p -> 4K.
 
 ## Experiments that lost
 

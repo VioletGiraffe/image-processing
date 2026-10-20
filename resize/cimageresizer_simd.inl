@@ -1344,4 +1344,23 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 	IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS(4, 0)
 
 #undef IMAGE_PROCESSING_INSTANTIATE_RESIZE_ROWS
+
+	template <size_t Channels>
+	IMAGE_PROCESSING_SIMD_TARGET void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept
+	{
+		constexpr size_t blockPixels = premultiplyBlockBytes / Channels;
+		const size_t blockedPixels = pixelCount / blockPixels * blockPixels;
+		for (size_t pixel = 0; pixel < blockedPixels; pixel += blockPixels)
+			premultiplyBlock<Channels>(dest + pixel * Channels, source + pixel * Channels);
+
+		uint8_t* const tail = dest + blockedPixels * Channels;
+		if (dest != source)
+			::memcpy(tail, source + blockedPixels * Channels, (pixelCount - blockedPixels) * Channels);
+
+		premultiplyPixelsScalar(tail, pixelCount - blockedPixels, Channels, Channels);
+		leaveKernel();
+	}
+
+	template void premultiplyPixels<2>(uint8_t*, const uint8_t*, size_t) noexcept;
+	template void premultiplyPixels<4>(uint8_t*, const uint8_t*, size_t) noexcept;
 }

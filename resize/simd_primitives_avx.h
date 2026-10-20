@@ -326,4 +326,32 @@ namespace ImageProcessing::Detail::Avx
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), pixels0);
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest + 16), pixels1);
 	}
+
+	// The bytes premultiplyBlock takes
+	inline constexpr size_t premultiplyBlockBytes = 16;
+
+	// 8 words of Channels-word pixels, alpha last: color times alpha / 255, rounded to nearest; alpha kept.
+	// (t + 127) / 255 is (t + 127) * 0x8081 >> 23 for any 16-bit t + 127, and color times alpha + 127 is at most 65152.
+	template <size_t Channels>
+	IMAGE_PROCESSING_SIMD_INLINE __m128i premultiplyPixelWords(__m128i words) noexcept
+	{
+		static_assert(Channels == 2 || Channels == 4);
+		const __m128i alphaOfEachWord = Channels == 4
+			? _mm_setr_epi8(6, 7, 6, 7, 6, 7, 6, 7, 14, 15, 14, 15, 14, 15, 14, 15)
+			: _mm_setr_epi8(2, 3, 2, 3, 6, 7, 6, 7, 10, 11, 10, 11, 14, 15, 14, 15);
+		const __m128i products = _mm_add_epi16(_mm_mullo_epi16(words, _mm_shuffle_epi8(words, alphaOfEachWord)), _mm_set1_epi16(127));
+		const __m128i quotients = _mm_srli_epi16(_mm_mulhi_epu16(products, _mm_set1_epi16(static_cast<short>(0x8081))), 7);
+		return _mm_blend_epi16(quotients, words, Channels == 4 ? 0x88 : 0xAA);
+	}
+
+	// premultiplyPixelsScalar of the block at source, stored at dest; dest may be source
+	template <size_t Channels>
+	IMAGE_PROCESSING_SIMD_INLINE void premultiplyBlock(uint8_t* dest, const uint8_t* source) noexcept
+	{
+		const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(source));
+		const __m128i zero = _mm_setzero_si128();
+		const __m128i low = premultiplyPixelWords<Channels>(_mm_unpacklo_epi8(bytes, zero));
+		const __m128i high = premultiplyPixelWords<Channels>(_mm_unpackhi_epi8(bytes, zero));
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), _mm_packus_epi16(low, high));
+	}
 }

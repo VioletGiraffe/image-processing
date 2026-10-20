@@ -339,4 +339,33 @@ namespace ImageProcessing::Detail::Avx2
 			0, 1, 2, -1, 3, 4, 5, -1, 6, 7, 8, -1, 9, 10, 11, -1);
 		_mm256_storeu_si256(reinterpret_cast<__m256i*>(dest), _mm256_or_si256(_mm256_shuffle_epi8(colorBytes, rgbToRgb32), pixelTails));
 	}
+
+	// The bytes premultiplyBlock takes
+	inline constexpr size_t premultiplyBlockBytes = 32;
+
+	// 16 words of Channels-word pixels, alpha last, two pixels' worth per 128-bit lane: color times alpha / 255, rounded to nearest; alpha kept.
+	// (t + 127) / 255 is (t + 127) * 0x8081 >> 23 for any 16-bit t + 127, and color times alpha + 127 is at most 65152.
+	template <size_t Channels>
+	IMAGE_PROCESSING_SIMD_INLINE __m256i premultiplyPixelWords(__m256i words) noexcept
+	{
+		static_assert(Channels == 2 || Channels == 4);
+		const __m256i alphaOfEachWord = Channels == 4
+			? _mm256_setr_epi8(6, 7, 6, 7, 6, 7, 6, 7, 14, 15, 14, 15, 14, 15, 14, 15, 6, 7, 6, 7, 6, 7, 6, 7, 14, 15, 14, 15, 14, 15, 14, 15)
+			: _mm256_setr_epi8(2, 3, 2, 3, 6, 7, 6, 7, 10, 11, 10, 11, 14, 15, 14, 15, 2, 3, 2, 3, 6, 7, 6, 7, 10, 11, 10, 11, 14, 15, 14, 15);
+		const __m256i products = _mm256_add_epi16(_mm256_mullo_epi16(words, _mm256_shuffle_epi8(words, alphaOfEachWord)), _mm256_set1_epi16(127));
+		const __m256i quotients = _mm256_srli_epi16(_mm256_mulhi_epu16(products, _mm256_set1_epi16(static_cast<short>(0x8081))), 7);
+		return _mm256_blend_epi16(quotients, words, Channels == 4 ? 0x88 : 0xAA);
+	}
+
+	// premultiplyPixelsScalar of the block at source, stored at dest; dest may be source.
+	// The unpacks and the pack work per 128-bit lane, so the bytes come back in order.
+	template <size_t Channels>
+	IMAGE_PROCESSING_SIMD_INLINE void premultiplyBlock(uint8_t* dest, const uint8_t* source) noexcept
+	{
+		const __m256i bytes = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(source));
+		const __m256i zero = _mm256_setzero_si256();
+		const __m256i low = premultiplyPixelWords<Channels>(_mm256_unpacklo_epi8(bytes, zero));
+		const __m256i high = premultiplyPixelWords<Channels>(_mm256_unpackhi_epi8(bytes, zero));
+		_mm256_storeu_si256(reinterpret_cast<__m256i*>(dest), _mm256_packus_epi16(low, high));
+	}
 }
