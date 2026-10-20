@@ -162,19 +162,19 @@ Resizer / QImage, lower is better. "T": with threads. "-": no such benchmark.
 
 ### Nearest neighbor
 
-Against `QImage::scaled` with `Qt::FastTransformation`, ms, minimum of three rounds. "T": with threads, one run on the PC.
+Against `QImage::scaled` with `Qt::FastTransformation`, ms, minimum of three rounds. "T": with threads.
 - PC: MSVC, Qt 6.11.2.
 - Pi: Clang 22, Qt 6.8.2.
 
 | Scenario | PC | PC, T | PC, Qt | Pi | Pi, T | Pi, Qt |
 |---|---|---|---|---|---|---|
-| 1080p -> 4K RGB32 | 7.76 | 3.23 | 7.97 | 21.6 | 16.9 | 22.0 |
-| 1080p -> 4K RGBA32 | 8.14 | 3.91 | 24.5 | 25.3 | 16.4 | 196.0 |
-| 640x480 -> 1080p RGB32 | 1.55 | - | 2.28 | 5.19 | - | 5.51 |
-| 640x480 -> 1080p RGBA32 | 1.63 | - | 6.27 | 5.77 | - | 49.1 |
+| 1080p -> 4K RGB32 | 5.56 | 3.06 | 8.79 | 13.2 | 16.8 | 22.0 |
+| 1080p -> 4K RGBA32 | 5.85 | 3.69 | 24.5 | 16.2 | 15.7 | 195.2 |
+| 640x480 -> 1080p RGB32 | 1.25 | - | 1.95 | 3.31 | - | 5.50 |
+| 640x480 -> 1080p RGBA32 | 1.55 | - | 5.99 | 3.61 | - | 49.1 |
 
-- Opaque RGB32 is level with Qt's dedicated loop: both copy pixel by pixel.
-- Threads gain 2.1-2.4x on the PC, 1.3-1.5x on the Pi.
+- Threads gain 1.6-1.8x on the PC. On the Pi they gain nothing on RGBA32 and lose 27% on RGB32: the threaded rows held
+  at 16-17 ms while the serial ones fell with the SIMD expansion. The cause is unmeasured.
 - Qt scales RGB32 and the premultiplied formats in dedicated loops. Straight alpha, RGB888, Grayscale8 and the 16-bit
   formats take its generic span pipeline, which converts to premultiplied ARGB32 and back for every pixel.
 - Qt runs the generic pipeline on its GUI thread pool. The controls disable that pool, so a viewer's straight-alpha
@@ -1126,6 +1126,40 @@ Prototype, RGBA, a 1920-pixel row in L1, ns per pixel, median of 31:
   640x480 -> 1080p 8.6 -> 5.8 ms; with threads 16.9 -> 16.4 ms.
 - On the PC the straight-alpha rows now cost what the opaque ones do. The scalar premultiply added 4.4 ms at
   1080p -> 4K.
+
+### Nearest neighbor expands 4-byte pixels in SIMD blocks
+
+Scaling up, a block of N dest pixels takes at most N consecutive source pixels: one load, one byte shuffle (`pshufb`,
+`tbl`, or `vpermd` at AVX2), one store. A plan built once per resize holds each block's load offset and selector.
+- Selector: a 2-bit-per-pixel pattern indexing one shared table of 256 masks; byte indices at AVX2.
+- The last block overlaps its predecessor.
+- Downscales, rows narrower than a block and other pixel strides keep the scalar copy.
+
+Prototype, one 3840-pixel row, ns per dest pixel, scales 1.07x to 8x:
+
+| Variant | 12600K P-core | 12600K E-core | Pi (Clang) |
+|---|---|---|---|
+| Scalar | 0.21-0.26 | 0.62-0.65 | 1.26-1.42 |
+| 16-byte shuffle, a mask per block | 0.12 | 0.20-0.23 | 0.83-0.99 |
+| 16-byte shuffle, the mask table | 0.12-0.13 | 0.23 | 0.84-0.87 |
+| AVX2 `vpermd`, byte indices | 0.06 | 0.13 | - |
+
+- A block costs the Pi about 3.4 ns, whatever its pixel size: 8-pixel `tbl2` blocks were no faster.
+- 1-byte pixels gained 6-11x in the prototype; they are not implemented.
+
+Nearest neighbor before -> after, ms, minimum of three alternating rounds:
+
+| Scenario | PC | 8500T | Pi, Clang | Pi, GCC |
+|---|---|---|---|---|
+| 1080p -> 4K RGB32 | 7.05 -> 5.56 | 10.1 -> 6.49 | 21.5 -> 13.2 | -39% |
+| 1080p -> 4K RGBA32 | 7.68 -> 5.85 | 10.8 -> 7.04 | 25.4 -> 16.2 | -34% |
+| 640x480 -> 1080p RGB32 | 1.77 -> 1.25 | 2.60 -> 1.59 | 5.21 -> 3.31 | -35% |
+| 640x480 -> 1080p RGBA32 | 1.87 -> 1.55 | 2.53 -> 1.67 | 5.84 -> 3.61 | -33% |
+| 1080p -> 4K RGB32, T | 3.73 -> 3.06 | 4.40 -> 3.83 | 16.6 -> 16.8 | -2% |
+| 1080p -> 4K RGBA32, T | 3.84 -> 3.69 | 5.68 -> 3.85 | 16.4 -> 15.7 | -2% |
+
+- The Qt controls stayed within 2% on the PC and the Pi, and moved up to 13% on the 8500T.
+- Pi, GCC: ratios only. The run reached the soft temperature limit (`get_throttled` 0x80000).
 
 ## Experiments that lost
 

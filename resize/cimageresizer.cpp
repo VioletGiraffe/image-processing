@@ -424,10 +424,33 @@ namespace
 		}
 	}
 
-	// The source pixel under the centre of dest pixel d
-	[[nodiscard]] constexpr uint64_t nearestSourcePixel(uint64_t d, uint64_t srcSize, uint64_t dstSize) noexcept
+	using FourBytePixelExpander = void(uint8_t* destRow, const uint8_t* sourceSpan, const FourBytePixelExpansion& plan) noexcept;
+
+	// Fills plan for the level's expander; null where the plan comes out empty
+	[[nodiscard]] FourBytePixelExpander* planFourBytePixelExpansion(FourBytePixelExpansion& plan, uint64_t srcWidth, uint64_t destWidth, [[maybe_unused]] SimdLevel simdLevel)
 	{
-		return (2 * d + 1) * srcSize / (2 * dstSize);
+		FourBytePixelExpander* expander = nullptr;
+#if IMAGE_PROCESSING_X64
+		switch (simdLevel)
+		{
+		case SimdLevel::Avx2:
+			Avx2::planFourBytePixelExpansion(plan, srcWidth, destWidth);
+			expander = &Avx2::expandFourBytePixels;
+			break;
+		case SimdLevel::Avx:
+			Avx::planFourBytePixelExpansion(plan, srcWidth, destWidth);
+			expander = &Avx::expandFourBytePixels;
+			break;
+		default:
+			Sse41::planFourBytePixelExpansion(plan, srcWidth, destWidth);
+			expander = &Sse41::expandFourBytePixels;
+			break;
+		}
+#else
+		Neon::planFourBytePixelExpansion(plan, srcWidth, destWidth);
+		expander = &Neon::expandFourBytePixels;
+#endif
+		return plan.sourceOffsets.empty() ? nullptr : expander;
 	}
 
 	// PixelStride 0: the stride is read from the views at run time
@@ -437,9 +460,15 @@ namespace
 		const size_t pixelStride = PixelStride != 0 ? PixelStride : source.pixelStrideBytes;
 		assert(pixelStride == source.pixelStrideBytes);
 
+		// Four-byte pixels expand in SIMD blocks where the level has a plan; the scalar copy serves the rest
+		FourBytePixelExpansion expansion;
+		FourBytePixelExpander* expandFourBytePixels = nullptr;
+		if constexpr (PixelStride == 4)
+			expandFourBytePixels = planFourBytePixelExpansion(expansion, srcRect.w, dest.width, simdLevel);
+
 		const size_t destWidth = static_cast<size_t>(dest.width);
-		std::vector<size_t> sourceOffsets(destWidth);
-		for (size_t dx = 0; dx < destWidth; ++dx)
+		std::vector<size_t> sourceOffsets(expandFourBytePixels ? 0 : destWidth);
+		for (size_t dx = 0; dx < sourceOffsets.size(); ++dx)
 			sourceOffsets[dx] = static_cast<size_t>(nearestSourcePixel(dx, srcRect.w, dest.width)) * pixelStride;
 
 		const size_t destRowBytes = destWidth * pixelStride;
@@ -470,8 +499,13 @@ namespace
 					sourceSpan = premultipliedSpan.data();
 				}
 
-				for (size_t dx = 0; dx < destWidth; ++dx)
-					::memcpy(destRow + dx * pixelStride, sourceSpan + sourceOffsets[dx], pixelStride);
+				if (expandFourBytePixels)
+					expandFourBytePixels(destRow, sourceSpan, expansion);
+				else
+				{
+					for (size_t dx = 0; dx < destWidth; ++dx)
+						::memcpy(destRow + dx * pixelStride, sourceSpan + sourceOffsets[dx], pixelStride);
+				}
 
 				if (premultiplyAlpha && !premultiplySourceSpan)
 					premultiplyPixels(destRow, destRow, destWidth, pixelStride, source.channels, simdLevel);

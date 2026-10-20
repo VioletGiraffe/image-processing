@@ -1356,7 +1356,8 @@ TEST_CASE("Nearest neighbor crops match a direct reference", "[resize][nearest-n
 	{
 		CAPTURE(iteration);
 		const auto [channels, pixelStride] = nearestNeighborLayouts[iteration % std::size(nearestNeighborLayouts)];
-		const uint64_t sourceWidth = randomInRange(randomEngine, 1, 12);
+		// Wide enough for several of every level's expansion blocks, with a partial last one
+		const uint64_t sourceWidth = randomInRange(randomEngine, 1, 40);
 		const uint64_t sourceHeight = randomInRange(randomEngine, 1, 12);
 		const uint64_t cropWidth = randomInRange(randomEngine, 1, sourceWidth);
 		const uint64_t cropHeight = randomInRange(randomEngine, 1, sourceHeight);
@@ -1366,7 +1367,7 @@ TEST_CASE("Nearest neighbor crops match a direct reference", "[resize][nearest-n
 			cropWidth,
 			cropHeight
 		};
-		const uint64_t destWidth = randomInRange(randomEngine, 1, 16);
+		const uint64_t destWidth = randomInRange(randomEngine, 1, 100);
 		const uint64_t destHeight = randomInRange(randomEngine, 1, 16);
 		const size_t destPadding = randomInRange(randomEngine, 0, 4);
 		CAPTURE(+channels, +pixelStride, sourceWidth, sourceHeight, sourceRect.left, sourceRect.top, cropWidth, cropHeight, destWidth, destHeight);
@@ -1376,8 +1377,13 @@ TEST_CASE("Nearest neighbor crops match a direct reference", "[resize][nearest-n
 		source.alphaKind = iteration % 2 == 0 ? AlphaKind::Straight : AlphaKind::Premultiplied;
 		fillLogicalBytes(source, randomEngine);
 
-		TestImage dest(destWidth, destHeight, channels, pixelStride, destPadding, destFill);
-		resizeNearestNeighbor(dest, source, sourceRect);
-		requireBuffersEqual(dest, referenceNearestNeighbor(source, sourceRect, destWidth, destHeight, destPadding, destFill));
+		const TestImage expected = referenceNearestNeighbor(source, sourceRect, destWidth, destHeight, destPadding, destFill);
+		for (const SimdLevel simdLevel : supportedSimdLevels())
+		{
+			CAPTURE(simdLevelName(simdLevel));
+			TestImage dest(destWidth, destHeight, channels, pixelStride, destPadding, destFill);
+			resizeNearestNeighbor(dest, source, sourceRect, nullptr, simdLevel);
+			requireBuffersEqual(dest, expected);
+		}
 	}
 }

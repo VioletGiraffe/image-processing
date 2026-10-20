@@ -1363,4 +1363,48 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 	template void premultiplyPixels<2>(uint8_t*, const uint8_t*, size_t) noexcept;
 	template void premultiplyPixels<4>(uint8_t*, const uint8_t*, size_t) noexcept;
+
+	IMAGE_PROCESSING_SIMD_TARGET void planFourBytePixelExpansion(FourBytePixelExpansion& plan, uint64_t srcWidth, uint64_t destWidth)
+	{
+		plan = {};
+		constexpr uint64_t blockPixels = expandBlockPixels;
+		if (srcWidth > destWidth || srcWidth < blockPixels || destWidth < blockPixels || srcWidth > UINT32_MAX / 4)
+		{
+			leaveKernel();
+			return;
+		}
+
+		const size_t blockCount = static_cast<size_t>((destWidth + blockPixels - 1) / blockPixels);
+		plan.sourceOffsets.resize(blockCount);
+		plan.selectors.resize(blockCount * expandSelectorBytes);
+		for (size_t block = 0; block < blockCount; ++block)
+		{
+			const uint64_t firstPixel = std::min(block * blockPixels, destWidth - blockPixels);
+			// Scaling up, a block's pixels take at most blockPixels source pixels; the load shifts left where it would pass the span's end
+			const uint64_t loadStart = std::min(nearestSourcePixel(firstPixel, srcWidth, destWidth), srcWidth - blockPixels);
+			uint8_t placesInLoad[expandBlockPixels];
+			for (uint64_t pixel = 0; pixel < blockPixels; ++pixel)
+				placesInLoad[pixel] = static_cast<uint8_t>(nearestSourcePixel(firstPixel + pixel, srcWidth, destWidth) - loadStart);
+
+			plan.sourceOffsets[block] = static_cast<uint32_t>(loadStart * 4);
+			writeExpandSelectors(plan.selectors.data() + block * expandSelectorBytes, placesInLoad);
+		}
+
+		plan.lastBlockDestOffset = static_cast<size_t>(destWidth - blockPixels) * 4;
+		leaveKernel();
+	}
+
+	IMAGE_PROCESSING_SIMD_TARGET void expandFourBytePixels(uint8_t* destRow, const uint8_t* sourceSpan, const FourBytePixelExpansion& plan) noexcept
+	{
+		const size_t blockCount = plan.sourceOffsets.size();
+		assert(blockCount > 0);
+
+		const uint32_t* sourceOffsets = plan.sourceOffsets.data();
+		const uint8_t* selectors = plan.selectors.data();
+		for (size_t block = 0; block + 1 < blockCount; ++block)
+			expandBlock(destRow + block * expandBlockPixels * 4, sourceSpan + sourceOffsets[block], selectors + block * expandSelectorBytes);
+
+		expandBlock(destRow + plan.lastBlockDestOffset, sourceSpan + sourceOffsets[blockCount - 1], selectors + (blockCount - 1) * expandSelectorBytes);
+		leaveKernel();
+	}
 }

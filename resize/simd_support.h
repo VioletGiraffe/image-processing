@@ -20,6 +20,10 @@
 	#include <immintrin.h>
 #endif
 
+#include <array>
+#include <stddef.h>
+#include <stdint.h>
+
 // The *_INLINE macros are forced: the kernels' per-column and per-pixel helpers must not become calls
 #if defined(__GNUC__) || defined(__clang__)
 	#define IMAGE_PROCESSING_FORCE_INLINE inline __attribute__((always_inline))
@@ -80,6 +84,26 @@ namespace ImageProcessing::Detail
 #else
 	inline constexpr bool compilerIsMsvc = false;
 #endif
+
+	// 4 four-byte pixels' places in a 16-byte load, 0-3 each, as one byte of 2 bits per pixel: an index into fourPixelShuffleMasks
+	[[nodiscard]] constexpr uint8_t fourPixelShufflePattern(const uint8_t* placesInLoad) noexcept
+	{
+		return static_cast<uint8_t>(placesInLoad[0] | placesInLoad[1] << 2 | placesInLoad[2] << 4 | placesInLoad[3] << 6);
+	}
+
+	// The byte shuffle mask of every fourPixelShufflePattern
+	inline constexpr std::array<std::array<uint8_t, 16>, 256> fourPixelShuffleMasks = [] {
+		std::array<std::array<uint8_t, 16>, 256> masks{};
+		for (size_t pattern = 0; pattern < 256; ++pattern)
+		{
+			for (size_t pixel = 0; pixel < 4; ++pixel)
+			{
+				for (size_t byte = 0; byte < 4; ++byte)
+					masks[pattern][pixel * 4 + byte] = static_cast<uint8_t>(((pattern >> (2 * pixel)) & 3) * 4 + byte);
+			}
+		}
+		return masks;
+	}();
 }
 
 namespace ImageProcessing::SimdSupport

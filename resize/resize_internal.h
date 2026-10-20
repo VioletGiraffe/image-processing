@@ -165,6 +165,21 @@ namespace ImageProcessing::Detail
 		return hasAlphaChannel(image.channels) && image.alphaKind == AlphaKind::Straight;
 	}
 
+	// The source pixel under the centre of dest pixel d
+	[[nodiscard]] constexpr uint64_t nearestSourcePixel(uint64_t d, uint64_t srcSize, uint64_t dstSize) noexcept
+	{
+		return (2 * d + 1) * srcSize / (2 * dstSize);
+	}
+
+	// A SIMD level's plan for expanding a row of 4-byte pixels to nearest neighbor, srcWidth -> destWidth, in blocks.
+	// Empty where the level has no plan: a downscale, a row narrower than a block, or byte offsets past 32 bits.
+	struct FourBytePixelExpansion
+	{
+		std::vector<uint32_t> sourceOffsets; // per block, the byte offset of its load in the source row
+		std::vector<uint8_t> selectors;      // per block, the level's encoding of each pixel's place in that load
+		size_t lastBlockDestOffset = 0;      // the last block ends at the row's end, overlapping its predecessor where the row is not whole blocks
+	};
+
 	// Color times alpha / 255 in place, rounded to nearest as the float premultiply of the filtering paths does
 	inline void premultiplyPixelsScalar(uint8_t* pixels, size_t pixelCount, size_t pixelStride, size_t channels) noexcept
 	{
@@ -223,6 +238,9 @@ namespace ImageProcessing::Detail
 		// premultiplyPixelsScalar of tightly packed Channels-byte pixels, Channels 2 or 4, from source to dest; dest may be source
 		template <size_t Channels>
 		IMAGE_PROCESSING_AVX2_TARGET void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
+		IMAGE_PROCESSING_AVX2_TARGET void planFourBytePixelExpansion(FourBytePixelExpansion& plan, uint64_t srcWidth, uint64_t destWidth);
+		// Requires a non-empty plan from this level; sourceSpan holds the plan's srcWidth pixels
+		IMAGE_PROCESSING_AVX2_TARGET void expandFourBytePixels(uint8_t* destRow, const uint8_t* sourceSpan, const FourBytePixelExpansion& plan) noexcept;
 	}
 
 	namespace Avx
@@ -234,6 +252,8 @@ namespace ImageProcessing::Detail
 		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
 		template <size_t Channels>
 		IMAGE_PROCESSING_AVX_TARGET void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
+		IMAGE_PROCESSING_AVX_TARGET void planFourBytePixelExpansion(FourBytePixelExpansion& plan, uint64_t srcWidth, uint64_t destWidth);
+		IMAGE_PROCESSING_AVX_TARGET void expandFourBytePixels(uint8_t* destRow, const uint8_t* sourceSpan, const FourBytePixelExpansion& plan) noexcept;
 	}
 
 	// Legacy-SSE encoded: every thread running it clears the upper YMM state first wherever AVX exists
@@ -246,6 +266,8 @@ namespace ImageProcessing::Detail
 		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
 		template <size_t Channels>
 		IMAGE_PROCESSING_SSE41_TARGET void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
+		IMAGE_PROCESSING_SSE41_TARGET void planFourBytePixelExpansion(FourBytePixelExpansion& plan, uint64_t srcWidth, uint64_t destWidth);
+		IMAGE_PROCESSING_SSE41_TARGET void expandFourBytePixels(uint8_t* destRow, const uint8_t* sourceSpan, const FourBytePixelExpansion& plan) noexcept;
 	}
 #else
 	namespace Neon
@@ -258,6 +280,9 @@ namespace ImageProcessing::Detail
 		// premultiplyPixelsScalar of tightly packed Channels-byte pixels, Channels 2 or 4, from source to dest; dest may be source
 		template <size_t Channels>
 		void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
+		void planFourBytePixelExpansion(FourBytePixelExpansion& plan, uint64_t srcWidth, uint64_t destWidth);
+		// Requires a non-empty plan from this level; sourceSpan holds the plan's srcWidth pixels
+		void expandFourBytePixels(uint8_t* destRow, const uint8_t* sourceSpan, const FourBytePixelExpansion& plan) noexcept;
 	}
 #endif
 }

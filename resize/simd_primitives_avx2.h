@@ -368,4 +368,22 @@ namespace ImageProcessing::Detail::Avx2
 		const __m256i high = premultiplyPixelWords<Channels>(_mm256_unpackhi_epi8(bytes, zero));
 		_mm256_storeu_si256(reinterpret_cast<__m256i*>(dest), _mm256_packus_epi16(low, high));
 	}
+
+	// The 4-byte pixels expandBlock writes, from one load of as many source pixels
+	inline constexpr size_t expandBlockPixels = 8;
+	// The selector bytes per block: each pixel's place in the load
+	inline constexpr size_t expandSelectorBytes = 8;
+
+	// placesInLoad: each of the block's pixels' source pixel, counted from the block's load
+	IMAGE_PROCESSING_SIMD_INLINE void writeExpandSelectors(uint8_t* selectors, const uint8_t* placesInLoad) noexcept
+	{
+		for (size_t pixel = 0; pixel < expandBlockPixels; ++pixel)
+			selectors[pixel] = placesInLoad[pixel];
+	}
+
+	IMAGE_PROCESSING_SIMD_INLINE void expandBlock(uint8_t* dest, const uint8_t* source, const uint8_t* selectors) noexcept
+	{
+		const __m256i order = _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(selectors)));
+		_mm256_storeu_si256(reinterpret_cast<__m256i*>(dest), _mm256_permutevar8x32_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(source)), order));
+	}
 }

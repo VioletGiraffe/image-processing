@@ -354,4 +354,21 @@ namespace ImageProcessing::Detail::Avx
 		const __m128i high = premultiplyPixelWords<Channels>(_mm_unpackhi_epi8(bytes, zero));
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), _mm_packus_epi16(low, high));
 	}
+
+	// The 4-byte pixels expandBlock writes, from one load of as many source pixels
+	inline constexpr size_t expandBlockPixels = 4;
+	// The selector bytes per block: a fourPixelShufflePattern
+	inline constexpr size_t expandSelectorBytes = 1;
+
+	// placesInLoad: each of the block's pixels' source pixel, counted from the block's load
+	IMAGE_PROCESSING_SIMD_INLINE void writeExpandSelectors(uint8_t* selectors, const uint8_t* placesInLoad) noexcept
+	{
+		selectors[0] = fourPixelShufflePattern(placesInLoad);
+	}
+
+	IMAGE_PROCESSING_SIMD_INLINE void expandBlock(uint8_t* dest, const uint8_t* source, const uint8_t* selectors) noexcept
+	{
+		const __m128i mask = _mm_loadu_si128(reinterpret_cast<const __m128i*>(fourPixelShuffleMasks[selectors[0]].data()));
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(dest), _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(source)), mask));
+	}
 }

@@ -377,4 +377,20 @@ namespace ImageProcessing::Detail::Neon
 		const uint8x16_t premultiplied = vcombine_u8(vrshrn_n_u16(vrsraq_n_u16(productsLow, productsLow, 8), 8), vrshrn_n_u16(vrsraq_n_u16(productsHigh, productsHigh, 8), 8));
 		vst1q_u8(dest, vbslq_u8(alphaBytes, pixels, premultiplied));
 	}
+
+	// The 4-byte pixels expandBlock writes, from one load of as many source pixels
+	inline constexpr size_t expandBlockPixels = 4;
+	// The selector bytes per block: a fourPixelShufflePattern
+	inline constexpr size_t expandSelectorBytes = 1;
+
+	// placesInLoad: each of the block's pixels' source pixel, counted from the block's load
+	IMAGE_PROCESSING_SIMD_INLINE void writeExpandSelectors(uint8_t* selectors, const uint8_t* placesInLoad) noexcept
+	{
+		selectors[0] = fourPixelShufflePattern(placesInLoad);
+	}
+
+	IMAGE_PROCESSING_SIMD_INLINE void expandBlock(uint8_t* dest, const uint8_t* source, const uint8_t* selectors) noexcept
+	{
+		vst1q_u8(dest, vqtbl1q_u8(vld1q_u8(source), vld1q_u8(fourPixelShuffleMasks[selectors[0]].data())));
+	}
 }
