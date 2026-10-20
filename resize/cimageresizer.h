@@ -55,6 +55,7 @@ namespace ImageProcessing
 		Auto, // Catmull-Rom when upscaling, Lanczos3 when downscaling, chosen per axis
 		CatmullRom,
 		Lanczos3,
+		NearestNeighbor, // Each dest pixel copies the source pixel under its centre
 	};
 
 	// The instruction sets of the kernels: x64 needs SSE4.1 at least, and ARM64 always has NEON.

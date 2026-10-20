@@ -58,6 +58,7 @@ ComparisonOutput runComparison(const ComparisonInput& input)
 		{ QStringLiteral("Ours: auto"), [&] { return resizeWithOurs(src, outputSize, parallelFor, ResizeKernel::Auto); } },
 		{ QStringLiteral("Ours: Catmull-Rom"), [&] { return resizeWithOurs(src, outputSize, parallelFor, ResizeKernel::CatmullRom); } },
 		{ QStringLiteral("Ours: Lanczos3"), [&] { return resizeWithOurs(src, outputSize, parallelFor, ResizeKernel::Lanczos3); } },
+		{ QStringLiteral("Ours: nearest neighbor"), [&] { return resizeWithOurs(src, outputSize, parallelFor, ResizeKernel::NearestNeighbor); } },
 		{ QStringLiteral("Qt smooth"), [&] { return src.scaled(outputSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation); } },
 		{ QStringLiteral("Qt fast"), [&] { return src.scaled(outputSize, Qt::IgnoreAspectRatio, Qt::FastTransformation); } },
 	};

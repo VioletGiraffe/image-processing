@@ -5,6 +5,7 @@ Image resizer with hand-optimized SIMD kernels for x64 and ARM64
 ## Resizer
 
 - `resize()` in `resize/cimageresizer.h`: Catmull-Rom when upscaling, Lanczos3 when downscaling, chosen per axis.
+  Nearest neighbor on request: scalar, with each source row expanded once and copied to the dest rows that repeat it.
 - Takes 1-4 channels of 8 bits, with any pixel stride and row stride, and an optional source rectangle.
 - 2- and 4-channel images carry alpha as the last channel. The output is premultiplied; a straight-alpha source is
   premultiplied as it is read.

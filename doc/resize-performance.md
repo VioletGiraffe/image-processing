@@ -160,6 +160,22 @@ Resizer / QImage, lower is better. "T": with threads. "-": no such benchmark.
   upscales.
 - Opaque 4-byte downscales stay behind Qt single-threaded: about 2x on the PC, 2.6-5x on the Pi, 2.9-3.8x on the N4100.
 
+### Nearest neighbor
+
+Against `QImage::scaled` with `Qt::FastTransformation`, PC, one run at the commit adding the kernel, ms. "T": with threads.
+
+| Scenario | Ours | Ours, T | Qt | Ours / Qt |
+|---|---|---|---|---|
+| 1080p -> 4K RGB32 | 6.76 | 3.78 | 9.09 | 0.74 |
+| 1080p -> 4K RGBA32 | 11.12 | 4.35 | 23.60 | 0.47 |
+| 640x480 -> 1080p RGB32 | 1.72 | - | 1.93 | 0.89 |
+| 640x480 -> 1080p RGBA32 | 2.33 | - | 6.00 | 0.39 |
+
+- Qt scales RGB32 and the premultiplied formats in dedicated loops. Straight alpha, RGB888, Grayscale8 and the 16-bit
+  formats take its generic span pipeline, which converts to premultiplied ARGB32 and back for every pixel.
+- Qt runs the generic pipeline on its GUI thread pool. The controls disable that pool, so a viewer's straight-alpha
+  scale through Qt is faster than its column here.
+
 ## What the design rests on
 
 ### Per-instruction-set primitives, not SIMDe (963b54b)

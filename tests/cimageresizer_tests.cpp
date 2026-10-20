@@ -21,6 +21,7 @@ RESTORE_COMPILER_WARNINGS
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <numbers>
 #include <optional>
@@ -79,7 +80,8 @@ namespace
 		std::vector<uint8_t> data;
 	};
 
-	void resize(TestImage& dest, const TestImage& source, Rect sourceRect = {}, CThreadPool* threadPool = nullptr, std::optional<SimdLevel> simdCap = {})
+	void resize(TestImage& dest, const TestImage& source, Rect sourceRect = {}, CThreadPool* threadPool = nullptr, std::optional<SimdLevel> simdCap = {},
+		ImageProcessing::ResizeKernel kernel = ImageProcessing::ResizeKernel::Auto)
 	{
 		auto destView = dest.mutableView();
 		const auto sourceView = source.constView();
@@ -90,7 +92,12 @@ namespace
 
 		// The Pi 4's ring budget on every machine: the detected one would change the column strips under test
 		constexpr size_t ringBudgetBytes = 128 * 1024;
-		ImageProcessing::Detail::resizeWithRingBudget(destView, sourceView, sourceRect, parallelFor, ImageProcessing::ResizeKernel::Auto, simdCap, ringBudgetBytes);
+		ImageProcessing::Detail::resizeWithRingBudget(destView, sourceView, sourceRect, parallelFor, kernel, simdCap, ringBudgetBytes);
+	}
+
+	void resizeNearestNeighbor(TestImage& dest, const TestImage& source, Rect sourceRect = {}, CThreadPool* threadPool = nullptr)
+	{
+		resize(dest, source, sourceRect, threadPool, {}, ImageProcessing::ResizeKernel::NearestNeighbor);
 	}
 
 	void setPixel(TestImage& image, uint64_t x, uint64_t y, std::initializer_list<uint8_t> values)
@@ -165,6 +172,15 @@ namespace
 				}
 			}
 		}
+	}
+
+	// Compares whole buffers, row padding included; the per-pixel sweep runs only to diagnose a mismatch
+	void requireBuffersEqual(const TestImage& actual, const TestImage& expected)
+	{
+		const bool identical = actual.data == expected.data;
+		CHECK(identical);
+		if (!identical)
+			requirePixelsEqual(actual, expected);
 	}
 
 	TestImage tightlyPackedCrop(const TestImage& source, Rect sourceRect)
@@ -1193,12 +1209,136 @@ TEST_CASE("Parallel resize matches single-threaded results", "[resize][threading
 				CAPTURE(iteration);
 				TestImage parallelDest(job.destWidth, job.destHeight, channels, pixelStride);
 				resize(parallelDest, source, {}, &pool, simdCap);
-
-				const bool identical = parallelDest.data == serialDest.data;
-				CHECK(identical);
-				if (!identical)
-					requirePixelsEqual(parallelDest, serialDest);
+				requireBuffersEqual(parallelDest, serialDest);
 			}
 		}
+	}
+}
+
+namespace
+{
+	// One layout per stride the nearest-neighbor copy instantiates: tight packing, four-byte pixels, and a stride known only at run time
+	struct NearestNeighborLayout { uint8_t channels; uint8_t pixelStride; };
+	constexpr NearestNeighborLayout nearestNeighborLayouts[] = { { 1, 1 }, { 2, 2 }, { 3, 3 }, { 4, 4 }, { 3, 4 }, { 2, 4 }, { 3, 6 } };
+
+	// Centre sampling in double, independent of the production integer arithmetic; straight color is premultiplied.
+	// Writes only the logical row bytes: the row padding keeps fillValue.
+	[[nodiscard]] TestImage referenceNearestNeighbor(const TestImage& source, Rect sourceRect, uint64_t destWidth, uint64_t destHeight, size_t rowPadding, uint8_t fillValue)
+	{
+		if (sourceRect.w == 0 || sourceRect.h == 0)
+			sourceRect = Rect{ 0, 0, source.width, source.height };
+
+		const auto nearestSource = [](uint64_t destCoordinate, uint64_t sourceSize, uint64_t destSize) {
+			return static_cast<uint64_t>(std::floor((static_cast<double>(destCoordinate) + 0.5) * static_cast<double>(sourceSize) / static_cast<double>(destSize)));
+		};
+
+		const bool premultiply = source.alphaKind == AlphaKind::Straight && hasAlphaChannel(source.channels);
+		const size_t alphaChannel = source.channels - 1u;
+		TestImage result(destWidth, destHeight, source.channels, source.pixelStrideBytes, rowPadding, fillValue);
+		for (uint64_t y = 0; y < destHeight; ++y)
+		{
+			for (uint64_t x = 0; x < destWidth; ++x)
+			{
+				uint8_t* pixel = result.pixel(x, y);
+				const uint64_t sourceX = sourceRect.left + nearestSource(x, sourceRect.w, destWidth);
+				const uint64_t sourceY = sourceRect.top + nearestSource(y, sourceRect.h, destHeight);
+				std::copy_n(source.pixel(sourceX, sourceY), source.pixelStrideBytes, pixel);
+
+				if (premultiply)
+				{
+					for (size_t channel = 0; channel < alphaChannel; ++channel)
+						pixel[channel] = static_cast<uint8_t>(std::lround(pixel[channel] * pixel[alphaChannel] / 255.0));
+				}
+			}
+		}
+		return result;
+	}
+}
+
+TEST_CASE("Nearest neighbor matches hand-derived pixels", "[resize][nearest-neighbor][golden]")
+{
+	TestImage source(3, 2, 1, 1);
+	setPixels(source, {
+		10, 20, 30,
+		40, 50, 60
+	});
+
+	TestImage dest(7, 5, 1, 1);
+	resizeNearestNeighbor(dest, source);
+
+	// Dest columns take source columns 0, 0, 1, 1, 1, 2, 2; dest rows take source rows 0, 0, 1, 1, 1
+	requirePixels(dest, {
+		10, 10, 20, 20, 20, 30, 30,
+		10, 10, 20, 20, 20, 30, 30,
+		40, 40, 50, 50, 50, 60, 60,
+		40, 40, 50, 50, 50, 60, 60,
+		40, 40, 50, 50, 50, 60, 60
+	});
+}
+
+TEST_CASE("Nearest neighbor matches a direct reference for every pixel layout and geometry", "[resize][nearest-neighbor][reference][threading]")
+{
+	CThreadPool pool(4, "Resize test pool");
+	std::mt19937 randomEngine(20261020);
+	constexpr size_t rowPadding = 3;
+	constexpr uint8_t paddingSentinel = 0xa5;
+
+	for (const auto& [channels, pixelStride] : nearestNeighborLayouts)
+	{
+		CAPTURE(+channels, +pixelStride);
+		for (const ResizeJob& job : resizeJobs)
+		{
+			if (debugBuild && job.skippedInDebug)
+				continue;
+
+			CAPTURE(job.srcWidth, job.srcHeight, job.destWidth, job.destHeight);
+			TestImage source(job.srcWidth, job.srcHeight, channels, pixelStride);
+			source.alphaKind = AlphaKind::Straight; // Random color may exceed alpha
+			fillLogicalBytes(source, randomEngine);
+			const TestImage expected = referenceNearestNeighbor(source, {}, job.destWidth, job.destHeight, rowPadding, paddingSentinel);
+
+			for (CThreadPool* threadPool : { static_cast<CThreadPool*>(nullptr), &pool })
+			{
+				CAPTURE(threadPool != nullptr);
+				TestImage dest(job.destWidth, job.destHeight, channels, pixelStride, rowPadding, paddingSentinel);
+				resizeNearestNeighbor(dest, source, {}, threadPool);
+				requireBuffersEqual(dest, expected);
+			}
+		}
+	}
+}
+
+TEST_CASE("Nearest neighbor crops match a direct reference", "[resize][nearest-neighbor][source-rect]")
+{
+	std::mt19937 randomEngine(0x5eed2026);
+	constexpr uint8_t destFill = 0x1c;
+
+	for (size_t iteration = 0; iteration < 256; ++iteration)
+	{
+		CAPTURE(iteration);
+		const auto [channels, pixelStride] = nearestNeighborLayouts[iteration % std::size(nearestNeighborLayouts)];
+		const uint64_t sourceWidth = randomInRange(randomEngine, 1, 12);
+		const uint64_t sourceHeight = randomInRange(randomEngine, 1, 12);
+		const uint64_t cropWidth = randomInRange(randomEngine, 1, sourceWidth);
+		const uint64_t cropHeight = randomInRange(randomEngine, 1, sourceHeight);
+		const Rect sourceRect{
+			randomInRange(randomEngine, 0, sourceWidth - cropWidth),
+			randomInRange(randomEngine, 0, sourceHeight - cropHeight),
+			cropWidth,
+			cropHeight
+		};
+		const uint64_t destWidth = randomInRange(randomEngine, 1, 16);
+		const uint64_t destHeight = randomInRange(randomEngine, 1, 16);
+		const size_t destPadding = randomInRange(randomEngine, 0, 4);
+		CAPTURE(+channels, +pixelStride, sourceWidth, sourceHeight, sourceRect.left, sourceRect.top, cropWidth, cropHeight, destWidth, destHeight);
+
+		TestImage source(sourceWidth, sourceHeight, channels, pixelStride, randomInRange(randomEngine, 0, 4), 0xcc);
+		// The period of 2 is coprime with the layout count: every layout runs with both alpha kinds
+		source.alphaKind = iteration % 2 == 0 ? AlphaKind::Straight : AlphaKind::Premultiplied;
+		fillLogicalBytes(source, randomEngine);
+
+		TestImage dest(destWidth, destHeight, channels, pixelStride, destPadding, destFill);
+		resizeNearestNeighbor(dest, source, sourceRect);
+		requireBuffersEqual(dest, referenceNearestNeighbor(source, sourceRect, destWidth, destHeight, destPadding, destFill));
 	}
 }

@@ -123,8 +123,11 @@ namespace
 		uint8_t channels,
 		uint8_t pixelStrideBytes,
 		QImage::Format qImageFormat,
-		CThreadPool* threadPool = nullptr)
+		CThreadPool* threadPool = nullptr,
+		ImageProcessing::ResizeKernel kernel = ImageProcessing::ResizeKernel::Auto)
 	{
+		const bool nearestNeighbor = kernel == ImageProcessing::ResizeKernel::NearestNeighbor;
+
 		// A section per scenario: -c "<scenario name>" runs one
 		SECTION(name)
 		{
@@ -140,7 +143,7 @@ namespace
 				qImageFormat);
 			REQUIRE(!qImageSource.isNull());
 
-			// An SSE4.1 run only where the default one takes the AVX2 kernels: scaled, on an AVX2 CPU.
+			// An SSE4.1 run only where the default one takes the AVX2 kernels: filtered and scaled, on an AVX2 CPU.
 			// report_benchmark_ratios.py matches an SSE4.1 run to its default run by the scenario name.
 			// IMAGE_PROCESSING_BENCHMARK_NO_CONTROLS: only the default-level resizer runs, for comparing builds of it.
 			// IMAGE_PROCESSING_BENCHMARK_CONTROLS_ONLY: only the QImage controls run: every build times them alike.
@@ -150,7 +153,7 @@ namespace
 			if (!controlsOnly)
 			{
 				simdCaps.push_back(std::nullopt);
-				if (withControls && ImageProcessing::detectedSimdLevel() == SimdLevel::Avx2 && (sourceWidth != destWidth || sourceHeight != destHeight))
+				if (withControls && !nearestNeighbor && ImageProcessing::detectedSimdLevel() == SimdLevel::Avx2 && (sourceWidth != destWidth || sourceHeight != destHeight))
 					simdCaps.push_back(SimdLevel::Sse41);
 			}
 
@@ -176,7 +179,7 @@ namespace
 				{
 					BenchmarkImage dest(destWidth, destHeight, channels, pixelStrideBytes);
 					auto destView = dest.mutableView();
-					ImageProcessing::resize(destView, sourceView, {}, parallelFor, ImageProcessing::ResizeKernel::Auto, simdCap);
+					ImageProcessing::resize(destView, sourceView, {}, parallelFor, kernel, simdCap);
 					return dest.data[dest.dataSize / 2];
 				};
 			}
@@ -201,7 +204,7 @@ namespace
 						static_cast<int>(destWidth),
 						static_cast<int>(destHeight),
 						Qt::IgnoreAspectRatio,
-						Qt::SmoothTransformation);
+						nearestNeighbor ? Qt::FastTransformation : Qt::SmoothTransformation);
 					return dest.constBits()[dest.sizeInBytes() / 2];
 				};
 			}
@@ -231,6 +234,16 @@ TEST_CASE("Common pixel layouts", "[!benchmark][resize]")
 	benchmarkResize("4K to 1080p - RGBA32", 3840, 2160, 1920, 1080, 4, 4, QImage::Format_RGBA8888);
 	benchmarkResize("720p to 4K - Grayscale8", 1280, 720, 3840, 2160, 1, 1, QImage::Format_Grayscale8);
 	benchmarkResize("720p to 4K - RGB24", 1280, 720, 3840, 2160, 3, 3, QImage::Format_RGB888);
+}
+
+// Controls: QImage::scaled with Qt::FastTransformation. Straight RGBA32 takes Qt's generic pipeline, RGB32 its dedicated loop.
+TEST_CASE("Nearest-neighbor magnification", "[!benchmark][resize]")
+{
+	constexpr auto nearestNeighbor = ImageProcessing::ResizeKernel::NearestNeighbor;
+	benchmarkResize("1080p to 4K nearest neighbor - RGB32", 1920, 1080, 3840, 2160, 3, 4, QImage::Format_RGB32, nullptr, nearestNeighbor);
+	benchmarkResize("1080p to 4K nearest neighbor - RGBA32", 1920, 1080, 3840, 2160, 4, 4, QImage::Format_RGBA8888, nullptr, nearestNeighbor);
+	benchmarkResize("640x480 to 1080p nearest neighbor - RGB32", 640, 480, 1920, 1080, 3, 4, QImage::Format_RGB32, nullptr, nearestNeighbor);
+	benchmarkResize("640x480 to 1080p nearest neighbor - RGBA32", 640, 480, 1920, 1080, 4, 4, QImage::Format_RGBA8888, nullptr, nearestNeighbor);
 }
 
 // The downscaling end of the cost model: hundreds of filter taps per output pixel
@@ -263,4 +276,6 @@ TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 	benchmarkResize("1080p to 240p thumbnail - RGB32", 1920, 1080, 426, 240, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("4K image to 64x64 - RGB32", 3840, 2160, 64, 64, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("101 MP photo to 720p - RGB32", 11608, 8708, 1280, 720, 3, 4, QImage::Format_RGB32, &pool);
+	benchmarkResize("1080p to 4K nearest neighbor - RGB32", 1920, 1080, 3840, 2160, 3, 4, QImage::Format_RGB32, &pool, ImageProcessing::ResizeKernel::NearestNeighbor);
+	benchmarkResize("1080p to 4K nearest neighbor - RGBA32", 1920, 1080, 3840, 2160, 4, 4, QImage::Format_RGBA8888, &pool, ImageProcessing::ResizeKernel::NearestNeighbor);
 }

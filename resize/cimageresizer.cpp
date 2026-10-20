@@ -372,11 +372,14 @@ namespace
 	}
 
 	// Rounds to nearest, as the float premultiply of the filtering paths does
-	inline void premultiplyPixelBytes(uint8_t* pixel, size_t channels) noexcept
+	inline void premultiplyPixels(uint8_t* pixels, size_t pixelCount, size_t pixelStride, size_t channels) noexcept
 	{
-		const unsigned alpha = pixel[channels - 1];
-		for (size_t channel = 0; channel + 1 < channels; ++channel)
-			pixel[channel] = static_cast<uint8_t>((pixel[channel] * alpha + 127) / 255);
+		for (uint8_t* pixel = pixels, *end = pixels + pixelCount * pixelStride; pixel != end; pixel += pixelStride)
+		{
+			const unsigned alpha = pixel[channels - 1];
+			for (size_t channel = 0; channel + 1 < channels; ++channel)
+				pixel[channel] = static_cast<uint8_t>((pixel[channel] * alpha + 127) / 255);
+		}
 	}
 
 	inline void copyUnscaledCrop(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, size_t pixelStride)
@@ -390,11 +393,64 @@ namespace
 			::memcpy(dstRow, srcRow, logicalRowBytes);
 
 			if (premultiplyAlpha)
-			{
-				for (uint64_t x = 0; x < dest.width; ++x)
-					premultiplyPixelBytes(dstRow + static_cast<size_t>(x) * pixelStride, source.channels);
-			}
+				premultiplyPixels(dstRow, static_cast<size_t>(dest.width), pixelStride, source.channels);
 		}
+	}
+
+	// The source pixel under the centre of dest pixel d
+	[[nodiscard]] constexpr uint64_t nearestSourcePixel(uint64_t d, uint64_t srcSize, uint64_t dstSize) noexcept
+	{
+		return (2 * d + 1) * srcSize / (2 * dstSize);
+	}
+
+	// PixelStride 0: the stride is read from the views at run time
+	template <size_t PixelStride>
+	void resizeNearestNeighbor(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor)
+	{
+		const size_t pixelStride = PixelStride != 0 ? PixelStride : source.pixelStrideBytes;
+		assert(pixelStride == source.pixelStrideBytes);
+
+		const size_t destWidth = static_cast<size_t>(dest.width);
+		std::vector<size_t> sourceOffsets(destWidth);
+		for (size_t dx = 0; dx < destWidth; ++dx)
+			sourceOffsets[dx] = static_cast<size_t>(nearestSourcePixel(dx, srcRect.w, dest.width)) * pixelStride;
+
+		const size_t destRowBytes = destWidth * pixelStride;
+		const size_t sourceSpanPixels = static_cast<size_t>(srcRect.w);
+		const bool premultiplyAlpha = hasStraightAlpha(source);
+		// Premultiplies the narrower of the two: the source span when upscaling, the dest row when downscaling
+		const bool premultiplySourceSpan = premultiplyAlpha && srcRect.w <= dest.width;
+
+		forEachRowBand(parallelFor, dest.height, destRowBytes, [&](uint64_t rowBegin, uint64_t rowEnd)
+		{
+			std::vector<uint8_t> premultipliedSpan(premultiplySourceSpan ? sourceSpanPixels * pixelStride : 0);
+			uint64_t previousSourceRow = UINT64_MAX;
+			for (uint64_t dy = rowBegin; dy < rowEnd; ++dy)
+			{
+				uint8_t* destRow = dest.scanLine<uint8_t>(dy);
+				const uint64_t sourceRow = nearestSourcePixel(dy, srcRect.h, dest.height);
+				if (sourceRow == previousSourceRow)
+				{
+					::memcpy(destRow, dest.scanLine<uint8_t>(dy - 1), destRowBytes);
+					continue;
+				}
+				previousSourceRow = sourceRow;
+
+				const uint8_t* sourceSpan = source.scanLine<uint8_t>(srcRect.top + sourceRow) + srcRect.left * pixelStride;
+				if (premultiplySourceSpan)
+				{
+					::memcpy(premultipliedSpan.data(), sourceSpan, premultipliedSpan.size());
+					premultiplyPixels(premultipliedSpan.data(), sourceSpanPixels, pixelStride, source.channels);
+					sourceSpan = premultipliedSpan.data();
+				}
+
+				for (size_t dx = 0; dx < destWidth; ++dx)
+					::memcpy(destRow + dx * pixelStride, sourceSpan + sourceOffsets[dx], pixelStride);
+
+				if (premultiplyAlpha && !premultiplySourceSpan)
+					premultiplyPixels(destRow, destWidth, pixelStride, source.channels);
+			}
+		});
 	}
 
 	// Dest columns per strip: each thread holds a ring of temp rows for one strip at a time, and the strip width bounds
@@ -485,6 +541,18 @@ namespace
 		if (srcRect.w == dest.width && srcRect.h == dest.height)
 		{
 			copyUnscaledCrop(dest, source, srcRect, pixelStride);
+			return;
+		}
+
+		if (kernel == ResizeKernel::NearestNeighbor)
+		{
+			// Tight packing and four-byte pixels get a compile-time stride: a pixel then copies as one load and one store
+			if (pixelStride == Channels)
+				resizeNearestNeighbor<Channels>(dest, source, srcRect, parallelFor);
+			else if (pixelStride == 4)
+				resizeNearestNeighbor<4>(dest, source, srcRect, parallelFor);
+			else
+				resizeNearestNeighbor<0>(dest, source, srcRect, parallelFor);
 			return;
 		}
 
