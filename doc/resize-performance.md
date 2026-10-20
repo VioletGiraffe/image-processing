@@ -180,6 +180,23 @@ Against `QImage::scaled` with `Qt::FastTransformation`, ms, minimum of three rou
 - Qt runs the generic pipeline on its GUI thread pool. The controls disable that pool, so a viewer's straight-alpha
   scale through Qt is faster than its column here.
 
+4K -> 200 px wide, against the filtered kernel and `Qt::SmoothTransformation` too, ms, at 05f8105, minimum of three
+rounds. 8500T: MSVC, Qt 6.11.2. Pi: Clang 22; the soft temperature flag was set after the run.
+
+| Scenario | 8500T | 8500T, T | Pi | Pi, T |
+|---|---|---|---|---|
+| Nearest neighbor RGB32 | 0.049 | 0.057 | 0.471 | 0.510 |
+| Nearest neighbor RGBA32 | 0.054 | 0.064 | 0.528 | 0.534 |
+| Qt, fast, RGB32 | 0.037 | - | 0.528 | - |
+| Qt, fast, RGBA32 | 0.118 | - | 0.962 | - |
+| Filtered RGB32 | 12.0 | 4.21 | 90.0 | 32.4 |
+| Filtered RGBA32 | 14.4 | 4.90 | 104.5 | 39.2 |
+| Qt, smooth, RGB32 | 6.92 | - | 35.1 | - |
+| Qt, smooth, RGBA32 | 17.4 | - | 81.7 | - |
+
+- Nearest neighbor is 190-270x faster than the filtered kernel single-threaded, 64-77x against it threaded.
+- Threads slow nearest neighbor by 1-19%: 113 dest rows are too little work to split.
+
 ## What the design rests on
 
 ### Per-instruction-set primitives, not SIMDe (963b54b)

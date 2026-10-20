@@ -223,6 +223,8 @@ TEST_CASE("Common display resize scenarios", "[!benchmark][resize]")
 	benchmarkResize("1080p to 240p thumbnail - RGB32", 1920, 1080, 426, 240, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("1080p to 120 px wide thumbnail - RGB32", 1920, 1080, 120, 68, 3, 4, QImage::Format_RGB32);
 	benchmarkResize("21 MP photo to 175 px wide thumbnail - RGB32", 5600, 3744, 175, 117, 3, 4, QImage::Format_RGB32);
+	benchmarkResize("4K to 200 px wide - RGB32", 3840, 2160, 200, 113, 3, 4, QImage::Format_RGB32); // the filtered counterpart of the nearest-neighbor row
+	benchmarkResize("4K to 200 px wide - RGBA32", 3840, 2160, 200, 113, 4, 4, QImage::Format_RGBA8888);
 	benchmarkResize("1080p image at native size - RGB32", 1920, 1080, 1920, 1080, 3, 4, QImage::Format_RGB32);
 }
 
@@ -237,13 +239,15 @@ TEST_CASE("Common pixel layouts", "[!benchmark][resize]")
 }
 
 // Controls: QImage::scaled with Qt::FastTransformation. Straight RGBA32 takes Qt's generic pipeline, RGB32 its dedicated loop.
-TEST_CASE("Nearest-neighbor magnification", "[!benchmark][resize]")
+TEST_CASE("Nearest-neighbor scaling", "[!benchmark][resize]")
 {
 	constexpr auto nearestNeighbor = ImageProcessing::ResizeKernel::NearestNeighbor;
 	benchmarkResize("1080p to 4K nearest neighbor - RGB32", 1920, 1080, 3840, 2160, 3, 4, QImage::Format_RGB32, nullptr, nearestNeighbor);
 	benchmarkResize("1080p to 4K nearest neighbor - RGBA32", 1920, 1080, 3840, 2160, 4, 4, QImage::Format_RGBA8888, nullptr, nearestNeighbor);
 	benchmarkResize("640x480 to 1080p nearest neighbor - RGB32", 640, 480, 1920, 1080, 3, 4, QImage::Format_RGB32, nullptr, nearestNeighbor);
 	benchmarkResize("640x480 to 1080p nearest neighbor - RGBA32", 640, 480, 1920, 1080, 4, 4, QImage::Format_RGBA8888, nullptr, nearestNeighbor);
+	benchmarkResize("4K to 200 px wide nearest neighbor - RGB32", 3840, 2160, 200, 113, 3, 4, QImage::Format_RGB32, nullptr, nearestNeighbor);
+	benchmarkResize("4K to 200 px wide nearest neighbor - RGBA32", 3840, 2160, 200, 113, 4, 4, QImage::Format_RGBA8888, nullptr, nearestNeighbor);
 }
 
 // The downscaling end of the cost model: hundreds of filter taps per output pixel
@@ -278,4 +282,8 @@ TEST_CASE("Parallel resize", "[!benchmark][resize][threading]")
 	benchmarkResize("101 MP photo to 720p - RGB32", 11608, 8708, 1280, 720, 3, 4, QImage::Format_RGB32, &pool);
 	benchmarkResize("1080p to 4K nearest neighbor - RGB32", 1920, 1080, 3840, 2160, 3, 4, QImage::Format_RGB32, &pool, ImageProcessing::ResizeKernel::NearestNeighbor);
 	benchmarkResize("1080p to 4K nearest neighbor - RGBA32", 1920, 1080, 3840, 2160, 4, 4, QImage::Format_RGBA8888, &pool, ImageProcessing::ResizeKernel::NearestNeighbor);
+	benchmarkResize("4K to 200 px wide - RGB32", 3840, 2160, 200, 113, 3, 4, QImage::Format_RGB32, &pool);
+	benchmarkResize("4K to 200 px wide - RGBA32", 3840, 2160, 200, 113, 4, 4, QImage::Format_RGBA8888, &pool);
+	benchmarkResize("4K to 200 px wide nearest neighbor - RGB32", 3840, 2160, 200, 113, 3, 4, QImage::Format_RGB32, &pool, ImageProcessing::ResizeKernel::NearestNeighbor);
+	benchmarkResize("4K to 200 px wide nearest neighbor - RGBA32", 3840, 2160, 200, 113, 4, 4, QImage::Format_RGBA8888, &pool, ImageProcessing::ResizeKernel::NearestNeighbor);
 }
