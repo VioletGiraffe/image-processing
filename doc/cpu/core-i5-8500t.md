@@ -827,3 +827,27 @@ on the 12600K. The prefetch measured here covered one-channel rows too.
 - An earlier MSVC session at AVX2, without the control: 960x540 -> 1920x1080 +10.0% / +0.7%, 1280x720 -> 1920x1440
   +9.3% / +0.3%, the prefetch build in a slower process state in most rounds. In the session above 44dd1ce and the
   padded build land in those states as often.
+
+## 4-tap runs of 4-float pixels in one chain per row, at SSE4.1 (not committed)
+
+The NEON kernel's one chain per row enabled at SSE4.1 as well, against the working tree's NEON-only form, which compiles
+the x64 kernels as 901d72e does. Standalone drivers built with MSVC on the 12600K, the kernels' per-file flags; fifteen
+alternating rounds of 30 resizes each. Median of same-round ratios / minimum to minimum. The AVX2 rows run the same code
+in both builds: the control.
+
+| Scenario | Two chains, min ms | One chain |
+|---|---:|---:|
+| 960x540 -> 1920x1080 RGB32 | 5.50 | -1.2% / -1.5% |
+| 1280x720 -> 1920x810 RGB32 | 5.34 | -1.1% / -0.9% |
+| 1280x720 -> 1920x1080 RGB32 | 6.22 | -1.0% / -1.1% |
+| 1280x720 -> 1920x1440 RGB32 | 7.40 | -1.6% / -1.1% |
+| 1080p -> 1440p RGB32 | 11.88 | -0.8% / -0.8% |
+| 720p -> 4K RGB32 | 17.27 | -1.1% / -1.1% |
+| 1280x720 -> 1920x1080 RGBA32 | 8.16 | +0.5% / +0.6% |
+| 1080p -> 1440p RGBA32 | 15.58 | +0.5% / +0.4% |
+| 1280x720 -> 1920x1080 RGB32, AVX2 | 4.32 | -1.4% / -0.5% |
+| 1080p -> 1440p RGB32, AVX2 | 8.35 | +0.8% / -0.2% |
+
+- Within the control's spread. At SSE4.1 a multiply-add is a multiply and an add, so one chain is the same 7
+  instructions per row as two: only the sums' order changes, a tree of depth 3 to a chain of 4.
+- A first session of five rounds: medians up to 6% either way, the control's too; its minimums agree with these.

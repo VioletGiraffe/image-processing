@@ -405,6 +405,61 @@ with its change against the count read, and against the runs of two lengths: the
 - The N4100 ran two passes, the second 4% slower on every line, the machine warming up; the fixed count's change
   against the count read is the same in both within a point. The Pi's passes agree within 3%.
 
+### An upscale's 4-tap runs at NEON
+
+Section U: 720p -> 1080p RGB32's horizontal pass, 360 row pairs of 1920 columns of 4 taps over a source buffer per row
+in L1, the temp rows at 3 floats per pixel. U0 is the kernel's loop as Clang 22 compiles it at 901d72e, instruction
+for instruction: 27 per column pair, 10 of them arithmetic. U10 has the arithmetic the kernel has since: one chain per
+row. Cycles per column pair on the Pi at 1.797 GHz (`perf stat`),
+Clang 22 / GCC 14.2, the mean of two runs within 2.5%.
+
+| Line | Cycles |
+|---|---:|
+| U0 the kernel's loop: a run table, a test per run | 21.1 / 21.4 |
+| U1 as U0, no stores | 19.6 / 22.1 |
+| U2 as U0, every run at a 64-byte boundary | 21.1 / 21.5 |
+| U3 as U0, one row | 12.3 / 12.0 |
+| U4 three columns per iteration at 1.5x's offsets, no run table | 18.3 / 19.4 |
+| U5 as U4, no stores | 16.7 / 18.7 |
+| U6 as U5, the same pixels every iteration | 16.1 / 18.5 |
+| U7 as U5, the loads alone | 9.0 / 9.0 |
+| U8 as U4, each source pixel loaded once for the three columns | 14.6 / 14.3 |
+| U9 as U8, no stores | 12.3 / 17.4 |
+| U10 as U0, one chain per row: a multiply and three multiply-adds | 18.8 / 18.9 |
+| U11 as U8, one chain per row | 12.1 / 11.6 |
+
+- **The A72 runs one 128-bit multiply-add per cycle:** 16 chains by lane in registers, 4.00 floats per cycle (7.19 G/s)
+  under both compilers. At that rate the column pair's 8 multiplies and multiply-adds and 2 additions take 10 cycles;
+  U0 reaches 38% of the peak rate.
+- **One 16-byte load per cycle:** U7's 9 per column pair take 9 cycles.
+- **Loads and arithmetic alone take 16 cycles (U6):** they overlap by 3 of their 19. The run table and its test add 2.8
+  (U0 against U4), the stores 1.5-1.6 (U1, U5), the second row 9 (U3).
+- **Not the loads that cross a line:** with no 32-byte load across one, U2 is U0's time.
+- **Shared loads take 20% off U4 (U8), one chain per row 11% off U0 (U10).** U8 loads a 1.5x period's 6 source pixels
+  per row once for its 3 columns, in place of 12. Both, U11, take 12.1 cycles, 8 of them arithmetic: 34% off U4, 43% off
+  U0 with its run table.
+- GCC's U1 and U9 are slower than the same lines with stores. Not investigated; the bullets above are Clang's.
+
+U13 takes the run table three columns at a time at six ratios to 1920 columns, each run's first pixel as the kernel's
+builder places it. A group whose runs start 0 or 1 pixel apart, every group of an upscale but those across the buffer's
+slide, branches to a body compiled for its pattern of starts, which loads each source pixel once; any other group takes
+a column at a time. Cycles per column pair, the mean of two runs, Clang's up to 5% apart, GCC's within 1%:
+
+| Ratio | Clang: run table, 2 chains | 1 chain | Groups, 2 chains | 1 chain | GCC: run table, 2 chains | 1 chain | Groups, 2 chains | 1 chain |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1707 px, 1.125x | 23.7 | 21.3 | 24.7 | 19.7 | 23.2 | 20.8 | 22.8 | 19.2 |
+| 1440 px, 1.333x | 21.8 | 19.3 | 22.8 | 18.3 | 21.9 | 19.4 | 21.5 | 17.8 |
+| 1366 px, 1.406x | 23.4 | 21.2 | 24.3 | 19.6 | 22.6 | 20.5 | 22.6 | 19.0 |
+| 1280 px, 1.5x | 22.0 | 19.6 | 23.0 | 18.4 | 21.9 | 19.5 | 21.3 | 18.2 |
+| 960 px, 2x | 21.9 | 19.8 | 22.7 | 18.3 | 22.0 | 19.7 | 21.6 | 17.4 |
+| 640 px, 3x | 22.2 | 19.8 | 22.9 | 18.3 | 22.0 | 19.6 | 21.8 | 17.3 |
+
+- **Groups gain 5-8% on one chain per column under Clang, 7-12% under GCC,** at every ratio. With two chains they lose
+  3-5% under Clang.
+- **Far short of U11's 12.1 cycles:** a group reads three runs' starts and weights' addresses, and branches on its
+  pattern. Clang's samples at 1.5x fall on the six stores (a fifth), the group's first run-table load and the pattern's
+  compares; 2% of groups mispredict.
+
 ## What follows
 
 - More multiply-add throughput or wider vectors would gain little on the Skylake family: its FMA units are idle half
@@ -416,6 +471,10 @@ with its change against the count read, and against the runs of two lengths: the
   - The source prefetched while the horizontal pass runs: the conversion's DRAM stalls. The next chunk's prefetch is in the
     kernel: no change on the 8500T, faster on the Pi ([resize-performance.md](resize-performance.md), "The next chunk's
     source prefetched").
+- At NEON one chain per row at 4 taps is in the kernel ([resize-performance.md](resize-performance.md), "4-tap runs of
+  4-float pixels in one chain per row at NEON"). Columns sharing their source pixels' loads gain 5-12% on top of it from
+  a run table (U13), against U11's 34-43% without one: open, the run table's reads and the pattern's branch being the
+  difference.
 - The room is in the work per multiply-add. Stepped pointers in the passes and the block loop took 3-7% of it (the
   main doc's sections on them); the horizontal form itself is the larger term.
 - **The interleaved form is in the kernel** for the 4-float layouts' row pairs at padded lengths, with lane weights
@@ -439,10 +498,10 @@ with its change against the count read, and against the runs of two lengths: the
 - The ceilings and the 8500T's breakdown are one scenario: a 2x downscale with 12-tap runs.
 - The kernel's rates are MSVC's on the 8500T only. No kernel profile exists for the 12600K.
 - The program's vertical variant packs 64 floats to 64 bytes, not RGB32's 3 floats to 4 bytes.
-- At SSE4.1 and NEON only the horizontal forms of sections N and S are measured, without the conversion, not the
-  levels' ceilings: their peak is 8 floats per cycle on a core with two 128-bit units.
+- At SSE4.1 only the horizontal forms of sections N and S are measured, without the conversion, not the level's
+  ceiling. At NEON section U measures the A72's: one 128-bit multiply-add per cycle.
 - The interleaved form's sections have no straight alpha and no RGB24 source, and section T has no run table.
-- The four-tap runs are arithmetic and the run lookup: no conversion, no sliding span.
+- The four-tap runs, sections F and U, are arithmetic and the run lookup: no conversion, no sliding span.
 - The whole pass's runs within one resize are all of one length, or of two in the padding table; the kernel's are
   shorter at the image's edges too.
 - GCC is not measured at this source. At a8dd837 its kernel's form was the fastest of the three compilers' on the 8500T

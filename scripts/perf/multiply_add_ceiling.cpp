@@ -5,8 +5,9 @@
 //   clang-cl /O2 /MT /arch:AVX2 -mfma /clang:-mbranches-within-32B-boundaries /std:c++20 /EHsc multiply_add_ceiling.cpp
 //   g++ -O2 -mavx2 -mfma -std=c++20 multiply_add_ceiling.cpp
 // The jump-alignment options are the kernels': without them lines differ by up to 14% between builds on the Skylake family.
-// Without /arch:AVX2, or for ARM64 (g++ -O2 -std=c++20), only sections N and S exist: the 128-bit levels' horizontal form.
-// Run: multiply_add_ceiling [repeats, default 30] [sections, default HVTFCPRSN]; each line is the best repeat.
+// Without /arch:AVX2, or for ARM64 (g++ -O2 -std=c++20), only sections N, S and U exist: the 128-bit levels' horizontal form.
+// Section U is built by g++ and clang++ only, not by cl or clang-cl.
+// Run: multiply_add_ceiling [repeats, default 30] [sections, default HVTFCPRSNU]; each line is the best repeat.
 // Pinned to a logical processor by mask: start /b /wait /affinity 4 multiply_add_ceiling.exe
 // Rates are float multiply-adds per second, counted as the kernel's are: 4 floats per horizontal tap, 3 per vertical tap.
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -18,10 +19,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <numeric>
+#include <utility>
 #include <vector>
 
 #if defined(_MSC_VER) && !defined(__clang__)
@@ -48,6 +52,16 @@
 	#define SCALAR_LOOP _Pragma("clang loop vectorize(disable) interleave(disable)")
 #else
 	#define SCALAR_LOOP
+#endif
+
+// Section U, g++ and clang++ only: a pointer hidden from the optimizer, and a vector kept live, without an instruction
+#if defined(__GNUC__)
+	#define HIDDEN_POINTER(p) __asm__ volatile("" : "+r"(p))
+	#if defined(__aarch64__)
+		#define USED_FLOATS4(v) __asm__ volatile("" : : "w"(v))
+	#else
+		#define USED_FLOATS4(v) __asm__ volatile("" : : "x"(v))
+	#endif
 #endif
 
 namespace
@@ -1368,6 +1382,280 @@ namespace
 		reportRunTable128Form<1, 1, Taps>(repeats, ratio, "interleaved, broadcast", stepQ8, columns);
 	}
 
+#ifdef USED_FLOATS4
+	// Section U: a 1.5x upscale's 4-tap runs, 720p -> 1080p RGB32, a source buffer per row in L1 and the temp rows' 3 floats per pixel
+	constexpr size_t upscaleColumns = 1920, upscaleRowPairs = 720 / 2, upscaleCapacity = 2 * 4 + 128;
+
+	// One row's 4-tap sum. Two chains, as filterRun's step of 16 floats: taps 2 and 3 start the halves, taps 0 and 1 are added, the halves summed.
+	// One chain: a multiply and three multiply-adds.
+	template <int Chains = 2>
+	FORCEINLINE Floats4 fourTapSum(Floats4 p0, Floats4 p1, Floats4 p2, Floats4 p3, Floats4 weights)
+	{
+		if constexpr (Chains == 1)
+		{
+			Floats4 sum = mul4(p0, broadcastLane<0>(weights));
+			sum = mulAdd4(p1, broadcastLane<1>(weights), sum);
+			sum = mulAdd4(p2, broadcastLane<2>(weights), sum);
+			return mulAdd4(p3, broadcastLane<3>(weights), sum);
+		}
+		else
+		{
+			Floats4 low = mul4(p2, broadcastLane<2>(weights)), high = mul4(p3, broadcastLane<3>(weights));
+			low = mulAdd4(p0, broadcastLane<0>(weights), low);
+			high = mulAdd4(p1, broadcastLane<1>(weights), high);
+			return add4(low, high);
+		}
+	}
+
+	template <int Chains = 2>
+	FORCEINLINE Floats4 fourTapSum(const float* pixels, Floats4 weights)
+	{
+		return fourTapSum<Chains>(load4(pixels), load4(pixels + 4), load4(pixels + 8), load4(pixels + 12), weights);
+	}
+
+	// filterBufferedRuns at a fixed 4 taps, a buffer per row: a run's pixels by its firstSource, tested against the last pixel a run may start at.
+	// Variant: 0 - the kernel's; 1 - the sums kept without a store; 2 - row A only; 3 - as 0, one chain per row.
+	template <int Variant>
+	NOINLINE void upscaleRunTable128(const float* a, const float* b, const ColumnRun* runs, size_t lastPixel, float* outA, float* outB)
+	{
+		constexpr int chains = Variant == 3 ? 1 : 2;
+		const ColumnRun* const runsEnd = runs + upscaleColumns;
+		for (const ColumnRun* run = runs; run != runsEnd; ++run, outA += 3, outB += 3)
+		{
+			const size_t pixel = run->firstSource;
+			if (pixel > lastPixel)
+				break;
+
+			const Floats4 weights = load4(run->weights);
+			const Floats4 sumA = fourTapSum<chains>(a + pixel * 4, weights);
+			if constexpr (Variant == 1)
+				USED_FLOATS4(sumA);
+			else
+				store4(outA, sumA);
+
+			if constexpr (Variant != 2)
+			{
+				const Floats4 sumB = fourTapSum<chains>(b + pixel * 4, weights);
+				if constexpr (Variant == 1)
+					USED_FLOATS4(sumB);
+				else
+					store4(outB, sumB);
+			}
+		}
+	}
+
+	FORCEINLINE void useFloats4(Floats4 v) { USED_FLOATS4(v); }
+
+	// Three columns per iteration at 1.5x's run starts, pixels 0, 1 and 2 of the iteration's; the source steps 2 pixels: no run table.
+	// The pointers are hidden per iteration, so every load stays in the loop.
+	// Variant: 0 - each column's pixels loaded, the sums stored; 1 - as 0, the sums kept without a store; 2 - as 1, the same pixels every iteration;
+	//          3 - as 1, the loads alone, no arithmetic; 4 - each source pixel loaded once for the three columns, the sums stored; 5 - as 4, no stores;
+	//          6 - as 4, one chain per row.
+	template <int Variant>
+	NOINLINE void upscaleThreeColumns128(const float* a, const float* b, const float* columnWeights, float* outA, float* outB)
+	{
+		constexpr bool stores = Variant == 0 || Variant == 4 || Variant == 6;
+		constexpr int chains = Variant == 6 ? 1 : 2;
+		const auto output = [](float* out, Floats4 sum) {
+			if constexpr (stores)
+				store4(out, sum);
+			else
+				USED_FLOATS4(sum);
+		};
+		// A column's pixels by a pointer of their own: without stores between them, the compilers merge the columns' overlapping loads
+		const auto columnPixels = [](const float* rowPixels, size_t column) {
+			const float* pixels = rowPixels + column * 4;
+			HIDDEN_POINTER(pixels);
+			return pixels;
+		};
+		const auto useFourPixels = [](const float* pixels) {
+			useFloats4(load4(pixels)); useFloats4(load4(pixels + 4)); useFloats4(load4(pixels + 8)); useFloats4(load4(pixels + 12));
+		};
+
+		size_t offset = 0;
+		for (size_t column = 0; column < upscaleColumns; column += 3, outA += 9, outB += 9)
+		{
+			const float* w = columnWeights;
+			const float* pa = a + offset;
+			const float* pb = b + offset;
+			HIDDEN_POINTER(w);
+			HIDDEN_POINTER(pa);
+			HIDDEN_POINTER(pb);
+			const Floats4 w0 = load4(w), w1 = load4(w + weightStrideFor(4)), w2 = load4(w + 2 * weightStrideFor(4));
+			if constexpr (Variant == 3)
+			{
+				useFloats4(w0); useFloats4(w1); useFloats4(w2);
+				useFourPixels(columnPixels(pa, 0)); useFourPixels(columnPixels(pb, 0));
+				useFourPixels(columnPixels(pa, 1)); useFourPixels(columnPixels(pb, 1));
+				useFourPixels(columnPixels(pa, 2)); useFourPixels(columnPixels(pb, 2));
+			}
+			else if constexpr (Variant >= 4)
+			{
+				const Floats4 a0 = load4(pa), a1 = load4(pa + 4), a2 = load4(pa + 8), a3 = load4(pa + 12), a4 = load4(pa + 16), a5 = load4(pa + 20);
+				const Floats4 b0 = load4(pb), b1 = load4(pb + 4), b2 = load4(pb + 8), b3 = load4(pb + 12), b4 = load4(pb + 16), b5 = load4(pb + 20);
+				output(outA, fourTapSum<chains>(a0, a1, a2, a3, w0)); output(outB, fourTapSum<chains>(b0, b1, b2, b3, w0));
+				output(outA + 3, fourTapSum<chains>(a1, a2, a3, a4, w1)); output(outB + 3, fourTapSum<chains>(b1, b2, b3, b4, w1));
+				output(outA + 6, fourTapSum<chains>(a2, a3, a4, a5, w2)); output(outB + 6, fourTapSum<chains>(b2, b3, b4, b5, w2));
+			}
+			else
+			{
+				output(outA, fourTapSum(columnPixels(pa, 0), w0)); output(outB, fourTapSum(columnPixels(pb, 0), w0));
+				output(outA + 3, fourTapSum(columnPixels(pa, 1), w1)); output(outB + 3, fourTapSum(columnPixels(pb, 1), w1));
+				output(outA + 6, fourTapSum(columnPixels(pa, 2), w2)); output(outB + 6, fourTapSum(columnPixels(pb, 2), w2));
+			}
+
+			if constexpr (Variant != 2)
+			{
+				offset += 8;
+				if (offset + 6 * 4 > upscaleCapacity * 4)
+					offset = 0;
+			}
+		}
+	}
+
+	// Columns 0, 1 and 2 of a group at pixels 0, Offset1 and Offset2 of a window of 4 + Offset2 source pixels per row, each loaded once
+	template <size_t Offset1, size_t Offset2, int Chains>
+	FORCEINLINE void upscaleGroupOfThree128(const float* pa, const float* pb, const ColumnRun* run, float* outA, float* outB)
+	{
+		Floats4 windowA[6], windowB[6];
+		windowA[0] = load4(pa); windowA[1] = load4(pa + 4); windowA[2] = load4(pa + 8); windowA[3] = load4(pa + 12);
+		windowB[0] = load4(pb); windowB[1] = load4(pb + 4); windowB[2] = load4(pb + 8); windowB[3] = load4(pb + 12);
+		if constexpr (Offset2 >= 1)
+		{
+			windowA[4] = load4(pa + 16);
+			windowB[4] = load4(pb + 16);
+		}
+		if constexpr (Offset2 == 2)
+		{
+			windowA[5] = load4(pa + 20);
+			windowB[5] = load4(pb + 20);
+		}
+
+		const auto column = [&]<size_t Offset>(const ColumnRun& columnRun, float* columnA, float* columnB) {
+			const Floats4 weights = load4(columnRun.weights);
+			store4(columnA, fourTapSum<Chains>(windowA[Offset], windowA[Offset + 1], windowA[Offset + 2], windowA[Offset + 3], weights));
+			store4(columnB, fourTapSum<Chains>(windowB[Offset], windowB[Offset + 1], windowB[Offset + 2], windowB[Offset + 3], weights));
+		};
+		column.template operator()<0>(run[0], outA, outB);
+		column.template operator()<Offset1>(run[1], outA + 3, outB + 3);
+		column.template operator()<Offset2>(run[2], outA + 6, outB + 6);
+	}
+
+	// upscaleRunTable128<0> three columns at a time, Chains chains per row. A group whose runs start 0 or 1 pixel apart, as an upscale's do,
+	// takes the body compiled for its pattern of starts; any other, across the buffer's slide, takes a column at a time.
+	template <int Chains>
+	NOINLINE void upscaleColumnGroups128(const float* a, const float* b, const ColumnRun* runs, size_t lastPixel, float* outA, float* outB)
+	{
+		const auto column = [a, b](const ColumnRun& run, float* columnA, float* columnB) {
+			const Floats4 weights = load4(run.weights);
+			store4(columnA, fourTapSum<Chains>(a + run.firstSource * 4, weights));
+			store4(columnB, fourTapSum<Chains>(b + run.firstSource * 4, weights));
+		};
+
+		const ColumnRun* run = runs;
+		const ColumnRun* const groupsEnd = runs + upscaleColumns / 3 * 3;
+		for (; run != groupsEnd; run += 3, outA += 9, outB += 9)
+		{
+			const size_t first = run[0].firstSource;
+			if (run[2].firstSource > lastPixel)
+				break;
+
+			// Unsigned: a start before the previous one is a large delta
+			const size_t delta1 = run[1].firstSource - first, delta2 = run[2].firstSource - run[1].firstSource;
+			const float* pa = a + first * 4;
+			const float* pb = b + first * 4;
+			switch ((delta1 | delta2) > 1 ? 4 : delta1 + 2 * delta2)
+			{
+			case 0: upscaleGroupOfThree128<0, 0, Chains>(pa, pb, run, outA, outB); break;
+			case 1: upscaleGroupOfThree128<1, 1, Chains>(pa, pb, run, outA, outB); break;
+			case 2: upscaleGroupOfThree128<0, 1, Chains>(pa, pb, run, outA, outB); break;
+			case 3: upscaleGroupOfThree128<1, 2, Chains>(pa, pb, run, outA, outB); break;
+			default:
+				column(run[0], outA, outB);
+				column(run[1], outA + 3, outB + 3);
+				column(run[2], outA + 6, outB + 6);
+			}
+		}
+
+		for (const ColumnRun* const runsEnd = runs + upscaleColumns; run != runsEnd; ++run, outA += 3, outB += 3)
+			column(*run, outA, outB);
+	}
+
+	// Section U's loops at 720p -> 1080p's row pairs, sourceWidth -> 1920 columns:
+	//   Loop 0 - upscaleRunTable128<Variant>; 1 - upscaleThreeColumns128<Variant>, 1.5x only; 2 - upscaleColumnGroups128<Variant chains>.
+	// A run's first pixel as the kernel's builder places it for a 4-tap filter; runs a period apart share their weights, as the kernel's do.
+	// lineAligned: every run's first pixel at a 64-byte boundary.
+	template <int Loop, int Variant>
+	double upscaleSeconds128(size_t sourceWidth, bool lineAligned, int repeats)
+	{
+		const size_t period = upscaleColumns / std::gcd(sourceWidth, upscaleColumns);
+		float* a = alignedFloats(upscaleCapacity * 4 + 64);
+		float* b = alignedFloats(upscaleCapacity * 4 + 64);
+		float* weights = alignedFloats(period * weightStrideFor(4) + 64);
+		for (size_t i = 0; i < period * weightStrideFor(4) + 64; ++i)
+			weights[i] = 0.25f;
+		float* outA = alignedFloats(upscaleColumns * 3 + 64);
+		float* outB = alignedFloats(upscaleColumns * 3 + 64);
+
+		// The span slides to a run that would end past it, as SlidingSourceFloats::prepareRun
+		std::vector<ColumnRun> runs(upscaleColumns);
+		size_t base = 0;
+		for (size_t column = 0; column < upscaleColumns; ++column)
+		{
+			const double sourcePosition = (static_cast<double>(column) + 0.5) * static_cast<double>(sourceWidth) / upscaleColumns - 0.5;
+			const size_t first = static_cast<size_t>(std::clamp(static_cast<int64_t>(std::floor(sourcePosition - 2)) + 1, int64_t{ 0 }, static_cast<int64_t>(sourceWidth) - 4));
+			if (first + 4 > base + upscaleCapacity)
+				base = first;
+			const size_t pixel = lineAligned ? (first - base) & ~size_t{ 3 } : first - base;
+			runs[column] = { pixel, weights + column % period * weightStrideFor(4), 4 };
+		}
+
+		const double seconds = bestSeconds([&] {
+			for (size_t pair = 0; pair < upscaleRowPairs; ++pair)
+			{
+				if constexpr (Loop == 0)
+					upscaleRunTable128<Variant>(a, b, runs.data(), upscaleCapacity - 4, outA, outB);
+				else if constexpr (Loop == 1)
+					upscaleThreeColumns128<Variant>(a, b, weights, outA, outB);
+				else
+					upscaleColumnGroups128<Variant>(a, b, runs.data(), upscaleCapacity - 4, outA, outB);
+			}
+		}, repeats);
+		volatile float sink = outA[100] + outB[200];
+		(void)sink;
+		freeFloats(a); freeFloats(b); freeFloats(weights); freeFloats(outA); freeFloats(outB);
+		return seconds;
+	}
+
+	// Multiply-adds by lane in independent chains, in registers
+	template <size_t... Chain>
+	FORCEINLINE void laneMultiplyAddChains(const float* values, size_t iterations, float* out, std::index_sequence<Chain...>)
+	{
+		Floats4 chains[] = { load4(values + Chain * 4)... };
+		const Floats4 pixels = load4(values + sizeof...(Chain) * 4), weights = load4(values + sizeof...(Chain) * 4 + 4);
+		for (size_t i = 0; i < iterations; ++i)
+			((chains[Chain] = mulAdd4(pixels, broadcastLane<Chain % 4>(weights), chains[Chain])), ...);
+		(store4(out + Chain * 4, chains[Chain]), ...);
+	}
+
+	// The level's multiply-add throughput, G float multiply-adds per second, over 16 independent chains
+	double laneMultiplyAddRate128(int repeats)
+	{
+		constexpr size_t chains = 16, iterations = size_t{ 1 } << 20;
+		float* values = alignedFloats(chains * 4 + 8 + 64);
+		float out[chains * 4];
+		const double seconds = bestSeconds([&] { laneMultiplyAddChains(values, iterations, out, std::make_index_sequence<chains>{}); }, repeats);
+		// Every chain's sum read, so none is dropped
+		float total = 0;
+		for (const float value : out)
+			total += value;
+		volatile float sink = total;
+		(void)sink;
+		freeFloats(values);
+		return static_cast<double>(iterations) * chains * 4 / seconds / 1e9;
+	}
+#endif // USED_FLOATS4
+
 	// horizontalRowPairRuns for column128<Layout, Weights>
 	template <int Layout, int Weights>
 	NOINLINE void horizontalRowPairRuns128(const float* a, const float* b, const float* interleaved, const float* columnWeights, const uint32_t* tapCounts,
@@ -1461,7 +1749,7 @@ namespace
 int main(int argc, char** argv)
 {
 	const int repeats = argc > 1 ? std::atoi(argv[1]) : 30;
-	const char* const sections = argc > 2 ? argv[2] : "HVTFCPRSN";
+	const char* const sections = argc > 2 ? argv[2] : "HVTFCPRSNU";
 	const auto selected = [sections](char section) { return std::strchr(sections, section) != nullptr; };
 
 	if (selected('N'))
@@ -1488,6 +1776,38 @@ int main(int argc, char** argv)
 		reportRunTable128<18>(repeats, "3x, 18 taps", 3 * 256, 1280);
 		reportRunTable128<24>(repeats, "4x, 24 taps", 4 * 256, 958);
 	}
+
+#ifdef USED_FLOATS4
+	if (selected('U'))
+	{
+		const auto line = [](const char* name, double seconds) {
+			std::printf("%-58s %7.2f ms  %5.2f ns per column\n", name, seconds * 1e3, seconds * 1e9 / (upscaleRowPairs * upscaleColumns));
+		};
+		line("U0 1.5x, 4-tap runs: the kernel's loop over a run table", upscaleSeconds128<0, 0>(1280, false, repeats));
+		line("U1 as U0, no stores", upscaleSeconds128<0, 1>(1280, false, repeats));
+		line("U2 as U0, every run at a 64-byte boundary", upscaleSeconds128<0, 0>(1280, true, repeats));
+		line("U3 as U0, one row", upscaleSeconds128<0, 2>(1280, false, repeats));
+		line("U4 three columns per iteration, no run table", upscaleSeconds128<1, 0>(1280, false, repeats));
+		line("U5 as U4, no stores", upscaleSeconds128<1, 1>(1280, false, repeats));
+		line("U6 as U5, the same pixels every iteration", upscaleSeconds128<1, 2>(1280, false, repeats));
+		line("U7 as U5, the loads alone", upscaleSeconds128<1, 3>(1280, false, repeats));
+		line("U8 as U4, each pixel loaded once for three columns", upscaleSeconds128<1, 4>(1280, false, repeats));
+		line("U9 as U8, no stores", upscaleSeconds128<1, 5>(1280, false, repeats));
+		line("U10 as U0, one chain per row", upscaleSeconds128<0, 3>(1280, false, repeats));
+		line("U11 as U8, one chain per row", upscaleSeconds128<1, 6>(1280, false, repeats));
+		std::printf("U12 multiply-adds by lane, 16 chains in registers: %.2f G/s\n", laneMultiplyAddRate128(repeats));
+		// The run table three columns at a time, against the kernel's loop, by ratio
+		std::printf("U13 ns per column, -> 1920 columns:  run table, 2 chains | 1 chain | groups of three, 2 chains | 1 chain\n");
+		for (const size_t sourceWidth : { 1707, 1440, 1366, 1280, 960, 640 })
+		{
+			std::printf("U13 %4zu, %.3fx: %6.2f %6.2f %6.2f %6.2f\n", sourceWidth, static_cast<double>(upscaleColumns) / static_cast<double>(sourceWidth),
+				upscaleSeconds128<0, 0>(sourceWidth, false, repeats) * 1e9 / (upscaleRowPairs * upscaleColumns),
+				upscaleSeconds128<0, 3>(sourceWidth, false, repeats) * 1e9 / (upscaleRowPairs * upscaleColumns),
+				upscaleSeconds128<2, 2>(sourceWidth, false, repeats) * 1e9 / (upscaleRowPairs * upscaleColumns),
+				upscaleSeconds128<2, 1>(sourceWidth, false, repeats) * 1e9 / (upscaleRowPairs * upscaleColumns));
+		}
+	}
+#endif
 
 #ifdef __AVX2__
 	const double horizontalWork = static_cast<double>(sourceHeight) * destWidth * taps * 4;

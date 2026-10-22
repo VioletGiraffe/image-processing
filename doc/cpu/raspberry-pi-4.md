@@ -121,6 +121,7 @@ Minimum ms of three runs, fitted as fixed + per output MP:
 - Horizontal: 6.5-6.7 ns per temp pixel whether the source comes from DRAM or L2. Its samples fall on the loads (run
   index, weights, four 32-byte `ldp`) and the two 16-byte stores, almost none on the multiply-adds.
 - Every temp line the horizontal pass writes is an L1 write refill: 0.25 M per resize.
+- The horizontal loop's bound: [throughput-ceiling.md](../throughput-ceiling.md), "An upscale's 4-tap runs at NEON".
 - Conversion: 60% of its samples on the source load, and 93% of the kernel's L2 refills, one per source line. With
   source and destination in L2 (240x136 -> 360x204, 14 L2 refills per resize) it costs 2.7 ns per source pixel.
 - 1920x2160 out: the vertical pass 5.6 ns per dest pixel, a third of the rows on a single tap.
@@ -164,6 +165,29 @@ The committed form, the full benchmark, three alternating rounds against 44dd1ce
 - Every filtered row faster, the threaded ones included: -1.4% to -9.9% by median, -1.4% to -7.7% minimum to minimum.
   24 MP -> 1080p -5.9%, 101 MP -> 720p -8.1%, 4K -> 64x64 -9.9%, 720p -> 4K RGB32 -3.7%.
 - Nearest neighbor, which converts nothing: +1.9% to -0.9%, the threaded rows +2.5% to -0.4%.
+
+## 4-tap runs of 4-float pixels in one chain per row
+
+Clang 22, the loop of resizes from "where an upscale's time goes", against 901d72e: five alternating rounds for RGB32,
+three for RGBA32. Median of same-round ratios / minimum to minimum. `vcgencmd get_throttled` 0x0 after both.
+
+| Scenario | 901d72e, min ms | One chain |
+|---|---:|---:|
+| 960x540 -> 1920x1080 | 22.07 | -4.1% / -4.9% |
+| 1280x720 -> 1920x810 | 22.12 | -5.5% / -5.5% |
+| 1280x720 -> 1920x1080 | 25.60 | -5.6% / -5.7% |
+| 1280x720 -> 1920x1440 | 30.19 | -3.9% / -3.8% |
+| 1080p -> 1440p | 48.02 | -5.5% / -5.5% |
+| 720p -> 4K | 67.62 | -3.5% / -3.7% |
+| 1080p -> 720p | 39.38 | +0.2% / +0.3% |
+| 1080p -> 240p | 26.47 | +2.8% / +3.3% |
+| 4K -> 1080p | 133.62 | -0.1% / 0.0% |
+| 1280x720 -> 1920x1080 RGBA32 | 32.11 | -3.5% / -2.5% |
+| 1080p -> 1440p RGBA32 | 64.94 | -4.7% / -4.4% |
+| 720p -> 4K RGBA32 | 86.26 | -0.3% / +0.3% |
+
+- The downscales do not run the changed code. 1080p -> 240p's 901d72e rounds split between 26.5 and 27.7-28.1 ms; the
+  one-chain build's held 27.3-27.6.
 
 ## Per-instruction-set primitives, not SIMDe (963b54b)
 

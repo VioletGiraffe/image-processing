@@ -494,6 +494,23 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				outPixels[1] = outB;
 			}
 
+			// A 4-tap run of 4-float pixels at NEON: one chain per row, a multiply and three multiply-adds.
+			// Not the two chains below: Cortex-A72 runs one 128-bit multiply-add per cycle, and their sum of halves is a fifth more arithmetic.
+			if constexpr (simdLevel == SimdLevel::Neon && floatsPerPixel == 4 && FixedTaps == 4)
+			{
+				const FourWeights fourWeights = loadFourWeights(weights.data());
+				for (size_t row = 0; row < Rows; ++row)
+				{
+					const float* pixels = runPixels[row];
+					Floats4 sum = mul(loadFloats4(pixels), lowHalf(weightOfTap<0>(fourWeights)));
+					sum = mulAdd(loadFloats4(pixels + 4), lowHalf(weightOfTap<1>(fourWeights)), sum);
+					sum = mulAdd(loadFloats4(pixels + 8), lowHalf(weightOfTap<2>(fourWeights)), sum);
+					sum = mulAdd(loadFloats4(pixels + 12), lowHalf(weightOfTap<3>(fourWeights)), sum);
+					storeTempPixel<Channels>(outPixels[row], sum);
+				}
+				return;
+			}
+
 			// Lanes hold partial sums of 8 / floatsPerPixel pixels until the reductions below the blocks
 			Floats8 accumPairs[Rows];
 			for (size_t row = 0; row < Rows; ++row)

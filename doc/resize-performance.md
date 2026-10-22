@@ -1195,6 +1195,17 @@ horizontal pass filters the current one.
   placement control moved nothing.
 - The next row pair's first chunk as well: nothing more (experiment 13).
 
+### 4-tap runs of 4-float pixels in one chain per row at NEON
+
+`filterRun` takes such a run as a multiply and three multiply-adds per row, not two chains and the sum of their halves.
+Cortex-A72 runs one 128-bit multiply-add per cycle, and the sum is a fifth more arithmetic
+([throughput-ceiling.md](throughput-ceiling.md), "An upscale's 4-tap runs at NEON").
+- Pi, Clang: RGB32 upscales 3.5-5.7% faster; RGBA32 2.5-4.7%, 720p -> 4K unchanged (its log, "4-tap runs of 4-float
+  pixels in one chain per row").
+- SSE4.1 keeps the two chains. One chain there is the same 7 instructions per row, a multiply-add being two; on the
+  8500T it measured within the control's spread (its log, "4-tap runs of 4-float pixels in one chain per row, at
+  SSE4.1").
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -1523,3 +1534,11 @@ horizontal pass filters the current one.
 27. **The horizontal pass on the A72** (the Pi's log, "where an upscale's time goes"): 12 cycles per temp pixel at 4 taps,
     whatever the source's cache level. Its samples fall on the loads and the two 16-byte temp stores, almost none on the
     multiply-adds, and every temp line it writes is an L1 write refill.
+    - Its bound ([throughput-ceiling.md](throughput-ceiling.md), "An upscale's 4-tap runs at NEON"): per column pair, 9
+      cycles of loads and 10 of arithmetic that overlap by 3, the run table about 3, the stores about 1.5.
+    - Not the bound: RGBA32's loop, whose stores are aligned and refill nothing, is 1.6% faster than RGB32's. Reading
+      the next run's fields an iteration ahead takes 3.7% off the loop, and -2% to +1.6% on whole resizes. Not
+      committed.
+    - One chain per row is in the kernel ("4-tap runs of 4-float pixels in one chain per row at NEON").
+    - Open: columns sharing their source pixels' loads, 5-12% off the loop in the ceiling program over a run table. The
+      loop is about a third of an upscale's kernel time.
