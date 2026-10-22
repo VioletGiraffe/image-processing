@@ -440,25 +440,31 @@ Clang 22 / GCC 14.2, the mean of two runs within 2.5%.
   U0 with its run table.
 - GCC's U1 and U9 are slower than the same lines with stores. Not investigated; the bullets above are Clang's.
 
-U13 takes the run table three columns at a time at six ratios to 1920 columns, each run's first pixel as the kernel's
+U13 takes an upscale three columns at a time at six ratios to 1920 columns, each run's first pixel as the kernel's
 builder places it. A group whose runs start 0 or 1 pixel apart, every group of an upscale but those across the buffer's
 slide, branches to a body compiled for its pattern of starts, which loads each source pixel once; any other group takes
-a column at a time. Cycles per column pair, the mean of two runs, Clang's up to 5% apart, GCC's within 1%:
+a column at a time.
+- Groups: the pattern from the run table's three runs, each column's weights from its run.
+- Group records: a 16-byte record per group, its first pixel, its pattern and one address of the three columns' weights
+  side by side. Groups a period apart share their weights, as runs do.
 
-| Ratio | Clang: run table, 2 chains | 1 chain | Groups, 2 chains | 1 chain | GCC: run table, 2 chains | 1 chain | Groups, 2 chains | 1 chain |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1707 px, 1.125x | 23.7 | 21.3 | 24.7 | 19.7 | 23.2 | 20.8 | 22.8 | 19.2 |
-| 1440 px, 1.333x | 21.8 | 19.3 | 22.8 | 18.3 | 21.9 | 19.4 | 21.5 | 17.8 |
-| 1366 px, 1.406x | 23.4 | 21.2 | 24.3 | 19.6 | 22.6 | 20.5 | 22.6 | 19.0 |
-| 1280 px, 1.5x | 22.0 | 19.6 | 23.0 | 18.4 | 21.9 | 19.5 | 21.3 | 18.2 |
-| 960 px, 2x | 21.9 | 19.8 | 22.7 | 18.3 | 22.0 | 19.7 | 21.6 | 17.4 |
-| 640 px, 3x | 22.2 | 19.8 | 22.9 | 18.3 | 22.0 | 19.6 | 21.8 | 17.3 |
+Cycles per column pair, the mean of two runs, Clang's up to 5% apart, GCC's within 2%:
 
-- **Groups gain 5-8% on one chain per column under Clang, 7-12% under GCC,** at every ratio. With two chains they lose
-  3-5% under Clang.
-- **Far short of U11's 12.1 cycles:** a group reads three runs' starts and weights' addresses, and branches on its
-  pattern. Clang's samples at 1.5x fall on the six stores (a fifth), the group's first run-table load and the pattern's
-  compares; 2% of groups mispredict.
+| Ratio | Clang: run table, 2 chains | 1 chain | Groups, 2 chains | 1 chain | Group records, 1 chain | GCC: run table, 2 chains | 1 chain | Groups, 2 chains | 1 chain | Group records, 1 chain |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1707 px, 1.125x | 22.4 | 20.1 | 23.9 | 19.2 | 15.4 | 22.5 | 20.2 | 22.0 | 20.6 | 15.1 |
+| 1440 px, 1.333x | 21.3 | 19.0 | 22.7 | 18.1 | 14.9 | 21.4 | 19.1 | 21.1 | 19.2 | 14.8 |
+| 1366 px, 1.406x | 22.2 | 20.0 | 24.1 | 19.3 | 16.1 | 22.6 | 20.5 | 22.3 | 20.2 | 16.0 |
+| 1280 px, 1.5x | 21.3 | 19.0 | 22.9 | 18.2 | 15.1 | 21.6 | 19.2 | 20.9 | 19.9 | 15.0 |
+| 960 px, 2x | 21.5 | 19.1 | 22.5 | 18.0 | 14.9 | 21.7 | 19.4 | 21.0 | 18.4 | 14.5 |
+| 640 px, 3x | 21.7 | 19.4 | 22.8 | 18.1 | 15.2 | 21.6 | 19.2 | 21.0 | 17.3 | 14.7 |
+
+- **Group records take 19-23% off one chain per column under Clang, 22-25% under GCC,** at every ratio.
+- **Groups from the run table gain 3-7% under Clang, -10% to +4% under GCC,** and moved up to 10% between two builds
+  whose changes to them only restructured the source. With two chains they lose 5-9% under Clang.
+- **A group from the run table reads three runs' starts and weights' addresses, and branches on its pattern.** Clang's
+  samples at 1.5x fall on the six stores (a fifth), the group's first run-table load and the pattern's compares; 2% of
+  groups mispredict. A record is one 16-byte read and the branch.
 
 ## What follows
 
@@ -472,9 +478,9 @@ a column at a time. Cycles per column pair, the mean of two runs, Clang's up to 
     kernel: no change on the 8500T, faster on the Pi ([resize-performance.md](resize-performance.md), "The next chunk's
     source prefetched").
 - At NEON one chain per row at 4 taps is in the kernel ([resize-performance.md](resize-performance.md), "4-tap runs of
-  4-float pixels in one chain per row at NEON"). Columns sharing their source pixels' loads gain 5-12% on top of it from
-  a run table (U13), against U11's 34-43% without one: open, the run table's reads and the pattern's branch being the
-  difference.
+  4-float pixels in one chain per row at NEON"). Columns sharing their source pixels' loads, from a record per group of
+  three, take 19-25% more off the loop (U13). Not in the kernel: it would take a record table beside the run table, a
+  pass for the groups and a body per pattern of starts.
 - The room is in the work per multiply-add. Stepped pointers in the passes and the block loop took 3-7% of it (the
   main doc's sections on them); the horizontal form itself is the larger term.
 - **The interleaved form is in the kernel** for the 4-float layouts' row pairs at padded lengths, with lane weights

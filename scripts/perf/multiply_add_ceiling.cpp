@@ -1513,9 +1513,10 @@ namespace
 		}
 	}
 
-	// Columns 0, 1 and 2 of a group at pixels 0, Offset1 and Offset2 of a window of 4 + Offset2 source pixels per row, each loaded once
-	template <size_t Offset1, size_t Offset2, int Chains>
-	FORCEINLINE void upscaleGroupOfThree128(const float* pa, const float* pb, const ColumnRun* run, float* outA, float* outB)
+	// Columns 0, 1 and 2 of a group at pixels 0, Offset1 and Offset2 of a window of 4 + Offset2 source pixels per row, each loaded once.
+	// weightsOf(column): that column's weights.
+	template <size_t Offset1, size_t Offset2, int Chains, typename WeightsOf>
+	FORCEINLINE void upscaleGroupOfThree128(const float* pa, const float* pb, WeightsOf weightsOf, float* outA, float* outB)
 	{
 		Floats4 windowA[6], windowB[6];
 		windowA[0] = load4(pa); windowA[1] = load4(pa + 4); windowA[2] = load4(pa + 8); windowA[3] = load4(pa + 12);
@@ -1531,14 +1532,72 @@ namespace
 			windowB[5] = load4(pb + 20);
 		}
 
-		const auto column = [&]<size_t Offset>(const ColumnRun& columnRun, float* columnA, float* columnB) {
-			const Floats4 weights = load4(columnRun.weights);
+		const auto column = [&]<size_t Offset>(size_t groupColumn, float* columnA, float* columnB) {
+			const Floats4 weights = load4(weightsOf(groupColumn));
 			store4(columnA, fourTapSum<Chains>(windowA[Offset], windowA[Offset + 1], windowA[Offset + 2], windowA[Offset + 3], weights));
 			store4(columnB, fourTapSum<Chains>(windowB[Offset], windowB[Offset + 1], windowB[Offset + 2], windowB[Offset + 3], weights));
 		};
-		column.template operator()<0>(run[0], outA, outB);
-		column.template operator()<Offset1>(run[1], outA + 3, outB + 3);
-		column.template operator()<Offset2>(run[2], outA + 6, outB + 6);
+		column.template operator()<0>(0, outA, outB);
+		column.template operator()<Offset1>(1, outA + 3, outB + 3);
+		column.template operator()<Offset2>(2, outA + 6, outB + 6);
+	}
+
+	// A group of three columns as a builder would record it, 16 bytes.
+	// pattern: the starts' steps, delta1 + 2 * delta2, each 0 or 1; 4 - steps of any other size, the group's columns read from the run table.
+	// weights: the three columns' 4 weights, side by side.
+	struct GroupRun
+	{
+		uint32_t firstSource;
+		uint32_t pattern;
+		const float* weights;
+	};
+
+	// The group's pattern of starts from its three runs
+	uint32_t groupPattern(const ColumnRun* run)
+	{
+		// Unsigned: a start before the previous one is a large step
+		const size_t delta1 = run[1].firstSource - run[0].firstSource, delta2 = run[2].firstSource - run[1].firstSource;
+		return (delta1 | delta2) > 1 ? 4 : static_cast<uint32_t>(delta1 + 2 * delta2);
+	}
+
+	// upscaleColumnGroups128 with a record per group: one 16-byte read, a branch on the recorded pattern, the weights at one address.
+	// A group of pattern 4 takes a column at a time from runs.
+	template <int Chains>
+	NOINLINE void upscaleGroupRecords128(const float* a, const float* b, const GroupRun* groups, const ColumnRun* runs, size_t lastPixel, float* outA, float* outB)
+	{
+		const auto column = [a, b](const ColumnRun& run, float* columnA, float* columnB) {
+			const Floats4 weights = load4(run.weights);
+			store4(columnA, fourTapSum<Chains>(a + run.firstSource * 4, weights));
+			store4(columnB, fourTapSum<Chains>(b + run.firstSource * 4, weights));
+		};
+
+		const GroupRun* const groupsEnd = groups + upscaleColumns / 3;
+		for (const GroupRun* group = groups; group != groupsEnd; ++group, outA += 9, outB += 9)
+		{
+			const size_t first = group->firstSource;
+			// One test, as upscaleColumnGroups128 has: a kernel's would hold the window's end
+			if (first > lastPixel)
+				break;
+
+			const float* pa = a + first * 4;
+			const float* pb = b + first * 4;
+			const float* const weights = group->weights;
+			const auto weightsOf = [weights](size_t groupColumn) { return weights + groupColumn * 4; };
+			switch (group->pattern)
+			{
+			case 0: upscaleGroupOfThree128<0, 0, Chains>(pa, pb, weightsOf, outA, outB); break;
+			case 1: upscaleGroupOfThree128<1, 1, Chains>(pa, pb, weightsOf, outA, outB); break;
+			case 2: upscaleGroupOfThree128<0, 1, Chains>(pa, pb, weightsOf, outA, outB); break;
+			case 3: upscaleGroupOfThree128<1, 2, Chains>(pa, pb, weightsOf, outA, outB); break;
+			default:
+			{
+				const ColumnRun* const run = runs + (group - groups) * 3;
+				column(run[0], outA, outB);
+				column(run[1], outA + 3, outB + 3);
+				column(run[2], outA + 6, outB + 6);
+			}
+			}
+		}
 	}
 
 	// upscaleRunTable128<0> three columns at a time, Chains chains per row. A group whose runs start 0 or 1 pixel apart, as an upscale's do,
@@ -1560,16 +1619,15 @@ namespace
 			if (run[2].firstSource > lastPixel)
 				break;
 
-			// Unsigned: a start before the previous one is a large delta
-			const size_t delta1 = run[1].firstSource - first, delta2 = run[2].firstSource - run[1].firstSource;
 			const float* pa = a + first * 4;
 			const float* pb = b + first * 4;
-			switch ((delta1 | delta2) > 1 ? 4 : delta1 + 2 * delta2)
+			const auto weightsOf = [run](size_t groupColumn) { return run[groupColumn].weights; };
+			switch (groupPattern(run))
 			{
-			case 0: upscaleGroupOfThree128<0, 0, Chains>(pa, pb, run, outA, outB); break;
-			case 1: upscaleGroupOfThree128<1, 1, Chains>(pa, pb, run, outA, outB); break;
-			case 2: upscaleGroupOfThree128<0, 1, Chains>(pa, pb, run, outA, outB); break;
-			case 3: upscaleGroupOfThree128<1, 2, Chains>(pa, pb, run, outA, outB); break;
+			case 0: upscaleGroupOfThree128<0, 0, Chains>(pa, pb, weightsOf, outA, outB); break;
+			case 1: upscaleGroupOfThree128<1, 1, Chains>(pa, pb, weightsOf, outA, outB); break;
+			case 2: upscaleGroupOfThree128<0, 1, Chains>(pa, pb, weightsOf, outA, outB); break;
+			case 3: upscaleGroupOfThree128<1, 2, Chains>(pa, pb, weightsOf, outA, outB); break;
 			default:
 				column(run[0], outA, outB);
 				column(run[1], outA + 3, outB + 3);
@@ -1582,9 +1640,10 @@ namespace
 	}
 
 	// Section U's loops at 720p -> 1080p's row pairs, sourceWidth -> 1920 columns:
-	//   Loop 0 - upscaleRunTable128<Variant>; 1 - upscaleThreeColumns128<Variant>, 1.5x only; 2 - upscaleColumnGroups128<Variant chains>.
+	//   Loop 0 - upscaleRunTable128<Variant>; 1 - upscaleThreeColumns128<Variant>, 1.5x only; 2 - upscaleColumnGroups128<Variant chains>;
+	//   3 - upscaleGroupRecords128<Variant chains>.
 	// A run's first pixel as the kernel's builder places it for a 4-tap filter; runs a period apart share their weights, as the kernel's do.
-	// lineAligned: every run's first pixel at a 64-byte boundary.
+	// Groups a period apart share theirs the same way. lineAligned: every run's first pixel at a 64-byte boundary.
 	template <int Loop, int Variant>
 	double upscaleSeconds128(size_t sourceWidth, bool lineAligned, int repeats)
 	{
@@ -1610,6 +1669,18 @@ namespace
 			runs[column] = { pixel, weights + column % period * weightStrideFor(4), 4 };
 		}
 
+		// A group's columns start at column 3 * group: its weights repeat every period / gcd(period, 3) groups
+		const size_t groupPeriod = period / std::gcd(period, size_t{ 3 });
+		float* groupWeights = alignedFloats(groupPeriod * 12 + 64);
+		for (size_t i = 0; i < groupPeriod * 12 + 64; ++i)
+			groupWeights[i] = 0.25f;
+		std::vector<GroupRun> groups(upscaleColumns / 3);
+		for (size_t group = 0; group < groups.size(); ++group)
+		{
+			const ColumnRun* const run = runs.data() + group * 3;
+			groups[group] = { static_cast<uint32_t>(run[0].firstSource), groupPattern(run), groupWeights + group % groupPeriod * 12 };
+		}
+
 		const double seconds = bestSeconds([&] {
 			for (size_t pair = 0; pair < upscaleRowPairs; ++pair)
 			{
@@ -1617,13 +1688,15 @@ namespace
 					upscaleRunTable128<Variant>(a, b, runs.data(), upscaleCapacity - 4, outA, outB);
 				else if constexpr (Loop == 1)
 					upscaleThreeColumns128<Variant>(a, b, weights, outA, outB);
-				else
+				else if constexpr (Loop == 2)
 					upscaleColumnGroups128<Variant>(a, b, runs.data(), upscaleCapacity - 4, outA, outB);
+				else
+					upscaleGroupRecords128<Variant>(a, b, groups.data(), runs.data(), upscaleCapacity - 4, outA, outB);
 			}
 		}, repeats);
 		volatile float sink = outA[100] + outB[200];
 		(void)sink;
-		freeFloats(a); freeFloats(b); freeFloats(weights); freeFloats(outA); freeFloats(outB);
+		freeFloats(a); freeFloats(b); freeFloats(weights); freeFloats(groupWeights); freeFloats(outA); freeFloats(outB);
 		return seconds;
 	}
 
@@ -1796,15 +1869,16 @@ int main(int argc, char** argv)
 		line("U10 as U0, one chain per row", upscaleSeconds128<0, 3>(1280, false, repeats));
 		line("U11 as U8, one chain per row", upscaleSeconds128<1, 6>(1280, false, repeats));
 		std::printf("U12 multiply-adds by lane, 16 chains in registers: %.2f G/s\n", laneMultiplyAddRate128(repeats));
-		// The run table three columns at a time, against the kernel's loop, by ratio
-		std::printf("U13 ns per column, -> 1920 columns:  run table, 2 chains | 1 chain | groups of three, 2 chains | 1 chain\n");
+		// Groups of three columns, from the run table and from records, against the kernel's loop, by ratio
+		std::printf("U13 ns per column, -> 1920 columns:  run table, 2 chains | 1 chain | groups of three, 2 chains | 1 chain | group records, 1 chain\n");
 		for (const size_t sourceWidth : { 1707, 1440, 1366, 1280, 960, 640 })
 		{
-			std::printf("U13 %4zu, %.3fx: %6.2f %6.2f %6.2f %6.2f\n", sourceWidth, static_cast<double>(upscaleColumns) / static_cast<double>(sourceWidth),
+			std::printf("U13 %4zu, %.3fx: %6.2f %6.2f %6.2f %6.2f %6.2f\n", sourceWidth, static_cast<double>(upscaleColumns) / static_cast<double>(sourceWidth),
 				upscaleSeconds128<0, 0>(sourceWidth, false, repeats) * 1e9 / (upscaleRowPairs * upscaleColumns),
 				upscaleSeconds128<0, 3>(sourceWidth, false, repeats) * 1e9 / (upscaleRowPairs * upscaleColumns),
 				upscaleSeconds128<2, 2>(sourceWidth, false, repeats) * 1e9 / (upscaleRowPairs * upscaleColumns),
-				upscaleSeconds128<2, 1>(sourceWidth, false, repeats) * 1e9 / (upscaleRowPairs * upscaleColumns));
+				upscaleSeconds128<2, 1>(sourceWidth, false, repeats) * 1e9 / (upscaleRowPairs * upscaleColumns),
+				upscaleSeconds128<3, 1>(sourceWidth, false, repeats) * 1e9 / (upscaleRowPairs * upscaleColumns));
 		}
 	}
 #endif

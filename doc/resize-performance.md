@@ -1540,5 +1540,7 @@ Cortex-A72 runs one 128-bit multiply-add per cycle, and the sum is a fifth more 
       the next run's fields an iteration ahead takes 3.7% off the loop, and -2% to +1.6% on whole resizes. Not
       committed.
     - One chain per row is in the kernel ("4-tap runs of 4-float pixels in one chain per row at NEON").
-    - Open: columns sharing their source pixels' loads, 5-12% off the loop in the ceiling program over a run table. The
-      loop is about a third of an upscale's kernel time.
+    - Open: columns sharing their source pixels' loads, from a record per group of three columns: 19-25% off the loop in
+      the ceiling program, from the run table 10% at most. The loop is about a third of an upscale's kernel time.
+      Its premise: an upscale's runs start 0 or 1 pixel apart, `buildAxisWeights` placing each at
+      `floor(position - 2) + 1`, clamped, with positions under a pixel apart.
