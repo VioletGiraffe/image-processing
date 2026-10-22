@@ -34,6 +34,8 @@ consists of, is in [throughput-ceiling.md](throughput-ceiling.md).
 - `QT_NO_GUI_THREADPOOL=1` keeps the Qt control serial; `run_tests` sets it.
 - Every benchmark allocates a fresh destination inside the timing, as the Qt control does. Threaded rows measured up to
   29b97e9 reused one destination.
+  - glibc maps an allocation over 32 MiB afresh each time: such a destination pays its page faults in every sample, 4.4 ns
+    per pixel on the Pi for the resizer and QImage alike. 720p -> 4K RGB32 is 1% under the threshold.
 - Windows throttles an unfocused console process onto E-cores: such runs came out 2-4x slow. The test runner opts out
   through `runCatchSession` (cpp-template-utils).
 - A Pi 4 without cooling throttles under sustained load: `vcgencmd get_throttled` must print `0x0` after a run.
@@ -159,6 +161,9 @@ Resizer / QImage, lower is better. "T": with threads. "-": no such benchmark.
 - N4100: the PC's pattern. In absolute time it runs 1.4-2.0x faster than the Pi on downscales, 1.2-1.6x on
   upscales.
 - Opaque 4-byte downscales stay behind Qt single-threaded: about 2x on the PC, 2.6-5x on the Pi, 2.9-3.8x on the N4100.
+- Upscale ratios rise as the factor falls, on every machine: the horizontal pass scales with dest width x source height
+  and the conversion with the source, QImage's smooth upscale with output pixels alone. On the Pi the two are 13.3 of
+  27.7 ms at 720p -> 1080p RGB32, where QImage takes 22.4 (its log, "where an upscale's time goes").
 
 ### Nearest neighbor
 
@@ -1178,6 +1183,18 @@ Nearest neighbor before -> after, ms, minimum of three alternating rounds:
 - The Qt controls stayed within 2% on the PC and the Pi, and moved up to 13% on the 8500T.
 - Pi, GCC: ratios only. The run reached the soft temperature limit (`get_throttled` 0x80000).
 
+### The next chunk's source prefetched
+
+After `prepareRun` converts a chunk, it requests the source lines of the next chunk in every row: they arrive while the
+horizontal pass filters the current one.
+- Pi: every filtered row of the benchmark 1.4-9.9% faster, the threaded ones included; 0-6.6% on Grayscale8 at display
+  sizes. At 720p -> 1080p RGB32 it takes 1.3-1.4 ms off the conversion's 1.7 ms of DRAM latency (its log, "where an
+  upscale's time goes").
+- x64: no change at AVX2 on the 8500T under MSVC and clang-cl, nor at SSE4.1 on the 8500T and the 12600K's P-core.
+- One-channel rows on x64 go without: the 12600K's E-core lost 2-4% on them at SSE4.1, in two sessions, where a padded
+  placement control moved nothing.
+- The next row pair's first chunk as well: nothing more (experiment 13).
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -1216,7 +1233,8 @@ Nearest neighbor before -> after, ms, minimum of three alternating rounds:
     as its memory operand: 4-byte downscales +2% to +5% under MSVC. The table is 4x the weights, and built per call.
 11. **A prefetch on each vertical tap's row** (N4100, not committed): within noise under both compilers.
 12. **One row per horizontal sweep at SSE4.1** (N4100, not committed): 9-41% slower than paired rows.
-13. **A software prefetch of the next row pair's source segment** (8500T, not committed): no consistent gain.
+13. **A software prefetch of the next row pair's source segment** (8500T, not committed): no consistent gain. On the Pi,
+    added to the next chunk's prefetch: within 1.2% of that alone (its log).
 14. **Three vertical blocks per step for 3-channel pixels at AVX2** (8500T, not committed): no row gains under MSVC or
     clang-cl, several lose 2-5%.
 15. **The AVX2 conversion with fewer shuffles** (8500T, not committed).
@@ -1500,3 +1518,8 @@ Nearest neighbor before -> after, ms, minimum of three alternating rounds:
     a 1080p -> 120 px thumbnail is under 2 ms in all, so that setup may be a visible share. Unmeasured.
     - At least the allocations can be kept between calls.
     - Sources of one size to one target size share their weights whole.
+    - On the Pi at 720p -> 1080p RGB32 the weights, allocations and the rest outside the kernel's loops take 0.2 of
+      27.7 ms.
+27. **The horizontal pass on the A72** (the Pi's log, "where an upscale's time goes"): 12 cycles per temp pixel at 4 taps,
+    whatever the source's cache level. Its samples fall on the loads and the two 16-byte temp stores, almost none on the
+    multiply-adds, and every temp line it writes is an L1 write refill.

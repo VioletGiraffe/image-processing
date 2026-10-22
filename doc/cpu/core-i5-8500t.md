@@ -802,3 +802,28 @@ A second state that placement does not explain: 9 of 24 processes with both buff
 - With HWiNFO64 polling, 18 processes of 60 samples gave 15.3-17.2. Its plot of the clock: 3.3-3.4 GHz.
 
 The second state's cause is not found.
+
+## The next chunk's source prefetched
+
+Against 44dd1ce, ten alternating rounds, median of same-round ratios / minimum to minimum. "Padded": a placement
+control, 44dd1ce with 32 bytes of `__nop()` at the start of `resizeRowsWith`. AVX2 binaries built here, the SSE4.1 ones
+on the 12600K. The prefetch measured here covered one-channel rows too.
+
+| Scenario | 44dd1ce AVX2, MSVC, min ms | AVX2, MSVC | AVX2, MSVC, padded | AVX2, clang-cl | SSE4.1, MSVC | SSE4.1, MSVC, padded |
+|---|---:|---:|---:|---:|---:|---:|
+| 4K -> 1080p Grayscale8 | 9.10 | -1.3% / +0.4% | -2.5% / -0.4% | +1.0% / +0.6% | -0.1% / +0.2% | -0.3% / -0.3% |
+| 4K -> 1080p RGB24 | 18.41 | -0.6% / -0.7% | +0.0% / -0.3% | -0.5% / -0.7% | -0.1% / -0.3% | +0.3% / +0.2% |
+| 4K -> 1080p RGB32 | 18.13 | -1.6% / -0.8% | -0.1% / +0.1% | +0.3% / +0.3% | -0.5% / -0.8% | +0.1% / -0.1% |
+| 4K -> 1080p RGBA32 | 21.44 | -0.5% / -0.5% | +0.4% / +0.4% | -1.4% / -1.6% | -0.2% / -0.2% | +0.3% / +0.1% |
+| 720p -> 4K Grayscale8 | 4.60 | +0.2% / +0.2% | -0.1% / +0.5% | +0.3% / +0.0% | +0.4% / +0.9% | -0.1% / -0.1% |
+| 720p -> 4K RGB24 | 11.42 | -4.1% / +0.2% | +1.8% / -0.0% | +0.4% / +0.2% | -0.0% / +0.1% | +0.2% / +0.1% |
+| 960x540 -> 1920x1080 RGB32 | 3.80 | +0.4% / +0.8% | +0.7% / +0.6% | -0.8% / +0.4% | +0.0% / +0.0% | +0.1% / -0.0% |
+| 1280x720 -> 1920x810 RGB32 | 3.76 | +0.2% / +0.2% | +0.4% / -0.1% | -0.3% / -0.1% | -0.3% / -0.3% | -0.4% / -0.3% |
+| 1280x720 -> 1920x1080 RGB32 | 4.37 | +0.4% / +0.2% | +0.4% / +0.5% | -0.3% / -0.1% | -0.3% / -0.2% | -0.0% / +0.1% |
+| 1280x720 -> 1920x1080 RGBA32 | 5.03 | +0.4% / -0.0% | +0.3% / -0.3% | -0.2% / +0.7% | +0.2% / -0.0% | +0.3% / -0.3% |
+| 1280x720 -> 1920x1440 RGB32 | 5.25 | -3.4% / -0.0% | +1.2% / -0.2% | -0.1% / -0.2% | -0.2% / -0.2% | +0.1% / +0.3% |
+| 1080p -> 1440p RGB32 | 8.43 | +1.7% / +0.3% | +0.6% / +0.6% | -0.8% / -0.4% | -0.4% / -1.2% | -0.5% / -0.2% |
+
+- An earlier MSVC session at AVX2, without the control: 960x540 -> 1920x1080 +10.0% / +0.7%, 1280x720 -> 1920x1440
+  +9.3% / +0.3%, the prefetch build in a slower process state in most rounds. In the session above 44dd1ce and the
+  padded build land in those states as often.

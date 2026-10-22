@@ -86,6 +86,85 @@ Two chains at NEON:
 - Clang: downscales within 1%, 4K -> 64x64 +8%, 101 MP -> 720p +3%, their threaded rows +4% to +6%.
 - Not adopted: Clang, the faster compiler here on downscales, loses its long runs.
 
+## 2026-10-22, 44dd1ce: where an upscale's time goes
+
+Clang 22, RGB32, a loop of resizes outside Catch2. `perf record` at 10 kHz, samples summed per kernel loop
+(`extract_kernels.py --loops`); event totals from `perf stat`. `vcgencmd get_throttled` 0x0 after every run.
+
+### Fixed and per-row cost
+
+Each series holds the dest width and the source height, so its horizontal pass makes the same temp pixels in every row.
+Minimum ms of three runs, fitted as fixed + per output MP:
+
+| Series | Temp pixels | Fixed, ms | Per output MP, ms | Largest residual, ms |
+|---|---:|---:|---:|---:|
+| 960x540 -> 1920 x 720, 1080, 1440 | 1.04 M | 8.7 | 6.8 | 0.2 |
+| 1280x720 -> 1920 x 810, 1080, 1440, 2160 | 1.38 M | 15.9 | 5.2 | 1.5 |
+| 1920x1080 -> 2560 x 1200, 1440, 2160, 2880 | 2.76 M | 28.9 | 6.2 | 0.8 |
+| 1280x720 -> 3840 x 900, 1440, 2160 | 2.76 M | 29.6 | 4.9 | 2.4 |
+
+- The 2.76 M series ran as Catch2 benchmark sections, 10 samples a run, with QImage's control beside each row.
+- QImage's smooth upscale: 10.8 ns per output pixel on every row, its fixed part within 0.3 ms of zero.
+- The fits overstate the fixed part: the vertical tap loop skips zero weights, and the larger the factor, the more dest
+  rows fall on a source row (weights 0, 1, 0, 0).
+- Destinations over 32 MiB cost both 4.4 ns more per pixel ("Reading the numbers"): left out of the fits.
+
+### 1280x720 -> 1920x1080, per kernel loop
+
+| Part | ms | Per unit | Unit | Instructions per cycle |
+|---|---:|---:|---|---:|
+| Horizontal taps | 9.1 | 6.6 ns | temp pixel | 1.21 |
+| Conversion | 4.2 | 4.55 ns | source pixel | 0.48 |
+| Vertical pass | 14.1 | 6.8 ns | dest pixel | 1.20 |
+| Weights, allocation, the rest | 0.2 | | | |
+
+- Horizontal: 6.5-6.7 ns per temp pixel whether the source comes from DRAM or L2. Its samples fall on the loads (run
+  index, weights, four 32-byte `ldp`) and the two 16-byte stores, almost none on the multiply-adds.
+- Every temp line the horizontal pass writes is an L1 write refill: 0.25 M per resize.
+- Conversion: 60% of its samples on the source load, and 93% of the kernel's L2 refills, one per source line. With
+  source and destination in L2 (240x136 -> 360x204, 14 L2 refills per resize) it costs 2.7 ns per source pixel.
+- 1920x2160 out: the vertical pass 5.6 ns per dest pixel, a third of the rows on a single tap.
+
+## The next chunk's source prefetched
+
+Clang 22, the loop of resizes from the section above, five alternating rounds, median of same-round ratios / minimum to
+minimum, against 44dd1ce.
+- Next chunk: the kernel's form.
+- Next row pair too: also the next row pair's first chunk, when a pair converts its last. Not committed.
+
+| Scenario | 44dd1ce, min ms | Next chunk | Next chunk and row pair |
+|---|---:|---:|---:|
+| 960x540 -> 1920x1080 | 23.08 | -4.3% / -4.5% | -4.6% / -4.5% |
+| 1280x720 -> 1920x810 | 23.25 | -5.4% / -4.8% | -5.3% / -5.0% |
+| 1280x720 -> 1920x1080 | 26.79 | -4.8% / -5.2% | -4.9% / -4.6% |
+| 1280x720 -> 1920x1440 | 31.54 | -5.2% / -4.3% | -5.1% / -4.3% |
+| 1080p -> 1440p | 50.32 | -5.2% / -4.9% | -4.5% / -4.8% |
+| 720p -> 4K | 70.00 | -3.5% / -3.4% | -3.3% / -3.2% |
+| 1080p -> 720p | 40.97 | -5.3% / -3.7% | -4.9% / -3.4% |
+| 1080p -> 240p | 28.44 | -9.3% / -7.9% | -8.8% / -6.8% |
+| 4K -> 1080p | 137.76 | -4.4% / -2.9% | -5.0% / -3.6% |
+
+- A first session of five rounds, the next chunk alone: -3.4% to -6.4% on the same rows.
+- At 720p -> 1080p the next chunk takes 1.3-1.4 ms off the conversion's 1.7 ms over its L2-resident rate (the section
+  above).
+- The next row pair adds nothing: within 1.2% of the next chunk alone on every row.
+
+Grayscale8, the next chunk against 44dd1ce in a later session, with an RGB32 row as its cross-check:
+
+| Scenario | 44dd1ce, min ms | Next chunk |
+|---|---:|---:|
+| 960x540 -> 1920x1080 | 7.40 | +0.0% / -0.1% |
+| 1280x720 -> 1920x1080 | 9.27 | -4.7% / -4.7% |
+| 720p -> 4K | 22.39 | -3.6% / -0.1% |
+| 1080p -> 720p | 18.15 | -6.5% / -6.6% |
+| 4K -> 1080p | 58.16 | -5.6% / -5.0% |
+| 1280x720 -> 1920x1080 RGB32 | 26.79 | -4.4% / -5.2% |
+
+The committed form, the full benchmark, three alternating rounds against 44dd1ce, `vcgencmd get_throttled` 0x0 after:
+- Every filtered row faster, the threaded ones included: -1.4% to -9.9% by median, -1.4% to -7.7% minimum to minimum.
+  24 MP -> 1080p -5.9%, 101 MP -> 720p -8.1%, 4K -> 64x64 -9.9%, 720p -> 4K RGB32 -3.7%.
+- Nearest neighbor, which converts nothing: +1.9% to -0.9%, the threaded rows +2.5% to -0.4%.
+
 ## Per-instruction-set primitives, not SIMDe (963b54b)
 
 Clang, 6b6bf7e -> 3049bb0: upscales -6% to -13%, downscales -4% to -9%; the scalar rows within 4%.

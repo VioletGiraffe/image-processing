@@ -411,9 +411,11 @@ with its change against the count read, and against the runs of two lengths: the
   the time in the horizontal loop.
 - The column loop is 1.6 cycles per column pair short of no stores' 14.8; its 0.8 loads blocked by a 4K alias are
   the candidate, untested.
-- The 8500T's bounds point at two untried changes:
-  - More independent accumulators, or two chains each, in the vertical pass: the FMA units' bound is 12 cycles.
-  - The next rows' source prefetched while the horizontal pass runs: the conversion's DRAM stalls.
+- The 8500T's bounds point at two changes:
+  - More independent accumulators, or two chains each, in the vertical pass: the FMA units' bound is 12 cycles. Untried.
+  - The source prefetched while the horizontal pass runs: the conversion's DRAM stalls. The next chunk's prefetch is in the
+    kernel: no change on the 8500T, faster on the Pi ([resize-performance.md](resize-performance.md), "The next chunk's
+    source prefetched").
 - The room is in the work per multiply-add. Stepped pointers in the passes and the block loop took 3-7% of it (the
   main doc's sections on them); the horizontal form itself is the larger term.
 - **The interleaved form is in the kernel** for the 4-float layouts' row pairs at padded lengths, with lane weights

@@ -18,6 +18,8 @@
 
 #if IMAGE_PROCESSING_X64
 	#include <immintrin.h>
+#elif defined(_MSC_VER) && !defined(__clang__)
+	#include <intrin.h> // __prefetch
 #endif
 
 #include <array>
@@ -117,4 +119,16 @@ namespace ImageProcessing::SimdSupport
 #else
 	inline void clearAvxUpperState() noexcept {}
 #endif
+
+	// Requests the cache line at address for reading
+	IMAGE_PROCESSING_FORCE_INLINE void prefetchLine(const void* address) noexcept
+	{
+#if defined(_MSC_VER) && !defined(__clang__) && IMAGE_PROCESSING_X64
+		_mm_prefetch(static_cast<const char*>(address), _MM_HINT_T0);
+#elif defined(_MSC_VER) && !defined(__clang__)
+		__prefetch(address);
+#else
+		__builtin_prefetch(address);
+#endif
+	}
 }

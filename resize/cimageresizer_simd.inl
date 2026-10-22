@@ -233,9 +233,26 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 						convertPixelsUpTo<false>(convertedTarget);
 
 					converted = convertedTarget;
+					// The next chunk's source lines are requested now: their DRAM latency overlaps this chunk's filtering.
+					// Not for one-channel rows on x64: Gracemont lost 2-4% to the requests at SSE4.1.
+					if constexpr (Channels > 1 || simdLevel == SimdLevel::Neon)
+						prefetchPixels(converted, std::min(converted + conversionChunk, pixelEnd));
 				}
 
 				return (first - base) * pixelFloats;
+			}
+
+			// Requests the source lines of pixels [begin, end) in every row
+			IMAGE_PROCESSING_SIMD_INLINE void prefetchPixels(size_t begin, size_t end) const noexcept
+			{
+				constexpr uintptr_t lineBytes = 64;
+				const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
+				for (size_t row = 0; row < Rows; ++row)
+				{
+					const uintptr_t endAddress = reinterpret_cast<uintptr_t>(pixels[row] + end * pixelStride);
+					for (uintptr_t line = reinterpret_cast<uintptr_t>(pixels[row] + begin * pixelStride) & ~(lineBytes - 1); line < endAddress; line += lineBytes)
+						SimdSupport::prefetchLine(reinterpret_cast<const void*>(line));
+				}
 			}
 
 			// Converts pixels [converted, end) into the buffers
