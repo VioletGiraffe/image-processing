@@ -474,6 +474,8 @@ namespace
 		// Upscales
 		{ 1280, 720, 3840, 2160, true },
 		{ 640, 480, 1280, 963 },
+		// NEON's x run triples: a strip starting off a multiple of 3 columns, a last partial triple, an odd last source row
+		{ 1500, 7, 4000, 9 },
 		{ 2, 2, 2048, 2048 },
 		{ 1, 1, 2000, 2000 },
 		// Mixed axes

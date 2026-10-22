@@ -29,6 +29,17 @@ namespace ImageProcessing::Detail
 		size_t weightCount;
 	};
 
+	// Three consecutive x runs of 4 taps, dest columns 3t to 3t + 2 for triple t, whose starts step 0 or 1 pixel, as an upscale's do.
+	// A kernel filtering them together loads the source pixels they share once.
+	struct TapRunTriple
+	{
+		uint32_t firstSource;
+		// The steps between the runs' starts: first step + 2 * second step
+		uint32_t pattern;
+		// The three runs' 4 weights, one after another
+		const float* weights;
+	};
+
 	// std::allocator on a 64-byte boundary
 	template <class T>
 	struct CacheLineAllocator
@@ -95,6 +106,10 @@ namespace ImageProcessing::Detail
 		std::vector<TapRun> runs;
 		// Set by padRunsToOneLength: every run has this many taps, and the horizontal pass compiled for that length reads no count. 0: the lengths vary.
 		size_t paddedRunLength = 0;
+		// Set by buildRunTriples for a level that filters x runs three at a time; empty otherwise, and the runs are filtered one at a time
+		std::vector<TapRunTriple> runTriples;
+		// The triples' weights: triples whose runs share their weights share them too
+		WeightVector tripleWeights;
 	};
 
 	struct AlignedFloatsDeleter
@@ -235,6 +250,8 @@ namespace ImageProcessing::Detail
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 		// The longest AxisWeights::paddedRunLength resizeRows takes for the x axis
 		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
+		// Whether resizeRows filters x runs padded to 4 taps three at a time, from AxisWeights::runTriples
+		[[nodiscard]] bool filtersRunTriples(size_t channels) noexcept;
 		// premultiplyPixelsScalar of tightly packed Channels-byte pixels, Channels 2 or 4, from source to dest; dest may be source
 		template <size_t Channels>
 		IMAGE_PROCESSING_AVX2_TARGET void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
@@ -250,6 +267,7 @@ namespace ImageProcessing::Detail
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 		// As Avx2's
 		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
+		[[nodiscard]] bool filtersRunTriples(size_t channels) noexcept;
 		template <size_t Channels>
 		IMAGE_PROCESSING_AVX_TARGET void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
 		IMAGE_PROCESSING_AVX_TARGET void planFourBytePixelExpansion(FourBytePixelExpansion& plan, uint64_t srcWidth, uint64_t destWidth);
@@ -264,6 +282,7 @@ namespace ImageProcessing::Detail
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 		// As Avx2's
 		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
+		[[nodiscard]] bool filtersRunTriples(size_t channels) noexcept;
 		template <size_t Channels>
 		IMAGE_PROCESSING_SSE41_TARGET void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;
 		IMAGE_PROCESSING_SSE41_TARGET void planFourBytePixelExpansion(FourBytePixelExpansion& plan, uint64_t srcWidth, uint64_t destWidth);
@@ -277,6 +296,8 @@ namespace ImageProcessing::Detail
 			const AxisWeights& yWeights, size_t stripWidth, uint64_t destRowBegin, uint64_t destRowEnd);
 		// The longest AxisWeights::paddedRunLength resizeRows takes for the x axis
 		[[nodiscard]] size_t longestPaddedXRun(size_t channels) noexcept;
+		// Whether resizeRows filters x runs padded to 4 taps three at a time, from AxisWeights::runTriples
+		[[nodiscard]] bool filtersRunTriples(size_t channels) noexcept;
 		// premultiplyPixelsScalar of tightly packed Channels-byte pixels, Channels 2 or 4, from source to dest; dest may be source
 		template <size_t Channels>
 		void premultiplyPixels(uint8_t* dest, const uint8_t* source, size_t pixelCount) noexcept;

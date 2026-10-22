@@ -43,6 +43,8 @@ namespace ImageProcessing::Detail::Neon
 	inline constexpr bool verticalTapsListed = false;
 	// As at SSE4.1. On the boundary: no other start is measured at NEON
 	inline constexpr size_t tempRingStartOffset = 0;
+	// 4-tap x runs of 4-float pixels filtered three at a time, their shared source pixels loaded once: Cortex-A72 loads 16 bytes per cycle
+	inline constexpr bool xRunTriplesFiltered = true;
 
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}
 

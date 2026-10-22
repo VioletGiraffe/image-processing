@@ -4,9 +4,11 @@
 #include "compiler/compiler_warnings_control.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <numbers>
 #include <numeric>
@@ -359,6 +361,47 @@ namespace
 		return result;
 	}
 
+	// Fills axis.runTriples from x runs padded to 4 taps, for a level that filters them three at a time.
+	// Leaves them empty where a triple's starts step other than 0 or 1 pixel, or a start passes 32 bits: the runs are then filtered one at a time.
+	inline void buildRunTriples(AxisWeights& axis)
+	{
+		assert(axis.paddedRunLength == 4 && axis.runTriples.empty());
+		// A triple's 12 weights in a cache line of their own
+		constexpr size_t tripleWeightStride = 16;
+
+		const size_t tripleCount = axis.runs.size() / 3;
+		std::vector<TapRunTriple> triples(tripleCount);
+		// Each triple's weights as an offset: weights reallocates while it grows
+		std::vector<size_t> weightOffsets(tripleCount);
+		AxisWeights::WeightVector weights;
+		std::map<std::array<const float*, 3>, size_t> placedWeights;
+		for (size_t triple = 0; triple < tripleCount; ++triple)
+		{
+			const TapRun* const runs = axis.runs.data() + triple * 3;
+			// The x runs start in order: no step is negative
+			const size_t step1 = runs[1].firstSource - runs[0].firstSource, step2 = runs[2].firstSource - runs[1].firstSource;
+			if (step1 > 1 || step2 > 1 || runs[0].firstSource > UINT32_MAX)
+				return;
+
+			const std::array<const float*, 3> runWeights{ runs[0].weights, runs[1].weights, runs[2].weights };
+			const auto [placed, newWeights] = placedWeights.try_emplace(runWeights, weights.size());
+			if (newWeights)
+			{
+				for (const float* const runWeight : runWeights)
+					weights.insert(weights.end(), runWeight, runWeight + 4);
+				weights.resize(weights.size() + tripleWeightStride - 12);
+			}
+
+			triples[triple] = { static_cast<uint32_t>(runs[0].firstSource), static_cast<uint32_t>(step1 + 2 * step2), nullptr };
+			weightOffsets[triple] = placed->second;
+		}
+
+		axis.tripleWeights = std::move(weights);
+		for (size_t triple = 0; triple < tripleCount; ++triple)
+			triples[triple].weights = axis.tripleWeights.data() + weightOffsets[triple];
+		axis.runTriples = std::move(triples);
+	}
+
 	[[nodiscard]] inline IndexedAxisWeights buildAxisWeightsForKernel(ResizeKernel kernel, uint64_t srcSize, uint64_t dstSize, bool runsStartInOrder)
 	{
 		if (kernel == ResizeKernel::Auto)
@@ -581,6 +624,20 @@ namespace
 #endif
 	}
 
+	[[nodiscard]] bool filtersRunTriples([[maybe_unused]] SimdLevel simdLevel, size_t channels) noexcept
+	{
+#if IMAGE_PROCESSING_X64
+		switch (simdLevel)
+		{
+		case SimdLevel::Avx2: return Avx2::filtersRunTriples(channels);
+		case SimdLevel::Avx: return Avx::filtersRunTriples(channels);
+		default: return Sse41::filtersRunTriples(channels);
+		}
+#else
+		return Neon::filtersRunTriples(channels);
+#endif
+	}
+
 	template <size_t Channels>
 	void resizeImpl(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect, const ParallelForFn& parallelFor, ResizeKernel kernel, SimdLevel simdLevel, size_t ringBudgetBytes)
 	{
@@ -620,8 +677,10 @@ namespace
 		// The y runs not: a kept zero is a tap where the vertical pass walks its window (NEON), on every third row of a 3x upscale.
 		auto indexedXWeights = buildAxisWeightsForKernel(kernel, srcRect.w, dest.width, true);
 		padRunsToOneLength(indexedXWeights, static_cast<size_t>(srcRect.w), longestPaddedXRun(simdLevel, Channels));
-		const AxisWeights xWeights = withRunAddresses(std::move(indexedXWeights));
+		AxisWeights xWeights = withRunAddresses(std::move(indexedXWeights));
 		assert(std::ranges::is_sorted(xWeights.runs, {}, &TapRun::firstSource));
+		if (xWeights.paddedRunLength == 4 && filtersRunTriples(simdLevel, Channels))
+			buildRunTriples(xWeights);
 		const AxisWeights yWeights = withRunAddresses(buildAxisWeightsForKernel(kernel, srcRect.h, dest.height, false));
 
 		const size_t tempRowStride = static_cast<size_t>(dest.width) * Channels;

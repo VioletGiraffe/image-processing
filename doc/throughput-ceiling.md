@@ -435,6 +435,8 @@ Clang 22 / GCC 14.2, the mean of two runs within 2.5%.
 - **Loads and arithmetic alone take 16 cycles (U6):** they overlap by 3 of their 19. The run table and its test add 2.8
   (U0 against U4), the stores 1.5-1.6 (U1, U5), the second row 9 (U3).
 - **Not the loads that cross a line:** with no 32-byte load across one, U2 is U0's time.
+- **Nor, in the kernel, the stores or the run table's dependent loads:** RGBA32's loop, whose stores are aligned and
+  refill nothing, is 1.6% faster than RGB32's. Reading the next run's fields an iteration ahead takes 3.7% off the loop.
 - **Shared loads take 20% off U4 (U8), one chain per row 11% off U0 (U10).** U8 loads a 1.5x period's 6 source pixels
   per row once for its 3 columns, in place of 12. Both, U11, take 12.1 cycles, 8 of them arithmetic: 34% off U4, 43% off
   U0 with its run table.
@@ -478,9 +480,8 @@ Cycles per column pair, the mean of two runs, Clang's up to 5% apart, GCC's with
     kernel: no change on the 8500T, faster on the Pi ([resize-performance.md](resize-performance.md), "The next chunk's
     source prefetched").
 - At NEON one chain per row at 4 taps is in the kernel ([resize-performance.md](resize-performance.md), "4-tap runs of
-  4-float pixels in one chain per row at NEON"). Columns sharing their source pixels' loads, from a record per group of
-  three, take 19-25% more off the loop (U13). Not in the kernel: it would take a record table beside the run table, a
-  pass for the groups and a body per pattern of starts.
+  4-float pixels in one chain per row at NEON"), and so are columns sharing their source pixels' loads, from a record
+  per triple of columns ("Upscales' x runs three at a time at NEON"): U13's 19-25% off the loop, 19% in the kernel.
 - The room is in the work per multiply-add. Stepped pointers in the passes and the block loop took 3-7% of it (the
   main doc's sections on them); the horizontal form itself is the larger term.
 - **The interleaved form is in the kernel** for the 4-float layouts' row pairs at padded lengths, with lane weights

@@ -851,3 +851,26 @@ in both builds: the control.
 - Within the control's spread. At SSE4.1 a multiply-add is a multiply and an add, so one chain is the same 7
   instructions per row as two: only the sums' order changes, a tree of depth 3 to a chain of 4.
 - A first session of five rounds: medians up to 6% either way, the control's too; its minimums agree with these.
+
+## x runs three at a time, at SSE4.1 (not committed)
+
+NEON's run triples enabled at SSE4.1 as well, against the working tree with them at NEON only, which compiles the x64
+kernels as 9bae4c1 does. Standalone drivers built with MSVC on the 12600K, the kernels' per-file flags; ten alternating
+rounds of 30 resizes each. Median of same-round ratios / minimum to minimum. The AVX2 rows run the same code in both
+builds: the control.
+
+| Scenario | Runs one at a time, min ms | Triples |
+|---|---:|---:|
+| 960x540 -> 1920x1080 RGB32 | 5.49 | +1.6% / +1.5% |
+| 1280x720 -> 1920x810 RGB32 | 5.35 | +4.5% / +4.1% |
+| 1280x720 -> 1920x1080 RGB32 | 6.22 | +4.1% / +4.0% |
+| 1280x720 -> 1920x1440 RGB32 | 7.44 | +1.6% / +2.6% |
+| 1080p -> 1440p RGB32 | 11.90 | +2.4% / +2.4% |
+| 720p -> 4K RGB32 | 17.29 | +0.2% / +0.3% |
+| 1280x720 -> 1920x1080 RGBA32 | 8.16 | -7.6% / -5.8% |
+| 1080p -> 1440p RGBA32 | 15.56 | -5.6% / -5.5% |
+| 1280x720 -> 1920x1080 RGB32, AVX2 | 4.33 | +0.8% / +0.2% |
+| 1080p -> 1440p RGB32, AVX2 | 8.35 | +0.2% / +0.2% |
+
+- MSVC's listing of the pattern bodies keeps part of a triple's window and broadcast weights on the stack: three
+  columns' 12 weights and up to 6 pixels outgrow the 16 registers, every SSE multiply needing a copy of its operand.

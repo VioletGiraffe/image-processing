@@ -1203,6 +1203,28 @@ Cortex-A72 runs one 128-bit multiply-add per cycle, and the sum is a fifth more 
   8500T it measured within the control's spread (its log, "4-tap runs of 4-float pixels in one chain per row, at
   SSE4.1").
 
+### Upscales' x runs three at a time at NEON
+
+Where every x run is padded to 4 taps, 4-float pixels at NEON take their runs three columns at a time
+(`filterHorizontalRunTriples`).
+- An upscale's runs start 0 or 1 pixel apart: `buildAxisWeights` places each at `floor(position - 2) + 1`, clamped, with
+  positions under a pixel apart. A triple reads a window of 4 to 6 source pixels per row, each loaded once, where a
+  column at a time loads 12.
+- `buildRunTriples` records each triple in 16 bytes: its first pixel, its two steps as a pattern, and one address of its
+  three runs' weights side by side. A body per pattern takes the window's pixels by a compile-time index.
+- Pi, Clang: RGB32 upscales 1.7-3.8% faster, RGBA32 3.1-8.5%. A placement control moved them 0.8% at most, 1.2% on one
+  RGBA32 row (its log, "x runs three at a time").
+- The horizontal loop is 19% faster at 720p -> 1080p RGB32, as the ceiling program found (throughput-ceiling.md, U13).
+  The vertical pass's loops give back part of it: they move with the kernel's placement, up to 6% from 32 bytes of
+  padding, and the larger function loads one more value from the stack in one of them.
+- Triples read from the run table, with no record, gained the loop 10% at most: the record's one read and precomputed
+  pattern are the difference.
+- A strip's columns before its first whole triple and after its last are filtered one at a time.
+- x64 filters its runs one at a time: open lead 27.
+- SSE4.1 does too. Under MSVC a triple's windows and broadcast weights outgrow the 16 registers, and part of them goes
+  through the stack. On the 8500T: RGB32 upscales 0.2-4.5% slower, RGBA32 5.5-7.6% faster (its log, "x runs three at
+  a time, at SSE4.1").
+
 ## Experiments that lost
 
 1. **Weight broadcasts instead of the lane permute on ARM** (8429a19, reverted).
@@ -1528,16 +1550,7 @@ Cortex-A72 runs one 128-bit multiply-add per cycle, and the sum is a fifth more 
     - Sources of one size to one target size share their weights whole.
     - On the Pi at 720p -> 1080p RGB32 the weights, allocations and the rest outside the kernel's loops take 0.2 of
       27.7 ms.
-27. **The horizontal pass on the A72** (the Pi's log, "where an upscale's time goes"): 12 cycles per temp pixel at 4 taps,
-    whatever the source's cache level. Its samples fall on the loads and the two 16-byte temp stores, almost none on the
-    multiply-adds, and every temp line it writes is an L1 write refill.
-    - Its bound ([throughput-ceiling.md](throughput-ceiling.md), "An upscale's 4-tap runs at NEON"): per column pair, 9
-      cycles of loads and 10 of arithmetic that overlap by 3, the run table about 3, the stores about 1.5.
-    - Not the bound: RGBA32's loop, whose stores are aligned and refill nothing, is 1.6% faster than RGB32's. Reading
-      the next run's fields an iteration ahead takes 3.7% off the loop, and -2% to +1.6% on whole resizes. Not
-      committed.
-    - One chain per row is in the kernel ("4-tap runs of 4-float pixels in one chain per row at NEON").
-    - Open: columns sharing their source pixels' loads, from a record per group of three columns: 19-25% off the loop in
-      the ceiling program, from the run table 10% at most. The loop is about a third of an upscale's kernel time.
-      Its premise: an upscale's runs start 0 or 1 pixel apart, `buildAxisWeights` placing each at
-      `floor(position - 2) + 1`, clamped, with positions under a pixel apart.
+27. **Run triples over AVX2's interleaved row pairs** (not measured): NEON's triples ("Upscales' x runs three at a time
+    at NEON") apply to pixel pairs as well, a window of 4 to 6 pairs loaded once per triple in place of 12, the
+    arithmetic and the stores unchanged. x64 cores load two or three times per cycle against the A72's once. The
+    ceiling program's section F can time it first.

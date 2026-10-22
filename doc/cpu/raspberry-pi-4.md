@@ -185,6 +185,39 @@ three for RGBA32. Median of same-round ratios / minimum to minimum. `vcgencmd ge
 - The downscales do not run the changed code. 1080p -> 240p's 901d72e rounds split between 26.5 and 27.7-28.1 ms; the
   one-chain build's held 27.3-27.6.
 
+## x runs three at a time
+
+Clang 22, the loop of resizes from "where an upscale's time goes", against 9bae4c1: five alternating rounds for RGB32,
+three for RGBA32. Median of same-round ratios / minimum to minimum. Placement control: 9bae4c1 with 32 bytes of `nop` at
+the start of `resizeRowsWith`. `vcgencmd get_throttled` 0x0 after.
+
+| Scenario | 9bae4c1, min ms | Placement control | Triples |
+|---|---:|---:|---:|
+| 960x540 -> 1920x1080 | 21.08 | +0.8% / +0.5% | -1.9% / -2.1% |
+| 1280x720 -> 1920x810 | 20.87 | -0.5% / -0.4% | -3.1% / -3.8% |
+| 1280x720 -> 1920x1080 | 24.17 | -0.0% / +0.2% | -2.0% / -1.9% |
+| 1280x720 -> 1920x1440 | 29.07 | -0.1% / -0.3% | -1.7% / -2.8% |
+| 1080p -> 1440p | 45.61 | +0.3% / +0.0% | -2.8% / -2.7% |
+| 720p -> 4K | 65.01 | -0.2% / +0.4% | -2.6% / -1.7% |
+| 1080p -> 720p | 39.55 | +0.1% / -0.2% | -0.3% / -0.5% |
+| 1080p -> 240p | 27.06 | -1.2% / -2.1% | -0.6% / -2.1% |
+| 4K -> 1080p | 134.04 | -0.2% / -0.2% | +0.4% / +0.2% |
+| 1280x720 -> 1920x1080 RGBA32 | 32.03 | -1.1% / -1.2% | -6.6% / -8.5% |
+| 1080p -> 1440p RGBA32 | 61.81 | -1.1% / -0.1% | -3.1% / -5.0% |
+| 720p -> 4K RGBA32 | 86.67 | +0.1% / -0.3% | -5.2% / -8.3% |
+
+1280x720 -> 1920x1080 RGB32 per kernel loop, M cycles per resize (`perf record`, 100 resizes):
+
+| Loop | 9bae4c1 | Placement control | Triples |
+|---|---:|---:|---:|
+| Horizontal | 13.14 | 13.35 | 10.69 |
+| Vertical, the main one | 12.83 | 12.99 | 14.14 |
+| Vertical, the next | 5.21 | 5.50 | 6.04 |
+| The whole kernel | 43.67 | 43.97 | 42.58 |
+
+- The vertical loops' code is the same in the three builds but in the triples build's main loop, which loads two values
+  from the stack where the others load one, and keeps a constant in a register.
+
 ## Per-instruction-set primitives, not SIMDe (963b54b)
 
 Clang, 6b6bf7e -> 3049bb0: upscales -6% to -13%, downscales -4% to -9%; the scalar rows within 4%.
