@@ -14,35 +14,31 @@ which holds each one's rationale.
 - Run-to-run noise: 5-10%.
 - Without cooling it throttles under sustained load: `vcgencmd get_throttled` must print `0x0` after a run.
 
-## Standing against Qt, bdf65f9
+## Standing against Qt, 4f25dd1
 
-GCC 14.2, one run, ms.
+Minimum ms of three alternating rounds of the Clang 22 and GCC 14.2 builds, each ratio against its own run's QImage.
 
-| Scenario | Resizer | QImage | Ratio | Threads | Ratio | Speedup |
-|---|---:|---:|---:|---:|---:|---:|
-| 24 MP -> 1080p | 409.0 | 156.8 | 2.61 | 115.2 | 0.73 | 3.55x |
-| 4K -> 1080p RGB32 | 180.9 | 40.0 | 4.53 | - | - | - |
-| 4K -> 1080p RGBA32 | 194.2 | 92.7 | 2.10 | 56.8 | 0.61 | 3.42x |
-| 4K -> 1080p RGB24 | 184.1 | 67.8 | 2.72 | 50.3 | 0.74 | 3.66x |
-| 4K -> 1080p Grayscale8 | 75.6 | 105.4 | 0.72 | - | - | - |
-| 720p -> 4K RGBA32 | 95.8 | 344.9 | 0.28 | 35.3 | 0.10 | 2.71x |
-| 720p -> 4K RGB32 | 89.6 | 89.3 | 1.00 | - | - | - |
-| 720p -> 4K RGB24 | 85.1 | 109.7 | 0.78 | 23.7 | 0.22 | 3.60x |
-| 720p -> 4K Grayscale8 | 36.6 | 92.9 | 0.39 | - | - | - |
-| 1080p -> 1440p | 70.7 | 40.0 | 1.77 | 20.6 | 0.52 | 3.43x |
-| 1080p -> 240p | 34.2 | 9.99 | 3.43 | 9.90 | 0.99 | 3.46x |
-| 4K -> 64x64 | 112.2 | 30.3 | 3.70 | 39.9 | 1.31 | 2.82x |
-| 101 MP -> 720p | 1451.0 | 390.1 | 3.72 | 451.0 | 1.16 | 3.22x |
-| 1080p, native size | 3.06 | 3.06 | 1.00 | - | - | - |
+| Scenario | Clang | QImage | Ratio | Threads | Ratio | GCC | Ratio | Threads | Ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | 312.6 | 155.6 | 2.01 | 94.5 | 0.61 | 337.4 | 2.16 | 99.5 | 0.64 |
+| 4K -> 1080p RGB32 | 133.2 | 39.2 | 3.39 | - | - | 137.9 | 3.52 | - | - |
+| 4K -> 1080p RGBA32 | 162.5 | 92.0 | 1.77 | 47.0 | 0.51 | 163.8 | 1.78 | 48.0 | 0.52 |
+| 4K -> 1080p RGB24 | 135.0 | 67.9 | 1.99 | 37.6 | 0.55 | 143.2 | 2.12 | 40.0 | 0.59 |
+| 4K -> 1080p Grayscale8 | 56.4 | 102.1 | 0.55 | - | - | 55.0 | 0.53 | - | - |
+| 720p -> 4K RGBA32 | 84.8 | 346.7 | 0.24 | 29.2 | 0.08 | 86.6 | 0.25 | 41.5 | 0.12 |
+| 720p -> 4K RGB32 | 65.1 | 89.4 | 0.73 | - | - | 74.8 | 0.84 | - | - |
+| 720p -> 4K RGB24 | 64.2 | 109.6 | 0.59 | 23.8 | 0.22 | 72.7 | 0.66 | 37.6 | 0.34 |
+| 720p -> 4K Grayscale8 | 22.5 | 93.1 | 0.24 | - | - | 23.7 | 0.25 | - | - |
+| 1080p -> 240p | 26.7 | 10.0 | 2.66 | 7.97 | 0.80 | 28.4 | 2.83 | 8.69 | 0.87 |
+| 4K -> 64x64 | 87.5 | 30.4 | 2.88 | 31.5 | 1.04 | 97.6 | 3.20 | 35.2 | 1.16 |
+| 101 MP -> 720p | 1174.9 | 398.9 | 2.95 | 394.5 | 0.99 | 1310.2 | 3.29 | 431.2 | 1.08 |
+| 1080p, native size | 3.19 | 3.21 | 1.00 | - | - | 3.18 | 0.99 | - | - |
 
-- Against GCC 14.2 at 74b015c (the run-lookup section): 24 MP -> 1080p 451 -> 409, 1080p -> 240p 38.0 -> 34.2,
-  720p -> 4K RGBA32 97.7-99.2 -> 95.8.
-- Against the earlier figures below, measured under Clang at commits from 1ecd630 to b9fea7e, ms: 24 MP -> 1080p
-  458 -> 409, 4K -> 1080p 196 -> 180, 101 MP -> 720p 1683 -> 1451, 1080p -> 1440p 76.7 -> 70.7; 4K -> 64x64 110 -> 112.
-  With threads: 24 MP -> 1080p 136.4 -> 115.2, 4K -> 1080p RGBA32 69.9 -> 56.8, 1080p -> 240p 11.9 -> 9.90,
-  1080p -> 1440p 24.7 -> 20.6, 101 MP -> 720p 481.0 -> 451.0.
-- The N4100 at 93775b0 runs downscales 1.4-2.0x faster and upscales 1.2-1.6x: 4K -> 1080p RGB32 94.4 ms,
-  24 MP -> 1080p 217.0, 720p -> 4K RGB32 63.9, 720p -> 4K RGBA32 82.9, 1080p -> 1440p 45.2.
+- GCC is 1-15% slower than Clang single-threaded, 2% faster on 4K -> 1080p Grayscale8, and 42-58% slower on the
+  threaded RGBA32 and RGB24 upscales. Not investigated.
+- Against GCC at bdf65f9: 24 MP -> 1080p 409 -> 337 ms, 4K -> 1080p RGB32 180.9 -> 137.9, 101 MP -> 720p
+  1451 -> 1310, 720p -> 4K RGB32 89.6 -> 74.8.
+- A benchmark run takes 133 s.
 
 ## 2026-10-05, after 74c02b3: four changes, and two chains at NEON
 

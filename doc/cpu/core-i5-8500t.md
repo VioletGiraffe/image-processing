@@ -19,33 +19,33 @@ The measurement log for this CPU. Conclusions that shape the design are summariz
 
 - QImage controls agree within 1% between binaries on most rows; the 4K -> 1080p RGBA32, RGB24 and Grayscale8 controls
   ranged 4-6% in one session.
-- A full benchmark run takes 65 s, a build 25-30 s.
+- A full benchmark run takes 89 s, a build 25-30 s.
 - A ring near the L2's size varies by run: see the ring budget section.
 
-## Standing against Qt, a6c69e7
+## Standing against Qt, 4f25dd1
 
-Minimum ms of three alternating rounds of the two binaries.
+Minimum ms of three rounds, MSVC. clang-cl against MSVC: the sections "clang-cl 22 against MSVC" below.
 
-| Scenario | MSVC | QImage | Ratio | Threads | Ratio | Speedup | clang-cl | clang-cl / MSVC |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 24 MP -> 1080p | 57.7 | 37.1 | 1.56 | 16.7 | 0.45 | 3.45x | 64.8 | +12.3% |
-| 4K -> 1080p RGB32 | 27.1 | 14.9 | 1.81 | - | - | - | 30.2 | +11.7% |
-| 4K -> 1080p RGBA32 | 32.2 | 29.5 | 1.09 | 9.17 | 0.31 | 3.52x | 32.6 | +1.0% |
-| 4K -> 1080p RGB24 | 27.7 | 32.3 | 0.86 | 8.04 | 0.25 | 3.44x | 30.4 | +9.8% |
-| 4K -> 1080p Grayscale8 | 16.0 | 36.7 | 0.44 | - | - | - | 15.5 | -3.3% |
-| 720p -> 4K RGBA32 | 23.6 | 77.9 | 0.30 | 8.75 | 0.11 | 2.70x | 24.1 | +2.1% |
-| 720p -> 4K RGB32 | 20.7 | 45.6 | 0.45 | - | - | - | 21.9 | +5.7% |
-| 720p -> 4K RGB24 | 18.7 | 36.7 | 0.51 | 6.55 | 0.18 | 2.86x | 20.1 | +7.8% |
-| 720p -> 4K Grayscale8 | 7.95 | 26.5 | 0.30 | - | - | - | 7.42 | -6.7% |
-| 1080p -> 1440p | 15.5 | 20.0 | 0.77 | 4.94 | 0.25 | 3.13x | 16.3 | +5.3% |
-| 1080p -> 240p | 4.50 | 2.39 | 1.88 | 1.41 | 0.59 | 3.19x | 5.01 | +11.3% |
-| 4K -> 64x64 | 12.3 | 6.55 | 1.87 | 4.39 | 0.67 | 2.80x | 12.7 | +3.5% |
-| 101 MP -> 720p | 184.6 | 94.8 | 1.95 | 51.6 | 0.54 | 3.57x | 205.3 | +11.3% |
-| 1080p, native size | 1.81 | 1.51 | 1.19 | - | - | - | 1.83 | +1.4% |
+| Scenario | MSVC | QImage | Ratio | Threads | Ratio | Speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| 24 MP -> 1080p | 45.1 | 37.1 | 1.22 | 13.1 | 0.35 | 3.45x |
+| 4K -> 1080p RGB32 | 18.0 | 15.0 | 1.20 | - | - | - |
+| 4K -> 1080p RGBA32 | 21.3 | 28.6 | 0.74 | 6.48 | 0.23 | 3.28x |
+| 4K -> 1080p RGB24 | 18.5 | 31.8 | 0.58 | 5.53 | 0.17 | 3.34x |
+| 4K -> 1080p Grayscale8 | 9.04 | 35.6 | 0.25 | - | - | - |
+| 720p -> 4K RGBA32 | 13.9 | 78.3 | 0.18 | 6.38 | 0.08 | 2.18x |
+| 720p -> 4K RGB32 | 12.6 | 45.1 | 0.28 | - | - | - |
+| 720p -> 4K RGB24 | 11.3 | 36.8 | 0.31 | 4.84 | 0.13 | 2.34x |
+| 720p -> 4K Grayscale8 | 4.53 | 26.5 | 0.17 | - | - | - |
+| 1080p -> 240p | 3.60 | 2.44 | 1.48 | 1.18 | 0.49 | 3.05x |
+| 4K -> 64x64 | 9.93 | 6.54 | 1.52 | 3.61 | 0.55 | 2.75x |
+| 101 MP -> 720p | 155.2 | 94.6 | 1.64 | 45.7 | 0.48 | 3.40x |
+| 1080p, native size | 1.83 | 1.82 | 1.01 | - | - | - |
 
-- Opaque 4-byte downscales stay 1.6-2.0x behind Qt single-threaded; every other row beats it, and every threaded row.
-- MSVC leads clang-cl by 5-12% on the 3-channel rows. clang-cl leads on Grayscale8 by 3-7%.
+- Opaque 4-byte downscales stay 1.2-1.6x behind Qt single-threaded; every other row beats it, and every threaded row.
 - The work runs in at most 4 bands on 6 cores.
+- Against a6c69e7: 24 MP -> 1080p 57.7 -> 45.1 ms, 4K -> 1080p RGB32 27.1 -> 18.0, 101 MP -> 720p 184.6 -> 155.2,
+  720p -> 4K RGB32 20.7 -> 12.6.
 
 ## Where the time goes at AVX2
 
