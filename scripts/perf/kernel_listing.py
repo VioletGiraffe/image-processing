@@ -27,7 +27,8 @@ _OBJDUMP_LABEL = re.compile(r"[0-9a-f]+ <(.+)>:")
 _UNINDENTED_OBJDUMP_INSTRUCTION = re.compile(r"([0-9a-f]+:) ([0-9a-f]+(?: [0-9a-f]+)*) *\t(.*)")
 # x86 jumps; ARM64 branches, without the calls (bl, blr) and the computed ones (br)
 _JUMP_MNEMONIC = re.compile(r"j[a-z]+|b|b\.[a-z]+|cbn?z|tbn?z")
-_MULTIPLY_MNEMONIC = re.compile(r"v?mul[ps]s|vfn?m(?:add|sub)\d+[ps]s|fmul|fmla|fmls|fmadd")
+# macOS's llvm-objdump appends a vector's arrangement to the mnemonic: fmla.4s
+_MULTIPLY_MNEMONIC = re.compile(r"v?mul[ps]s|vfn?m(?:add|sub)\d+[ps]s|(?:fmul|fmla|fmls|fmadd)(?:\.\d+[bhsd])?")
 _CALL_MNEMONIC = re.compile(r"call[a-z]*|blr?")
 
 
