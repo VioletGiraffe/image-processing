@@ -1088,3 +1088,43 @@ build.
   rounds (21 MP -> 175x117 -10.8%, 4K -> 200x113 RGBA32 +11.5%): placement in its unpadded kernels. Its upscale rows
   are not attributable. Its AVX2 720p -> 4K RGB32, the same code, read two levels by launch: +10.5% / +8.1%.
 - The test executable: MSVC 3.54 -> 3.63 MB, clang-cl 4.59 -> 4.69 MB.
+
+## A row pair converted in one loop
+
+Against 67935c2, six alternating rounds, each compiler against its own build, median of same-round ratios / minimum to
+minimum.
+
+| Scenario | 67935c2, MSVC AVX2, min ms | MSVC, AVX2 | MSVC, SSE4.1 | clang-cl, AVX2 | clang-cl, SSE4.1 |
+|---|---:|---:|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | 44.32 | -2.7% / -2.0% | -0.1% / -0.5% | -2.0% / -1.7% | -3.2% / -3.2% |
+| 2.8 MP -> 1920x1280 RGB32 | 9.11 | +0.3% / +0.2% | -1.2% / -1.0% | -0.2% / -0.2% | -0.3% / -0.4% |
+| 4K -> 1600x900 RGB32 | 15.65 | -0.3% / +0.0% | +1.8% / +1.9% | -0.2% / +0.2% | -3.1% / -2.8% |
+| 4K -> 720p RGB32 | 13.92 | +0.1% / -0.2% | -0.3% / -0.2% | +0.2% / +0.1% | -0.7% / -0.4% |
+| 720p -> 4K RGBA32 | 13.22 | +0.0% / -0.0% | -0.1% / -0.7% | -0.5% / -0.4% | -0.2% / -0.8% |
+| 720p -> 4K RGB32 | 11.89 | -0.3% / +0.2% | -1.3% / -0.5% | -0.7% / -0.2% | +0.3% / +0.0% |
+| 1080p -> 240p RGB32 | 3.51 | -1.0% / -0.6% | +0.3% / +0.2% | -1.3% / -0.6% | -2.5% / -2.1% |
+| 1080p -> 120x68 RGB32 | 2.62 | -2.1% / -1.7% | -0.8% / -1.1% | -1.9% / -2.2% | -1.9% / -1.7% |
+| 21 MP -> 175x117 RGB32 | 25.13 | -2.8% / -2.9% | -0.7% / -0.6% | -0.8% / -1.0% | -2.2% / -2.0% |
+| 4K -> 200x113 RGB32 | 11.76 | -3.1% / -3.2% | -1.8% / -1.3% | -2.3% / -2.8% | -1.4% / -0.9% |
+| 4K -> 200x113 RGBA32 | 14.31 | -4.9% / -4.3% | -1.7% / -1.7% | -4.8% / -4.5% | -3.3% / -3.2% |
+| 1080p at native size RGB32 | 1.85 | -14.6% / -1.9% | - | -2.2% / +1.8% | - |
+| 4K -> 1080p Grayscale8 | 8.82 | -0.5% / -0.9% | -1.8% / -2.3% | -2.5% / -1.7% | +0.8% / +1.3% |
+| 4K -> 1080p RGB24 | 17.43 | -0.7% / -0.3% | -0.8% / -1.0% | -1.1% / -0.3% | -2.9% / -2.9% |
+| 4K -> 1080p RGB32 | 17.18 | -4.6% / -0.2% | -1.4% / -1.3% | +1.7% / +0.3% | +2.8% / +3.3% |
+| 4K -> 1080p RGBA32 | 20.37 | +0.2% / +0.1% | -1.2% / -1.6% | -0.7% / -0.1% | -3.3% / -3.0% |
+| 720p -> 4K Grayscale8 | 4.38 | -0.7% / -0.5% | -0.0% / +0.2% | -1.1% / -1.3% | -0.5% / -0.4% |
+| 720p -> 4K RGB24 | 10.64 | +0.5% / -0.3% | -0.4% / -0.6% | -0.1% / -0.8% | +4.1% / +1.5% |
+
+- clang-cl's SSE4.1 rows move with placement (open lead 5): its +3% and +4% are within that.
+- Native size, the same code in both builds, reads two levels by launch under MSVC.
+
+The AVX level, an AVX2 build capped at it, 4K -> 200x113, probe builds of 67935c2, six rounds, minimum ms:
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| RGBA32 | 18.02 | 16.87 |
+| RGBA32, the source marked premultiplied | 16.23 | 15.22 |
+| RGB32 | 16.20 | 15.01 |
+| RGBA32 at SSE4.1 | 29.44 | 29.71 |
+
+- clang-cl is ahead by 6-7% in every layout, as at AVX2. Premultiplying costs both compilers 1.6-1.8 ms.

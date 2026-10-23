@@ -73,14 +73,22 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				pixelFloats[Channels] = 0.0f;
 		}
 
-		template <size_t Channels, size_t PixelStride, bool PremultiplyAlpha>
-		IMAGE_PROCESSING_SIMD_INLINE void convertPixelsToFloats(const uint8_t* pixels, size_t runtimePixelStride, float* floats, size_t pixelCount) noexcept
+		// Rows rows' pixels as floats, each row into its own floats, both rows of a pair in one loop. Rows 1: row B's pointers are unused.
+		template <size_t Channels, size_t PixelStride, bool PremultiplyAlpha, size_t Rows>
+		IMAGE_PROCESSING_SIMD_INLINE void convertPixelsToFloats(
+			const uint8_t* pixelsA,
+			[[maybe_unused]] const uint8_t* pixelsB,
+			size_t runtimePixelStride,
+			float* floatsA,
+			[[maybe_unused]] float* floatsB,
+			size_t pixelCount) noexcept
 		{
+			static_assert(Rows == 1 || Rows == 2);
 			constexpr size_t floatsPerPixel = sourceFloatsPerPixel(Channels);
 			const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
 			size_t pixel = 0;
 
-			// A 16-byte load: 16 pixel floats, or 4 RGB pixels and 4 bytes past them
+			// A 16-byte load per row: 16 pixel floats, or 4 RGB pixels and 4 bytes past them
 			if constexpr (PixelStride == floatsPerPixel || (Channels == 3 && PixelStride == 3))
 			{
 				constexpr size_t blockPixels = 16 / floatsPerPixel;
@@ -89,25 +97,48 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				{
 					const size_t blockCount = (pixelCount - loadedPixels) / blockPixels + 1;
 					// Stepped pointers and an end pointer: for an index bound MSVC keeps a second counter and indexes the stores
-					const uint8_t* blockBytes = pixels;
-					float* blockFloats = floats;
-					float* const blockFloatsEnd = floats + blockCount * 16;
-					for (; blockFloats != blockFloatsEnd; blockBytes += blockPixels * PixelStride, blockFloats += 16)
+					const uint8_t* blockBytesA = pixelsA;
+					[[maybe_unused]] const uint8_t* blockBytesB = pixelsB;
+					float* blockFloatsA = floatsA;
+					[[maybe_unused]] float* blockFloatsB = floatsB;
+					float* const blockFloatsEndA = floatsA + blockCount * 16;
+					for (; blockFloatsA != blockFloatsEndA; blockBytesA += blockPixels * PixelStride, blockFloatsA += 16)
 					{
-						Floats8 first, second;
+						Floats8 firstA, secondA;
+						[[maybe_unused]] Floats8 firstB, secondB;
 						if constexpr (PixelStride == 3)
-							loadFourRgbPixelsAsFloats(blockBytes, first, second);
+						{
+							loadFourRgbPixelsAsFloats(blockBytesA, firstA, secondA);
+							if constexpr (Rows == 2)
+								loadFourRgbPixelsAsFloats(blockBytesB, firstB, secondB);
+						}
 						else
-							loadSixteenBytesAsFloats(blockBytes, first, second);
+						{
+							loadSixteenBytesAsFloats(blockBytesA, firstA, secondA);
+							if constexpr (Rows == 2)
+								loadSixteenBytesAsFloats(blockBytesB, firstB, secondB);
+						}
 
 						if constexpr (PremultiplyAlpha)
 						{
-							first = premultiplyPixels<floatsPerPixel>(first);
-							second = premultiplyPixels<floatsPerPixel>(second);
+							firstA = premultiplyPixels<floatsPerPixel>(firstA);
+							secondA = premultiplyPixels<floatsPerPixel>(secondA);
+							if constexpr (Rows == 2)
+							{
+								firstB = premultiplyPixels<floatsPerPixel>(firstB);
+								secondB = premultiplyPixels<floatsPerPixel>(secondB);
+							}
 						}
 
-						storeFloats8(blockFloats, first);
-						storeFloats8(blockFloats + 8, second);
+						storeFloats8(blockFloatsA, firstA);
+						storeFloats8(blockFloatsA + 8, secondA);
+						if constexpr (Rows == 2)
+						{
+							storeFloats8(blockFloatsB, firstB);
+							storeFloats8(blockFloatsB + 8, secondB);
+							blockBytesB += blockPixels * PixelStride;
+							blockFloatsB += 16;
+						}
 					}
 
 					pixel = blockCount * blockPixels;
@@ -117,7 +148,11 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			// Scalar: a few pixels after the block loop, and Clang's vector form keeps four constants in registers the filter's column loop needs
 			IMAGE_PROCESSING_SCALAR_LOOP
 			for (; pixel < pixelCount; ++pixel)
-				convertPixelToFloats<Channels, PremultiplyAlpha>(pixels + pixel * pixelStride, floats + pixel * floatsPerPixel);
+			{
+				convertPixelToFloats<Channels, PremultiplyAlpha>(pixelsA + pixel * pixelStride, floatsA + pixel * floatsPerPixel);
+				if constexpr (Rows == 2)
+					convertPixelToFloats<Channels, PremultiplyAlpha>(pixelsB + pixel * pixelStride, floatsB + pixel * floatsPerPixel);
+			}
 		}
 
 		// A row pair's pixels as floats, interleaved: pixel i of row A at floats [8i, 8i + 4), of row B at [8i + 4, 8i + 8)
@@ -269,12 +304,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 				else
 				{
-					for (size_t row = 0; row < Rows; ++row)
-					{
-						const uint8_t* rowPixels = pixels[row] + converted * pixelStride;
-						float* rowFloats = floats[row] + (converted - base) * floatsPerPixel;
-						convertPixelsToFloats<Channels, PixelStride, PremultiplyAlpha>(rowPixels, pixelStride, rowFloats, end - converted);
-					}
+					const size_t floatOffset = (converted - base) * floatsPerPixel;
+					convertPixelsToFloats<Channels, PixelStride, PremultiplyAlpha, Rows>(pixels[0] + converted * pixelStride, pixels[Rows - 1] + converted * pixelStride, pixelStride,
+						floats[0] + floatOffset, floats[Rows - 1] + floatOffset, end - converted);
 				}
 			}
 
