@@ -1200,6 +1200,28 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 		using DestRowTaps = std::conditional_t<verticalTapsListed, ListedTaps, WalkedTaps>;
 
+		// FourHeldTaps: a ListedTaps of 4, with its row pointers and broadcast weights taken once for the dest row, so that the
+		// block loop loads only the temp rows' floats. listed serves the pixels past the blocks.
+		struct FourHeldTaps
+		{
+			ListedTaps listed;
+			const float* row0;
+			const float* row1;
+			const float* row2;
+			const float* row3;
+			Floats8 weight0;
+			Floats8 weight1;
+			Floats8 weight2;
+			Floats8 weight3;
+		};
+
+		[[nodiscard]] IMAGE_PROCESSING_SIMD_INLINE FourHeldTaps heldFourTaps(const ListedTaps& taps) noexcept
+		{
+			assert(taps.count == 4);
+			return { taps, taps.rows[0], taps.rows[1], taps.rows[2], taps.rows[3], broadcastFloats8(taps.weights[0]), broadcastFloats8(taps.weights[1]),
+				broadcastFloats8(taps.weights[2]), broadcastFloats8(taps.weights[3]) };
+		}
+
 		// The taps of the window in segments. listedRows, listedWeights: storage for ListedTaps, rowWeights.size() entries each.
 		template <typename Taps = DestRowTaps>
 		IMAGE_PROCESSING_SIMD_INLINE Taps destRowTaps(
@@ -1276,6 +1298,66 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				second = secondAccums;
 		}
 
+		// The taps in their listed order: a row's sums are its ListedTaps' to the bit. Locals and addProduct written out, as for ListedTaps.
+		template <size_t BlockFloats, size_t Blocks>
+		IMAGE_PROCESSING_SIMD_INLINE void filterTapsIntoBlocks(const FourHeldTaps& taps, size_t sourceOffset, BlockAccums& first, [[maybe_unused]] BlockAccums& second) noexcept
+		{
+			BlockAccums firstAccums, secondAccums;
+			const float* const source0 = taps.row0 + sourceOffset;
+			assignTapToBlock<BlockFloats>(firstAccums, source0, taps.weight0);
+			if constexpr (Blocks == 2)
+				assignTapToBlock<BlockFloats>(secondAccums, source0 + BlockFloats, taps.weight0);
+
+			const float* const source1 = taps.row1 + sourceOffset;
+			addProduct(firstAccums.accum0, loadFloats8(source1), taps.weight1);
+			addProduct(firstAccums.accum1, loadFloats8(source1 + 8), taps.weight1);
+			addProduct(firstAccums.accum2, loadFloats8(source1 + 16), taps.weight1);
+			if constexpr (BlockFloats == 32)
+				addProduct(firstAccums.accum3, loadFloats8(source1 + 24), taps.weight1);
+			if constexpr (Blocks == 2)
+			{
+				addProduct(secondAccums.accum0, loadFloats8(source1 + BlockFloats), taps.weight1);
+				addProduct(secondAccums.accum1, loadFloats8(source1 + BlockFloats + 8), taps.weight1);
+				addProduct(secondAccums.accum2, loadFloats8(source1 + BlockFloats + 16), taps.weight1);
+				if constexpr (BlockFloats == 32)
+					addProduct(secondAccums.accum3, loadFloats8(source1 + BlockFloats + 24), taps.weight1);
+			}
+
+			const float* const source2 = taps.row2 + sourceOffset;
+			addProduct(firstAccums.accum0, loadFloats8(source2), taps.weight2);
+			addProduct(firstAccums.accum1, loadFloats8(source2 + 8), taps.weight2);
+			addProduct(firstAccums.accum2, loadFloats8(source2 + 16), taps.weight2);
+			if constexpr (BlockFloats == 32)
+				addProduct(firstAccums.accum3, loadFloats8(source2 + 24), taps.weight2);
+			if constexpr (Blocks == 2)
+			{
+				addProduct(secondAccums.accum0, loadFloats8(source2 + BlockFloats), taps.weight2);
+				addProduct(secondAccums.accum1, loadFloats8(source2 + BlockFloats + 8), taps.weight2);
+				addProduct(secondAccums.accum2, loadFloats8(source2 + BlockFloats + 16), taps.weight2);
+				if constexpr (BlockFloats == 32)
+					addProduct(secondAccums.accum3, loadFloats8(source2 + BlockFloats + 24), taps.weight2);
+			}
+
+			const float* const source3 = taps.row3 + sourceOffset;
+			addProduct(firstAccums.accum0, loadFloats8(source3), taps.weight3);
+			addProduct(firstAccums.accum1, loadFloats8(source3 + 8), taps.weight3);
+			addProduct(firstAccums.accum2, loadFloats8(source3 + 16), taps.weight3);
+			if constexpr (BlockFloats == 32)
+				addProduct(firstAccums.accum3, loadFloats8(source3 + 24), taps.weight3);
+			if constexpr (Blocks == 2)
+			{
+				addProduct(secondAccums.accum0, loadFloats8(source3 + BlockFloats), taps.weight3);
+				addProduct(secondAccums.accum1, loadFloats8(source3 + BlockFloats + 8), taps.weight3);
+				addProduct(secondAccums.accum2, loadFloats8(source3 + BlockFloats + 16), taps.weight3);
+				if constexpr (BlockFloats == 32)
+					addProduct(secondAccums.accum3, loadFloats8(source3 + BlockFloats + 24), taps.weight3);
+			}
+
+			first = firstAccums;
+			if constexpr (Blocks == 2)
+				second = secondAccums;
+		}
+
 		template <size_t BlockFloats, size_t Blocks>
 		IMAGE_PROCESSING_SIMD_INLINE void filterTapsIntoBlocks(const WalkedTaps& taps, size_t sourceOffset, BlockAccums& first, [[maybe_unused]] BlockAccums& second) noexcept
 		{
@@ -1323,6 +1405,12 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				for (size_t channel = 0; channel < Channels; ++channel)
 					accum[channel] = mulAdd(source[channel], taps.weights[tap], accum[channel]);
 			}
+		}
+
+		template <size_t Channels>
+		IMAGE_PROCESSING_SIMD_INLINE void filterTapsIntoPixel(const FourHeldTaps& taps, size_t sourceOffset, std::array<float, Channels>& accum) noexcept
+		{
+			filterTapsIntoPixel<Channels>(taps.listed, sourceOffset, accum);
 		}
 
 		template <size_t Channels>
@@ -1374,9 +1462,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 		// Filters Blocks adjacent vertical blocks of one dest row, from dest pixel firstPixel on, and writes them.
 		// Parameters as filterVerticalDestRow's.
-		template <size_t Channels, size_t PixelStride, size_t Blocks>
+		template <size_t Channels, size_t PixelStride, size_t Blocks, typename Taps>
 		IMAGE_PROCESSING_SIMD_INLINE void filterVerticalBlocks(
-			const DestRowTaps& taps,
+			const Taps& taps,
 			[[maybe_unused]] Rgb32PixelTails pixelTails,
 			[[maybe_unused]] const uint8_t* pixelTail,
 			size_t pixelStride,
@@ -1411,11 +1499,11 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				::memcpy(destPixel + Channels, pixelTail, pixelStride - Channels);
 		}
 
-		// Writes one destination row from its y taps.
+		// Writes one destination row from its y taps: a DestRowTaps, or a FourHeldTaps.
 		// pixelTail: the bytes past the channels, up to pixelStride, that every dest pixel gets.
-		template <size_t Channels, size_t PixelStride>
+		template <size_t Channels, size_t PixelStride, typename Taps>
 		IMAGE_PROCESSING_SIMD_INLINE void filterVerticalDestRow(
-			const DestRowTaps& taps,
+			const Taps& taps,
 			const uint8_t* pixelTail,
 			size_t runtimePixelStride,
 			uint8_t* destRow,
@@ -1680,6 +1768,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		const size_t tempRowStride = stripWidth * Channels + tempRowSlack(Channels);
 
 		static_assert(verticalDestRowsPerStep == 1 || (verticalDestRowsPerStep == 2 && verticalTapsListed));
+		static_assert(!verticalFourTapsHeld || verticalTapsListed);
 		// Pairs only on downscales of 2x and more: on the 12600K they cost upscales up to 50%, a 1.07x downscale 13%
 		const size_t destRowsPerStep = srcRect.h >= 2 * dest.height ? verticalDestRowsPerStep : 1;
 		const TempRowRing ring{ yWeights, destRowBegin, destRowEnd, tempRowStride, 2, destRowsPerStep, tempRingStartOffset };
@@ -1762,6 +1851,16 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 
 				const DestRowTaps taps = destRowTaps(ring.window(upperRun.firstSource, upperRun.weights.size()), upperRun.weights, tempRowStride, listedTapRows.get(), listedTapWeights.get());
+				if constexpr (verticalFourTapsHeld)
+				{
+					if (taps.count == 4)
+					{
+						filterVerticalDestRow<Channels, PixelStride>(heldFourTaps(taps), pixelTail, pixelStride, stripDest, stripEnd - stripBegin);
+						++dy;
+						continue;
+					}
+				}
+
 				filterVerticalDestRow<Channels, PixelStride>(taps, pixelTail, pixelStride, stripDest, stripEnd - stripBegin);
 				++dy;
 			}

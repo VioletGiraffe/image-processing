@@ -44,6 +44,8 @@ namespace ImageProcessing::Detail::Avx
 	inline constexpr bool verticalTapsListed = true;
 	// Unmeasured here
 	inline constexpr size_t verticalDestRowsPerStep = 1;
+	// Unmeasured here
+	inline constexpr bool verticalFourTapsHeld = false;
 	inline constexpr size_t tempRingStartOffset = 0;
 	// 4-tap x runs filtered three at a time over the interleaved row pairs, each pixel pair loaded once
 	inline constexpr bool xRunTriplesFiltered = true;

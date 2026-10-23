@@ -1053,3 +1053,38 @@ resize; the kernel pairs downscales of 2x and more only, and the rows below the 
 
 - The rows the horizontal pass dominates gain least: the 16x-32x thumbnails and 4K -> 64x64 within 1-2%.
 - The SSE4.1 rows, the same code in both builds: within 1.6%, but 4K -> 1600x900 at +2.1%.
+
+## Four y taps held across the dest row
+
+AVX2's vertical pass holding a 4-tap dest row's row pointers and weights in registers, against 9685f09: eight
+alternating rounds, median of same-round ratios / minimum to minimum, clang-cl against its own build of 9685f09.
+
+| Scenario, AVX2 | 9685f09, MSVC, min ms | Held, MSVC | Held, clang-cl |
+|---|---:|---:|---:|
+| 720p -> 4K RGBA32 | 13.45 | -2.0% / -1.7% | -4.1% / -4.0% |
+| 720p -> 4K RGB32 | 12.32 | -18.4% / -3.2% | -4.0% / -3.5% |
+| 720p -> 4K RGB24 | 10.86 | -2.3% / -2.1% | +7.2% / -3.7% |
+| 720p -> 4K Grayscale8 | 4.54 | -3.1% / -3.0% | -3.8% / -3.3% |
+
+- Two rows read two levels by launch (open lead 19), minimum to minimum the reading there: MSVC's 9685f09 RGB32 upscale
+  at 12.3 or 13.8-15.1 ms, the held build at 11.9-12.2 ms in every round; clang-cl's held RGB24 upscale at 10.6 or
+  11.3-12.6 ms. Native size, the same code in both builds, reads -14.2% / -2.0% under MSVC the same way.
+- The downscales within 1%, but MSVC's 24 MP -> 1620x1080 -2.9% / -1.2% and clang-cl's 4K -> 1080p RGBA32 -2.2% / -1.8%.
+  The SSE4.1 rows within 1.3%.
+- The test executable: MSVC 3.29 -> 3.54 MB, clang-cl 4.27 -> 4.59 MB.
+
+At SSE4.1 too, against the AVX2-held build, whose SSE4.1 code is 9685f09's: eight rounds, each compiler against its own
+build.
+
+| Scenario, SSE4.1 | AVX2 held, MSVC, min ms | Held, MSVC | Held, clang-cl |
+|---|---:|---:|---:|
+| 720p -> 4K RGBA32 | 21.07 | -5.1% / -4.3% | -8.0% / -7.9% |
+| 720p -> 4K RGB32 | 18.21 | -3.3% / -4.2% | -7.0% / -6.9% |
+| 720p -> 4K RGB24 | 16.41 | -1.0% / -0.7% | -17.0% / -16.9% |
+| 720p -> 4K Grayscale8 | 5.73 | -4.5% / -4.6% | -6.2% / -5.8% |
+
+- MSVC: the SSE4.1 downscales within 1%, 4K -> 1600x900 +2.8% / +2.4% aside; the AVX2 rows, the same code, within 1.5%.
+- clang-cl: the SSE4.1 downscales, which take the listed loop in both builds, moved by -11% to +12%, steady across the
+  rounds (21 MP -> 175x117 -10.8%, 4K -> 200x113 RGBA32 +11.5%): placement in its unpadded kernels. Its upscale rows
+  are not attributable. Its AVX2 720p -> 4K RGB32, the same code, read two levels by launch: +10.5% / +8.1%.
+- The test executable: MSVC 3.54 -> 3.63 MB, clang-cl 4.59 -> 4.69 MB.

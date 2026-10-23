@@ -50,6 +50,9 @@ namespace ImageProcessing::Detail::Sse41
 	inline constexpr bool verticalTapsListed = true;
 	// Dest rows the vertical pass filters per step. 1: a pair is unmeasured at this level
 	inline constexpr size_t verticalDestRowsPerStep = 1;
+	// As at AVX2. A broadcast weight's halves are one register: 4 weights and a block's 6-8 accumulators fit.
+	// Upscales up to 5% faster on the 8500T and Gracemont under MSVC.
+	inline constexpr bool verticalFourTapsHeld = true;
 	// The temp ring's start, in floats past a 64-byte boundary. 16 bytes past: Goldmont Plus is 2-6% slower from the boundary, other cores within 1%
 	inline constexpr size_t tempRingStartOffset = 4;
 	// x runs one at a time: triples slow Coffee Lake's upscales by up to 11% under MSVC and 6.5% under clang-cl
