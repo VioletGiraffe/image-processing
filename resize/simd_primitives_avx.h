@@ -43,6 +43,7 @@ namespace ImageProcessing::Detail::Avx
 	inline constexpr size_t verticalBlocksPerStep = 2;
 	inline constexpr bool verticalTapsListed = true;
 	inline constexpr size_t tempRingStartOffset = 0;
+	// x runs one at a time: triples, as at AVX2, are not measured on Sandy Bridge
 	inline constexpr bool xRunTriplesFiltered = false;
 
 	// The code after the kernel is legacy-SSE encoded, and stalls while the upper YMM state is dirty

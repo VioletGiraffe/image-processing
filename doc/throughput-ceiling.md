@@ -365,6 +365,18 @@ change against the same compiler's kernel's form.
   its 32-byte weight loads went through 240 KB of weights where the kernel's shared ones stay in L1. The program
   still times those lines.
 
+Three columns at a time, from a 16-byte record per group as section U reads them: a window of 4 to 6 pixel pairs
+loaded once, one chain per column. Against the one-chain lane form, in the same runs:
+
+| Form | 8500T: MSVC | clang-cl | P-core: MSVC | clang-cl | E-core: MSVC | clang-cl |
+|---|---:|---:|---:|---:|---:|---:|
+| Interleaved, one chain, lanes (F9) | 2.81 | 2.50 | 1.56 | 1.60 | 2.89 | 2.88 |
+| Three columns at a time (F11) | 2.04 (-27%) | 2.01 (-20%) | 1.20 (-23%) | 1.22 (-24%) | 2.98 (+3%) | 3.01 (+5%) |
+| F11, weights broadcast from memory (F12) | 2.02 (-28%) | 2.14 (-14%) | 1.31 (-16%) | 1.36 (-15%) | 2.70 (-7%) | 2.65 (-8%) |
+
+- The big cores gain 20-27% with lane weights: 12 in-lane shuffles per triple do not bind the 8500T's one shuffle port.
+- The E-core gains only with broadcast weights.
+
 ### The 128-bit levels
 
 At SSE4.1 and NEON the kernel's form is already a tap per multiply-add: a register is one pixel, and the spread gives
@@ -481,7 +493,8 @@ Cycles per column pair, the mean of two runs, Clang's up to 5% apart, GCC's with
     source prefetched").
 - At NEON one chain per row at 4 taps is in the kernel ([resize-performance.md](resize-performance.md), "4-tap runs of
   4-float pixels in one chain per row at NEON"), and so are columns sharing their source pixels' loads, from a record
-  per triple of columns ("Upscales' x runs three at a time at NEON"): U13's 19-25% off the loop, 19% in the kernel.
+  per triple of columns ("Upscales' x runs three at a time"): U13's 19-25% off the loop, 19% in the kernel. AVX2 takes
+  them over its interleaved row pairs, F11's form: whole upscales 4-7% faster on the 8500T, 5-9% on the P-core.
 - The room is in the work per multiply-add. Stepped pointers in the passes and the block loop took 3-7% of it (the
   main doc's sections on them); the horizontal form itself is the larger term.
 - **The interleaved form is in the kernel** for the 4-float layouts' row pairs at padded lengths, with lane weights

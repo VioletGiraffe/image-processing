@@ -114,6 +114,24 @@ namespace
 		size_t weightCount;
 	};
 
+	// A group of three columns as a builder would record it, 16 bytes.
+	// pattern: the starts' steps, delta1 + 2 * delta2, each 0 or 1; 4 - steps of any other size, the group's columns read from the run table.
+	// weights: the three columns' 4 weights, side by side.
+	struct GroupRun
+	{
+		uint32_t firstSource;
+		uint32_t pattern;
+		const float* weights;
+	};
+
+	// The group's pattern of starts from its three runs
+	uint32_t groupPattern(const ColumnRun* run)
+	{
+		// Unsigned: a start before the previous one is a large step
+		const size_t delta1 = run[1].firstSource - run[0].firstSource, delta2 = run[2].firstSource - run[1].firstSource;
+		return (delta1 | delta2) > 1 ? 4 : static_cast<uint32_t>(delta1 + 2 * delta2);
+	}
+
 	// Every column's tap count: maxTaps; mixed - maxTaps or one fewer, unpredictably
 	std::vector<uint32_t> columnTapCounts(size_t columns, size_t maxTaps, bool mixed)
 	{
@@ -1034,6 +1052,116 @@ namespace
 		return seconds;
 	}
 
+	// One interleaved column's 4 taps in one chain, as the kernel's at 4 taps, its pixel pairs in registers. Weights: PairWeights'.
+	template <int Weights>
+	FORCEINLINE void interleavedFourTaps(__m256 p0, __m256 p1, __m256 p2, __m256 p3, const float* w, float* outA, float* outB)
+	{
+		const PairWeights<Weights> weights{ w };
+		__m256 sum = _mm256_mul_ps(p0, weights.template tap<0>());
+		sum = _mm256_fmadd_ps(p1, weights.template tap<1>(), sum);
+		sum = _mm256_fmadd_ps(p2, weights.template tap<2>(), sum);
+		sum = _mm256_fmadd_ps(p3, weights.template tap<3>(), sum);
+		_mm_storeu_ps(outA, _mm256_castps256_ps128(sum));
+		_mm_storeu_ps(outB, _mm256_extractf128_ps(sum, 1));
+	}
+
+	// Columns 0, 1 and 2 of an interleaved group at pixel pairs 0, Offset1 and Offset2 of a window of 4 + Offset2 pairs, each loaded once.
+	// weights: the three columns' 4 weights side by side. The window by name: MSVC moves a small array through memory.
+	template <size_t Offset1, size_t Offset2, int Weights>
+	FORCEINLINE void interleavedGroupOfThree(const float* p, const float* weights, float* outA, float* outB)
+	{
+		const __m256 p0 = _mm256_loadu_ps(p), p1 = _mm256_loadu_ps(p + 8), p2 = _mm256_loadu_ps(p + 16), p3 = _mm256_loadu_ps(p + 24);
+		__m256 p4 = p3, p5 = p3;
+		if constexpr (Offset2 >= 1)
+			p4 = _mm256_loadu_ps(p + 32);
+		if constexpr (Offset2 == 2)
+			p5 = _mm256_loadu_ps(p + 40);
+
+		interleavedFourTaps<Weights>(p0, p1, p2, p3, weights, outA, outB);
+		if constexpr (Offset1 == 0)
+			interleavedFourTaps<Weights>(p0, p1, p2, p3, weights + 4, outA + 3, outB + 3);
+		else
+			interleavedFourTaps<Weights>(p1, p2, p3, p4, weights + 4, outA + 3, outB + 3);
+		if constexpr (Offset2 == 0)
+			interleavedFourTaps<Weights>(p0, p1, p2, p3, weights + 8, outA + 6, outB + 6);
+		else if constexpr (Offset2 == 1)
+			interleavedFourTaps<Weights>(p1, p2, p3, p4, weights + 8, outA + 6, outB + 6);
+		else
+			interleavedFourTaps<Weights>(p2, p3, p4, p5, weights + 8, outA + 6, outB + 6);
+	}
+
+	// fourTapRunTable's interleaved one-chain column three columns at a time, from a record per group as upscaleGroupRecords128 reads them.
+	// A group of pattern 4 takes a column at a time from runs.
+	template <int Weights>
+	NOINLINE void fourTapGroupRecords(const float* interleaved, const GroupRun* groups, const ColumnRun* runs, size_t columns, size_t lastPixel, float* outA, float* outB)
+	{
+		const GroupRun* const groupsEnd = groups + columns / 3;
+		for (const GroupRun* group = groups; group != groupsEnd; ++group, outA += 9, outB += 9)
+		{
+			const size_t first = group->firstSource;
+			if (first > lastPixel)
+				break;
+
+			const float* const p = interleaved + first * 8;
+			const float* const weights = group->weights;
+			switch (group->pattern)
+			{
+			case 0: interleavedGroupOfThree<0, 0, Weights>(p, weights, outA, outB); break;
+			case 1: interleavedGroupOfThree<1, 1, Weights>(p, weights, outA, outB); break;
+			case 2: interleavedGroupOfThree<0, 1, Weights>(p, weights, outA, outB); break;
+			case 3: interleavedGroupOfThree<1, 2, Weights>(p, weights, outA, outB); break;
+			default:
+				for (size_t column = 0; column < 3; ++column)
+				{
+					const ColumnRun& run = runs[(group - groups) * 3 + column];
+					const float* const q = interleaved + run.firstSource * 8;
+					interleavedFourTaps<Weights>(_mm256_loadu_ps(q), _mm256_loadu_ps(q + 8), _mm256_loadu_ps(q + 16), _mm256_loadu_ps(q + 24), run.weights,
+						outA + column * 3, outB + column * 3);
+				}
+			}
+		}
+	}
+
+	// fourTapGroupRecords<Weights> on fourTapRunTableSeconds' runs. Each group's weights in a 16-float slot, one per distinct group of the period.
+	template <int Weights>
+	double fourTapGroupRecordsSeconds(int repeats)
+	{
+		constexpr size_t columns = 3840, capacityPixels = 2 * 4 + 128, period = 3;
+		static_assert(columns % 3 == 0);
+		float* interleaved = alignedFloats(capacityPixels * 8 + 128);
+		float* weights = alignedFloats(period * 16 + 64);
+		for (size_t i = 0; i < period * 16 + 64; ++i)
+			weights[i] = 0.25f;
+		float* outA = alignedFloats(columns * 3 + 64);
+		float* outB = alignedFloats(columns * 3 + 64);
+
+		std::vector<ColumnRun> runs(columns);
+		size_t positionQ8 = 0;
+		for (size_t column = 0; column < columns; ++column)
+		{
+			runs[column] = { positionQ8 >> 8, weights + column / 3 * 3 % period * 16 + column % 3 * 4, 4 };
+			positionQ8 += 256 / 3;
+			if ((positionQ8 >> 8) + 4 > capacityPixels)
+				positionQ8 = 0;
+		}
+
+		std::vector<GroupRun> groups(columns / 3);
+		for (size_t group = 0; group < groups.size(); ++group)
+		{
+			const ColumnRun* const run = runs.data() + group * 3;
+			groups[group] = { static_cast<uint32_t>(run->firstSource), groupPattern(run), weights + group * 3 % period * 16 };
+		}
+
+		const double seconds = bestSeconds([&] {
+			for (size_t pair = 0; pair < 720 / 2; ++pair)
+				fourTapGroupRecords<Weights>(interleaved, groups.data(), runs.data(), columns, capacityPixels - 4, outA, outB);
+		}, repeats);
+		volatile float sink = outA[100] + outB[200];
+		(void)sink;
+		freeFloats(interleaved); freeFloats(weights); freeFloats(outA); freeFloats(outB);
+		return seconds;
+	}
+
 	// A 4K RGB32 image's rows, 16 pixels wider than 3840: the last 12-tap runs at a step of 2 end past it
 	constexpr size_t sourceRowPixels = 3840 + 16, sourceRowBytes = sourceRowPixels * 4;
 
@@ -1542,24 +1670,6 @@ namespace
 		column.template operator()<Offset2>(2, outA + 6, outB + 6);
 	}
 
-	// A group of three columns as a builder would record it, 16 bytes.
-	// pattern: the starts' steps, delta1 + 2 * delta2, each 0 or 1; 4 - steps of any other size, the group's columns read from the run table.
-	// weights: the three columns' 4 weights, side by side.
-	struct GroupRun
-	{
-		uint32_t firstSource;
-		uint32_t pattern;
-		const float* weights;
-	};
-
-	// The group's pattern of starts from its three runs
-	uint32_t groupPattern(const ColumnRun* run)
-	{
-		// Unsigned: a start before the previous one is a large step
-		const size_t delta1 = run[1].firstSource - run[0].firstSource, delta2 = run[2].firstSource - run[1].firstSource;
-		return (delta1 | delta2) > 1 ? 4 : static_cast<uint32_t>(delta1 + 2 * delta2);
-	}
-
 	// upscaleColumnGroups128 with a record per group: one 16-byte read, a branch on the recorded pattern, the weights at one address.
 	// A group of pattern 4 takes a column at a time from runs.
 	template <int Chains>
@@ -1915,6 +2025,8 @@ int main(int argc, char** argv)
 		report("F8 as F3, from a run table", fourTapRunTableSeconds<3>(repeats), fourTapWork);
 		report("F9 as F4, from a run table", fourTapRunTableSeconds<4>(repeats), fourTapWork);
 		report("F10 as F8, four chains: the fixed-count column at 4 taps", fourTapRunTableSeconds<5>(repeats), fourTapWork);
+		report("F11 as F9, three columns from a record per group, each pixel pair loaded once", fourTapGroupRecordsSeconds<0>(repeats), fourTapWork);
+		report("F12 as F11, weights broadcast from memory", fourTapGroupRecordsSeconds<1>(repeats), fourTapWork);
 	}
 
 	if (selected('C') || selected('P') || selected('R'))

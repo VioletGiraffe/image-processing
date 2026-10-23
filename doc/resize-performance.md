@@ -1214,10 +1214,10 @@ Cortex-A72 runs one 128-bit multiply-add per cycle, and the sum is a fifth more 
   8500T it measured within the control's spread (its log, "4-tap runs of 4-float pixels in one chain per row, at
   SSE4.1").
 
-### Upscales' x runs three at a time at NEON
+### Upscales' x runs three at a time
 
-Where every x run is padded to 4 taps, 4-float pixels at NEON take their runs three columns at a time
-(`filterHorizontalRunTriples`).
+Where every x run is padded to 4 taps, 4-float pixels at NEON and AVX2 take their runs three columns at a time
+(`filterHorizontalRunTriples`), AVX2 over its interleaved row pairs.
 - An upscale's runs start 0 or 1 pixel apart: `buildAxisWeights` places each at `floor(position - 2) + 1`, clamped, with
   positions under a pixel apart. A triple reads a window of 4 to 6 source pixels per row, each loaded once, where a
   column at a time loads 12.
@@ -1231,7 +1231,14 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON take their runs th
 - Triples read from the run table, with no record, gained the loop 10% at most: the record's one read and precomputed
   pattern are the difference.
 - A strip's columns before its first whole triple and after its last are filtered one at a time.
-- x64 filters its runs one at a time: open lead 27.
+- AVX2 reads a window of 4 to 6 pixel pairs, one chain per column as its column at a time has. The ceiling program's loop
+  gains 20-27% on the big cores (throughput-ceiling.md, F11).
+- AVX2, whole resizes, minimum to minimum: upscales 3.6-6.8% faster on the 8500T, 5.0-9.3% on the 12600K's P-core,
+  within -1.6% to +1.9% on its E-core (their logs, "x runs three at a time over the interleaved row pairs"). Downscales
+  level.
+- The 8500T's RGB32 upscales moved 6-8.5% with 32 bytes of padding before the kernel under MSVC; with triples they
+  stay within 0.4%, 10-12% faster than the slower placement.
+- AVX filters its runs one at a time: not measured on Sandy Bridge.
 - SSE4.1 does too. On the 8500T triples are slower or level under both compilers: RGB32 upscales up to 3.3% under MSVC
   and 6.5% under clang-cl, RGBA32 up to 11% and 3.1% (its log, "x runs three at a time, at SSE4.1"). Under MSVC a
   triple's windows and broadcast weights outgrow the 16 registers, and part of them goes through the stack.
@@ -1561,7 +1568,3 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON take their runs th
     - Sources of one size to one target size share their weights whole.
     - On the Pi at 720p -> 1080p RGB32 the weights, allocations and the rest outside the kernel's loops take 0.2 of
       27.7 ms.
-27. **Run triples over AVX2's interleaved row pairs** (not measured): NEON's triples ("Upscales' x runs three at a time
-    at NEON") apply to pixel pairs as well, a window of 4 to 6 pairs loaded once per triple in place of 12, the
-    arithmetic and the stores unchanged. x64 cores load two or three times per cycle against the A72's once. The
-    ceiling program's section F can time it first.

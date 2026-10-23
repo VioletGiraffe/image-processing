@@ -977,12 +977,69 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 		}
 
+		// An interleaved column's 4 taps in one chain, its pixel pairs in registers: see filterInterleavedRun
+		IMAGE_PROCESSING_SIMD_INLINE Floats8 fourTapPixelPair(Floats8 pair0, Floats8 pair1, Floats8 pair2, Floats8 pair3, FourWeights weights) noexcept
+		{
+			Floats8 sum = mul(pair0, weightOfTap<0>(weights));
+			addProduct(sum, pair1, weightOfTap<1>(weights));
+			addProduct(sum, pair2, weightOfTap<2>(weights));
+			addProduct(sum, pair3, weightOfTap<3>(weights));
+			return sum;
+		}
+
+		// A pixel pair's sum: row A's temp pixel from its low half, row B's from its high half
+		template <size_t Channels>
+		IMAGE_PROCESSING_SIMD_INLINE void storeTempPixelPair(float* outA, float* outB, Floats8 sum) noexcept
+		{
+			storeTempPixel<Channels>(outA, lowHalf(sum));
+			storeTempPixel<Channels>(outB, highHalf(sum));
+		}
+
+		// filterRunTriple over an interleaved row pair, a window of 4 to 6 pixel pairs
+		// The window by name: MSVC moves a small array through memory
+		template <uint32_t Pattern, size_t Channels>
+		IMAGE_PROCESSING_SIMD_INLINE void filterInterleavedRunTriple(const float* pixelPairs, const float* weights, float* outA, float* outB) noexcept
+		{
+			static_assert(sourceFloatsPerPixel(Channels) == 4 && Pattern <= 3);
+			constexpr size_t offset1 = Pattern % 2, offset2 = offset1 + Pattern / 2;
+
+			const Floats8 pair0 = loadFloats8(pixelPairs), pair1 = loadFloats8(pixelPairs + 8), pair2 = loadFloats8(pixelPairs + 16), pair3 = loadFloats8(pixelPairs + 24);
+			Floats8 pair4 = pair3, pair5 = pair3;
+			if constexpr (offset2 >= 1)
+				pair4 = loadFloats8(pixelPairs + 32);
+			if constexpr (offset2 == 2)
+				pair5 = loadFloats8(pixelPairs + 40);
+
+			// In column order: see storeTempPixel
+			storeTempPixelPair<Channels>(outA, outB, fourTapPixelPair(pair0, pair1, pair2, pair3, loadFourWeights(weights)));
+			if constexpr (offset1 == 0)
+				storeTempPixelPair<Channels>(outA + Channels, outB + Channels, fourTapPixelPair(pair0, pair1, pair2, pair3, loadFourWeights(weights + 4)));
+			else
+				storeTempPixelPair<Channels>(outA + Channels, outB + Channels, fourTapPixelPair(pair1, pair2, pair3, pair4, loadFourWeights(weights + 4)));
+			if constexpr (offset2 == 0)
+				storeTempPixelPair<Channels>(outA + 2 * Channels, outB + 2 * Channels, fourTapPixelPair(pair0, pair1, pair2, pair3, loadFourWeights(weights + 8)));
+			else if constexpr (offset2 == 1)
+				storeTempPixelPair<Channels>(outA + 2 * Channels, outB + 2 * Channels, fourTapPixelPair(pair1, pair2, pair3, pair4, loadFourWeights(weights + 8)));
+			else
+				storeTempPixelPair<Channels>(outA + 2 * Channels, outB + 2 * Channels, fourTapPixelPair(pair2, pair3, pair4, pair5, loadFourWeights(weights + 8)));
+		}
+
+		// One run triple, interleaved or a row at a time
+		template <uint32_t Pattern, size_t Channels, bool Interleaved, size_t Rows>
+		IMAGE_PROCESSING_SIMD_INLINE void filterRunTripleOfLayout(const float* pixelsA, const float* pixelsB, const float* weights, float* outA, float* outB) noexcept
+		{
+			if constexpr (Interleaved)
+				filterInterleavedRunTriple<Pattern, Channels>(pixelsA, weights, outA, outB);
+			else
+				filterRunTriple<Pattern, Channels, Rows>(pixelsA, pixelsB, weights, outA, outB);
+		}
+
 		// Filters run triples from firstTriple on, into the temp rows at their offset from destBegin, while each triple's window lies within
 		// source pixels [bufferBegin, bufferEnd). Returns the first triple not filtered.
 		// Requires firstTriple's window to start at bufferBegin or later. sourceFloats, and the range by value: see filterBufferedRuns.
-		template <size_t Channels, size_t Rows>
+		template <size_t Channels, bool Interleaved, size_t Rows>
 		IMAGE_PROCESSING_SIMD_INLINE size_t filterBufferedRunTriples(
-			float* const (&sourceFloats)[Rows],
+			float* const (&sourceFloats)[Interleaved ? 1 : Rows],
 			size_t bufferBegin,
 			size_t bufferEnd,
 			float* const (&tempRows)[Rows],
@@ -991,10 +1048,10 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			size_t tripleEnd,
 			const TapRunTriple* triples) noexcept
 		{
-			constexpr size_t floatsPerPixel = 4;
+			constexpr size_t pixelFloats = Interleaved ? 8 : 4;
 			// The rows' floats as if they began at source pixel 0: see filterBufferedRuns
-			const float* const originA = sourceFloats[0] - bufferBegin * floatsPerPixel;
-			const float* const originB = sourceFloats[Rows - 1] - bufferBegin * floatsPerPixel;
+			const float* const originA = sourceFloats[0] - bufferBegin * pixelFloats;
+			const float* const originB = sourceFloats[Interleaved ? 0 : Rows - 1] - bufferBegin * pixelFloats;
 			float* outA = tempRows[0] + (firstTriple * 3 - destBegin) * Channels;
 			float* outB = tempRows[Rows - 1] + (firstTriple * 3 - destBegin) * Channels;
 			const TapRunTriple* triple = triples + firstTriple;
@@ -1008,16 +1065,16 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				if (firstPixel + 4 + pattern % 2 + pattern / 2 > bufferEnd)
 					break;
 
-				const float* const pixelsA = originA + firstPixel * floatsPerPixel;
-				const float* const pixelsB = originB + firstPixel * floatsPerPixel;
+				const float* const pixelsA = originA + firstPixel * pixelFloats;
+				const float* const pixelsB = originB + firstPixel * pixelFloats;
 				switch (pattern)
 				{
-				case 0: filterRunTriple<0, Channels, Rows>(pixelsA, pixelsB, triple->weights, outA, outB); break;
-				case 1: filterRunTriple<1, Channels, Rows>(pixelsA, pixelsB, triple->weights, outA, outB); break;
-				case 2: filterRunTriple<2, Channels, Rows>(pixelsA, pixelsB, triple->weights, outA, outB); break;
+				case 0: filterRunTripleOfLayout<0, Channels, Interleaved, Rows>(pixelsA, pixelsB, triple->weights, outA, outB); break;
+				case 1: filterRunTripleOfLayout<1, Channels, Interleaved, Rows>(pixelsA, pixelsB, triple->weights, outA, outB); break;
+				case 2: filterRunTripleOfLayout<2, Channels, Interleaved, Rows>(pixelsA, pixelsB, triple->weights, outA, outB); break;
 				default:
 					assert(pattern == 3);
-					filterRunTriple<3, Channels, Rows>(pixelsA, pixelsB, triple->weights, outA, outB);
+					filterRunTripleOfLayout<3, Channels, Interleaved, Rows>(pixelsA, pixelsB, triple->weights, outA, outB);
 				}
 
 				outA += 3 * Channels;
@@ -1030,9 +1087,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 		// filterHorizontalRowGroup for 4-float pixels from xWeights.runTriples: the strip's whole triples three columns at a time,
 		// the columns before the first and after the last one at a time
-		template <size_t Channels, size_t PixelStride, size_t Rows>
+		template <size_t Channels, size_t PixelStride, size_t Rows, bool Interleaved>
 		IMAGE_PROCESSING_SIMD_INLINE void filterHorizontalRunTriples(
-			SlidingSourceFloats<Channels, PixelStride, Rows>& source,
+			SlidingSourceFloats<Channels, PixelStride, Rows, Interleaved>& source,
 			float* const (&tempRows)[Rows],
 			size_t destBegin,
 			size_t destEnd,
@@ -1053,7 +1110,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				// The triple's window is in the buffers after this, so each pass filters at least that triple
 				const uint32_t pattern = triples[triple].pattern;
 				source.prepareRun(triples[triple].firstSource, 4 + pattern % 2 + pattern / 2);
-				triple = filterBufferedRunTriples<Channels>(source.floats, source.base, source.converted, tempRows, destBegin, triple, tripleEnd, triples);
+				triple = filterBufferedRunTriples<Channels, Interleaved>(source.floats, source.base, source.converted, tempRows, destBegin, triple, tripleEnd, triples);
 			}
 
 			filterHorizontalRowGroup<4>(source, tempRows, destBegin, tripleEnd * 3, destEnd, xWeights);
@@ -1070,7 +1127,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		{
 			if constexpr (XRunLength == 4 && Channels == 1)
 				filterHorizontalFourTapRunGroups(source, tempRows, destBegin, destEnd, xWeights);
-			else if constexpr (XRunLength == 4 && xRunTriplesFiltered && sourceFloatsPerPixel(Channels) == 4 && !Interleaved)
+			else if constexpr (XRunLength == 4 && xRunTriplesFiltered && sourceFloatsPerPixel(Channels) == 4)
 			{
 				if (!xWeights.runTriples.empty())
 					filterHorizontalRunTriples(source, tempRows, destBegin, destEnd, xWeights);

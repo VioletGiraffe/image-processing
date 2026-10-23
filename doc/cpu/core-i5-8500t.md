@@ -940,3 +940,26 @@ to minimum:
 - Rows without AVX2 run at SSE4.1. The 960x540 row came out +7.0% / +1.1% in a first set, the change at 5.9 ms in nine
   of ten rounds; it did not repeat.
 - MSVC's RGBA32 upscales at SSE4.1 now trail clang-cl's by 2%: 7.45 against 7.29-7.33 ms.
+
+## x runs three at a time over the interleaved row pairs
+
+AVX2's run triples against eb92f4a, ten alternating rounds each, median of same-round ratios / minimum to minimum. The
+placement control is eb92f4a with 32 bytes of `__nop()` at the start of `resizeRowsWith`, MSVC.
+
+| Scenario, AVX2 | eb92f4a, MSVC, min ms | Triples, MSVC | Triples, clang-cl | Padding alone | Both padded |
+|---|---:|---:|---:|---:|---:|
+| 960x540 -> 1920x1080 RGB32 | 3.52 | -3.8% / -4.0% | -3.6% / -3.6% | +8.5% / +8.5% | -11.7% / -12.0% |
+| 1280x720 -> 1920x810 RGB32 | 3.51 | -6.2% / -6.0% | -5.0% / -5.0% | +6.2% / +6.3% | -11.2% / -11.3% |
+| 1280x720 -> 1920x1440 RGB32 | 4.81 | -5.1% / -5.0% | -3.9% / -3.9% | +8.2% / +8.4% | -12.1% / -11.9% |
+| 720p -> 4K RGB32 | 11.46 | -3.8% / -3.9% | -3.6% / -3.7% | +7.0% / +7.2% | -10.2% / -10.3% |
+| 960x540 -> 1920x1080 RGBA32 | 4.05 | -3.7% / -4.9% | -4.3% / -4.5% | +0.1% / +0.5% | -5.5% / -5.4% |
+| 1080p -> 1440p RGBA32 | 9.06 | -4.1% / -4.3% | -3.8% / -3.6% | +0.2% / +0.0% | -4.1% / -4.0% |
+| 720p -> 4K RGBA32 | 12.78 | -4.5% / -4.5% | -4.4% / -4.4% | +0.1% / -0.1% | -4.8% / -4.8% |
+| 1080p -> 720p RGB32 | 5.07 | +0.1% / -0.2% | +0.3% / +0.0% | -0.1% / +0.0% | +0.0% / +0.2% |
+| 4K -> 1080p RGBA32 | 21.00 | +0.0% / -0.1% | +0.1% / +0.0% | -0.0% / +0.1% | +0.1% / -0.0% |
+
+- clang-cl against its own build of eb92f4a. Both padded: the triples build padded against eb92f4a padded.
+- The padding moves eb92f4a's RGB32 upscales 6-8.5%; the triples build stays within 0.4% of its unpadded times. Its
+  RGB32 gain is 4-6% against eb92f4a's faster placement and 10-12% against the slower one.
+- The standard rounds: the SSE4.1 rows, the same code in both builds, within 0.4%; 1280x720 -> 1920x1080 and 1080p ->
+  1440p RGB32 at AVX2 -4.9% and -6.8% under MSVC, -3.9% and -5.6% under clang-cl.

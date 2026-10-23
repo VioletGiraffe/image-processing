@@ -45,8 +45,8 @@ namespace ImageProcessing::Detail::Avx2
 	inline constexpr bool verticalTapsListed = true;
 	// As at SSE4.1. On the boundary: off a 32-byte one, half of this level's 32-byte loads span two cache lines
 	inline constexpr size_t tempRingStartOffset = 0;
-	// x runs one at a time: triples, as at NEON, are not measured over interleaved row pairs
-	inline constexpr bool xRunTriplesFiltered = false;
+	// 4-tap x runs filtered three at a time over the interleaved row pairs, each pixel pair loaded once
+	inline constexpr bool xRunTriplesFiltered = true;
 
 	// The code after the kernel is legacy-SSE encoded, and stalls while the upper YMM state is dirty
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept { SimdSupport::clearAvxUpperState(); }
