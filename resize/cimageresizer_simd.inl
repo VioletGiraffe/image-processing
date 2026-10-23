@@ -1499,7 +1499,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				::memcpy(destPixel + Channels, pixelTail, pixelStride - Channels);
 		}
 
-		// Writes one destination row from its y taps: a DestRowTaps, or a FourHeldTaps.
+		// Writes one destination row from its y taps: a DestRowTaps, or a FourHeldTaps. A ListedTaps of four becomes a FourHeldTaps where verticalFourTapsHeld.
 		// pixelTail: the bytes past the channels, up to pixelStride, that every dest pixel gets.
 		template <size_t Channels, size_t PixelStride, typename Taps>
 		IMAGE_PROCESSING_SIMD_INLINE void filterVerticalDestRow(
@@ -1509,6 +1509,16 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			uint8_t* destRow,
 			size_t destWidth) noexcept
 		{
+			// Here, not in resizeRowsWith: its taps' type is not dependent there, so a discarded branch is still checked against WalkedTaps
+			if constexpr (verticalFourTapsHeld && std::is_same_v<Taps, ListedTaps>)
+			{
+				if (taps.count == 4)
+				{
+					filterVerticalDestRow<Channels, PixelStride>(heldFourTaps(taps), pixelTail, runtimePixelStride, destRow, destWidth);
+					return;
+				}
+			}
+
 			const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
 			constexpr size_t pixelsPerBlock = verticalBlockPixels(Channels);
 			const size_t blockedPixelCount = destWidth & ~(pixelsPerBlock - 1);
@@ -1851,16 +1861,6 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 
 				const DestRowTaps taps = destRowTaps(ring.window(upperRun.firstSource, upperRun.weights.size()), upperRun.weights, tempRowStride, listedTapRows.get(), listedTapWeights.get());
-				if constexpr (verticalFourTapsHeld)
-				{
-					if (taps.count == 4)
-					{
-						filterVerticalDestRow<Channels, PixelStride>(heldFourTaps(taps), pixelTail, pixelStride, stripDest, stripEnd - stripBegin);
-						++dy;
-						continue;
-					}
-				}
-
 				filterVerticalDestRow<Channels, PixelStride>(taps, pixelTail, pixelStride, stripDest, stripEnd - stripBegin);
 				++dy;
 			}
