@@ -418,3 +418,51 @@ of same-round ratios / minimum to minimum.
   under MSVC.
 - The held loops have no stack references but RGB32's alpha tails, as at AVX2.
 - The test executable: MSVC 3.63 -> 3.91 MB, clang-cl 4.69 -> 5.02 MB.
+
+## The premultiplying conversion on Sandy Bridge
+
+4K -> 200x113 RGBA32, straight alpha, against the same row with the source marked premultiplied, which skips the
+premultiplying conversion. Probe builds of 67935c2, four alternating rounds, minimum ms.
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 4K -> 200x113 RGBA32 | 52.98 | 43.22 |
+| The same, premultiplied | 40.33 | 38.83 |
+| 4K -> 200x113 RGB32 | 39.45 | 38.39 |
+| 4K -> 1080p RGBA32 | 69.13 | 67.39 |
+| 4K -> 1080p RGB32 | 57.45 | 56.48 |
+
+- Premultiplying costs MSVC 12.7 ms on this row, clang-cl 4.4. The 2x row, whose padded kernel converts row pairs
+  interleaved, shows no such gap.
+- The two compilers' premultiplying block loops: the same 22 instructions per 4 pixels, no stack references. MSVC clears
+  the upper YMM state before the sliding buffer's `memmove`.
+- MSVC with 32 and with 16 bytes of `__nop()` at the start of `resizeRowsWith`: 53.00 and 52.99 ms. The row alone in its
+  process: 53.08 ms against clang-cl's 43.07.
+- Converting a row pair per loop, both rows' loads, premultiplies and stores per block: MSVC 44.17 ms, premultiplied
+  37.78; clang-cl 45.92 and 37.74.
+
+## A row pair converted in one loop
+
+Against 67935c2, four alternating rounds, each compiler against its own build, median of same-round ratios / minimum to
+minimum.
+
+| Scenario | 67935c2, MSVC, min ms | MSVC | clang-cl |
+|---|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | 144.22 | -4.1% / -7.9% | -3.1% / -1.2% |
+| 2.8 MP -> 1920x1280 RGB32 | 28.87 | +0.6% / +0.6% | +0.3% / -0.2% |
+| 4K -> 1600x900 RGB32 | 52.16 | -1.0% / -1.1% | -0.5% / +0.0% |
+| 4K -> 720p RGB32 | 44.98 | +0.5% / +0.5% | -0.7% / -0.2% |
+| 720p -> 4K RGBA32 | 41.10 | +0.8% / -0.2% | -0.7% / -0.6% |
+| 720p -> 4K RGB32 | 35.98 | +0.5% / +0.3% | -0.0% / +0.2% |
+| 1080p -> 240p RGB32 | 12.04 | -3.8% / -3.8% | -4.2% / -3.7% |
+| 1080p -> 120x68 RGB32 | 9.16 | -5.2% / -5.9% | -2.6% / -2.7% |
+| 21 MP -> 175x117 RGB32 | 83.82 | -5.6% / -5.8% | -1.8% / -1.6% |
+| 4K -> 200x113 RGB32 | 39.45 | -5.3% / -5.4% | -2.9% / -2.6% |
+| 4K -> 200x113 RGBA32 | 52.93 | -15.7% / -15.9% | +5.9% / +6.0% |
+| 1080p at native size RGB32 | 4.81 | -9.0% / -9.6% | +6.6% / +0.2% |
+| 4K -> 1080p Grayscale8 | 25.90 | -8.1% / -2.2% | -1.6% / -1.2% |
+| 4K -> 1080p RGB24 | 57.17 | -0.5% / -0.6% | +0.7% / +0.6% |
+| 4K -> 1080p RGB32 | 57.00 | +0.5% / +0.7% | -1.5% / -1.7% |
+| 4K -> 1080p RGBA32 | 68.73 | +0.6% / +0.6% | -0.6% / -0.4% |
+| 720p -> 4K Grayscale8 | 12.46 | +0.3% / -0.2% | +1.7% / -2.1% |
+| 720p -> 4K RGB24 | 31.69 | -1.5% / -1.6% | -1.3% / -0.3% |

@@ -587,6 +587,34 @@ GCC 14.2, five alternating rounds pinned to one core, 81 s a run: median of same
 
 Both builds pass the tests.
 
+## A row pair converted in one loop
+
+Against 67935c2, three alternating rounds, each compiler against its own build, median of same-round ratios / minimum to
+minimum. Every NEON row pair goes through the changed conversion.
+
+| Scenario | 67935c2, GCC, min ms | GCC | Clang |
+|---|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | 339.42 | -4.8% / -4.9% | -0.0% / -0.2% |
+| 2.8 MP -> 1920x1280 RGB32 | 65.09 | -4.0% / -4.4% | +0.1% / +0.2% |
+| 4K -> 1600x900 RGB32 | 129.58 | -4.0% / -4.0% | +1.2% / +1.2% |
+| 4K -> 720p RGB32 | 121.07 | -6.1% / -6.1% | +0.3% / -0.1% |
+| 720p -> 4K RGBA32 | 85.45 | -4.7% / -4.7% | -0.7% / -1.5% |
+| 720p -> 4K RGB32 | 71.98 | +0.6% / +0.6% | -0.9% / -1.0% |
+| 1080p -> 240p RGB32 | 28.54 | -5.7% / -5.7% | -0.7% / -0.7% |
+| 1080p -> 120x68 RGB32 | 23.41 | -6.5% / -6.8% | -0.6% / -1.1% |
+| 21 MP -> 175x117 RGB32 | 232.93 | -8.6% / -9.0% | -1.4% / -1.3% |
+| 4K -> 200x113 RGB32 | 101.24 | -11.8% / -11.8% | -1.4% / -1.7% |
+| 4K -> 200x113 RGBA32 | 110.20 | -4.4% / -4.6% | -0.7% / -1.7% |
+| 1080p at native size RGB32 | 3.03 | +2.1% / +0.8% | +0.0% / +0.0% |
+| 4K -> 1080p Grayscale8 | 55.98 | -4.3% / -4.1% | -1.5% / -1.5% |
+| 4K -> 1080p RGB24 | 142.54 | -7.4% / -6.8% | -0.4% / -0.3% |
+| 4K -> 1080p RGB32 | 137.71 | -5.4% / -5.1% | +1.7% / +1.4% |
+| 4K -> 1080p RGBA32 | 162.61 | -1.6% / -1.9% | -0.5% / -0.6% |
+| 720p -> 4K Grayscale8 | 24.36 | -1.1% / -1.4% | -0.2% / -0.4% |
+| 720p -> 4K RGB24 | 71.24 | -0.2% / +0.5% | -0.1% / +0.0% |
+
+- The test executable: GCC 2.85 -> 3.11 MB, Clang 2.22 -> 2.20 MB.
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing

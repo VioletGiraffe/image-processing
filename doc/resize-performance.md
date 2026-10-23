@@ -742,6 +742,19 @@ indexed form to stepped pointers by itself; its kernels and Clang's are untimed.
 - Grayscale8's loop had 13 instructions: one fewer now.
 - RGBA32's loop premultiplies, and RGB24's shuffles its bytes first: neither gained on the 8500T.
 
+### A row pair converted in one loop
+
+`convertPixelsToFloats` converts a row pair in one loop, each row into its own floats: per block, both rows' loads, then
+their premultiplies, then their stores.
+- The pairs it takes: every pair at SSE4.1 and NEON; at AVX2 and AVX the general kernels' and the 1- and 2-float layouts'.
+- The i3-2310M under MSVC paid 12.7 ms for premultiplying 4K -> 200x113 RGBA32 one row at a time, clang-cl 4.4 ms, with
+  the same instructions in the block loop. Neither 16 nor 32 bytes of padding nor the row alone in its process moved it:
+  open lead 27.
+- Whole rows against 67935c2 (the CPUs' logs, "A row pair converted in one loop"): the downscales 1-6% faster at AVX2 and
+  SSE4.1 on the 8500T and the 12600K, 4-16% on the i3-2310M under MSVC, 4-12% on the Pi under GCC; the Pi's Clang build
+  and the upscales level. clang-cl's i3-2310M 4K -> 200x113 RGBA32 +6%, the only steady loss.
+- clang-cl's kernels 88 KB smaller; GCC's on the Pi 0.26 MB larger.
+
 ### Output bytes packed without a clamp
 
 The vertical pass capped its sums at 255 before converting them: `packus_epi16` reads its input as signed, so a word past
@@ -1533,7 +1546,10 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
       RGB32.
     - SSE4.1: clang-cl ahead by 4-5% on 4K -> 1080p RGB24, RGB32 and RGBA32, 8.5% on 4K -> 200x113 RGBA32; MSVC ahead by
       12% on 4K -> 1080p Grayscale8, 15% on 720p -> 4K RGB24, 3% on 720p -> 4K Grayscale8. The RGB32 downscales of
-      2.4:1 and more read either way by clang-cl's placement (lead 5).
+      2.4:1 and more read either way by clang-cl's placement (lead 5), and so does 4K -> 200x113 RGBA32: level in a
+      build of 67935c2, clang-cl 9% ahead in others.
+    - AVX, the AVX2 build capped: clang-cl ahead by 6-7% on 4K -> 200x113 in every layout, RGBA32 included (at
+      67935c2, its log).
     - clang-cl's one-channel four-column loop is short of general registers: 55 instructions with 5 stack accesses, and
       61 with 7 once the tail loop is scalar, the added ones register moves and reloads. 720p -> 4K Grayscale8 loses
       2.5-3.5% to that. Fewer values live across that loop would settle it, perhaps under MSVC too: untried.
@@ -1643,3 +1659,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     - Other tap counts take the listed loop: the single-tap rows, a third of a 3x upscale, and Lanczos3's 6-tap upscales.
     - Without a placement control: the 12600K's E-core reads its AVX2 upscales -1.3% to +3.2%, and clang-cl's SSE4.1
       build moved by placement. The N4100 is unmeasured.
+27. **Sandy Bridge and the premultiplying conversion's loop shape** (the i3-2310M's log, "The premultiplying conversion
+    on Sandy Bridge"): one row per loop, MSVC paid 12.7 ms for premultiplying 4K -> 200x113 RGBA32, clang-cl 4.4 ms, from
+    the same block-loop instructions; the 8500T paid 1.8 ms under both at AVX. With a row pair per loop MSVC pays 6.4 ms
+    and clang-cl 8.2. Ruled out: code placement (16 and 32 bytes), the process's earlier work, the AVX-SSE transition.
+    No hardware counters on that machine.
