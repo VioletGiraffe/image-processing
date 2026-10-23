@@ -963,3 +963,62 @@ placement control is eb92f4a with 32 bytes of `__nop()` at the start of `resizeR
   RGB32 gain is 4-6% against eb92f4a's faster placement and 10-12% against the slower one.
 - The standard rounds: the SSE4.1 rows, the same code in both builds, within 0.4%; 1280x720 -> 1920x1080 and 1080p ->
   1440p RGB32 at AVX2 -4.9% and -6.8% under MSVC, -3.9% and -5.6% under clang-cl.
+
+## MSVC against clang-cl, and the placement control, at 6ab4ba0
+
+Eight alternating rounds, every build against MSVC, median of same-round ratios / minimum to minimum. "Padded": 32 bytes
+of `__nop()` at the start of `resizeRowsWith`. The QImage controls read within 1% across the four builds.
+
+| Scenario, AVX2 | MSVC, min ms | MSVC padded | clang-cl | clang-cl padded |
+|---|---:|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | 45.25 | +0.2% / +0.4% | -5.3% / -5.1% | -4.7% / -5.5% |
+| 2.8 MP -> 1920x1280 RGB32 | 9.08 | +0.4% / +0.5% | +1.7% / +1.9% | +1.8% / +1.9% |
+| 4K -> 1600x900 RGB32 | 16.30 | +0.3% / +0.3% | -0.0% / +0.1% | -0.7% / -0.0% |
+| 4K -> 720p RGB32 | 14.37 | -0.3% / +0.2% | -0.3% / -0.1% | -0.2% / +0.1% |
+| 1080p -> 240p RGB32 | 3.60 | -0.1% / -0.2% | -3.0% / -2.9% | -2.5% / -3.0% |
+| 1080p -> 120x68 RGB32 | 2.62 | +0.4% / +0.5% | -6.3% / -6.5% | -6.1% / -6.4% |
+| 21 MP -> 175x117 RGB32 | 25.27 | -0.3% / +0.1% | -7.7% / -7.3% | -8.1% / -7.7% |
+| 4K -> 200x113 RGB32 | 11.75 | -0.2% / +0.0% | -5.4% / -5.7% | -5.8% / -5.6% |
+| 4K -> 200x113 RGBA32 | 14.26 | -0.0% / +0.1% | -6.1% / -5.3% | -6.4% / -5.6% |
+| 4K -> 64x64 RGB32 | 9.93 | +0.3% / +0.4% | -5.0% / -5.0% | -4.9% / -4.9% |
+| 4K -> 1080p Grayscale8 | 9.00 | -2.1% / +0.1% | -1.0% / +0.7% | -0.4% / +0.9% |
+| 4K -> 1080p RGB24 | 18.21 | +0.1% / +0.2% | -0.2% / -0.2% | +0.1% / -0.4% |
+| 4K -> 1080p RGB32 | 17.89 | +0.1% / +0.3% | +0.2% / +1.6% | +1.3% / +1.9% |
+| 4K -> 1080p RGBA32 | 21.37 | -0.2% / -0.3% | -3.1% / -3.0% | -2.8% / -2.9% |
+| 720p -> 4K RGBA32 | 13.37 | +0.5% / -0.1% | -0.7% / -0.4% | -0.5% / -0.6% |
+| 720p -> 4K RGB32 | 12.13 | +0.4% / -0.1% | +2.7% / +2.9% | +2.1% / +2.5% |
+| 720p -> 4K RGB24 | 10.86 | -0.2% / -0.1% | +10.9% / +1.7% | +1.1% / +0.7% |
+| 720p -> 4K Grayscale8 | 4.50 | -1.0% / -0.0% | +0.5% / +0.4% | -0.7% / +0.4% |
+| 1080p at native size RGB32 | 1.83 | -2.2% / -2.7% | -1.3% / -0.8% | -0.8% / -1.3% |
+
+| Scenario, SSE4.1 | MSVC, min ms | MSVC padded | clang-cl | clang-cl padded |
+|---|---:|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | 80.43 | +0.2% / +0.1% | -5.1% / -5.4% | +4.0% / +3.9% |
+| 2.8 MP -> 1920x1280 RGB32 | 13.98 | +0.1% / -0.1% | -2.4% / -2.3% | -2.0% / -2.1% |
+| 4K -> 1600x900 RGB32 | 30.55 | +0.3% / +0.1% | -3.0% / -3.3% | +2.8% / +3.1% |
+| 4K -> 720p RGB32 | 27.67 | -0.1% / -0.0% | -1.4% / -1.2% | +4.5% / +4.8% |
+| 1080p -> 240p RGB32 | 6.55 | +0.1% / +0.3% | -4.2% / -4.2% | +4.8% / +5.1% |
+| 1080p -> 120x68 RGB32 | 5.90 | -0.2% / -0.3% | -6.8% / -6.8% | +4.8% / +4.8% |
+| 21 MP -> 175x117 RGB32 | 59.35 | -0.1% / -0.1% | -7.3% / -7.4% | +3.9% / +3.8% |
+| 4K -> 200x113 RGB32 | 24.56 | +0.1% / -0.2% | -7.8% / -7.6% | +2.9% / +2.9% |
+| 4K -> 200x113 RGBA32 | 29.14 | +0.9% / +0.9% | -8.4% / -8.7% | -7.8% / -8.0% |
+| 4K -> 64x64 RGB32 | 22.91 | +0.0% / -0.0% | -7.3% / -7.9% | +2.9% / +2.9% |
+| 4K -> 1080p Grayscale8 | 10.72 | -0.8% / -0.3% | +11.9% / +12.0% | +11.2% / +11.8% |
+| 4K -> 1080p RGB24 | 30.24 | +0.3% / +0.3% | -4.2% / -4.0% | -4.6% / -4.3% |
+| 4K -> 1080p RGB32 | 28.62 | -0.1% / +0.2% | -4.3% / -4.5% | -5.1% / -4.2% |
+| 4K -> 1080p RGBA32 | 34.76 | +0.0% / +0.0% | -4.2% / -4.4% | -4.5% / -4.7% |
+| 720p -> 4K RGBA32 | 21.00 | +0.3% / +0.5% | -1.9% / -1.2% | -2.1% / -1.3% |
+| 720p -> 4K RGB32 | 18.46 | -1.3% / -1.5% | -4.1% / -3.4% | -3.5% / -3.4% |
+| 720p -> 4K RGB24 | 16.33 | +0.3% / +0.3% | +15.2% / +15.4% | +15.1% / +15.1% |
+| 720p -> 4K Grayscale8 | 5.72 | -1.2% / -0.9% | +3.1% / +2.6% | +1.6% / +2.7% |
+
+- MSVC padded: the kernels' instructions are identical to the plain build's (`extract_kernels.py`), so the column is
+  placement alone. No row moves over 1.5% minimum to minimum, the two read by launch (below) aside.
+- clang-cl padded is no placement control: `__nop()` is inline assembly there and changes the code of 69 of 355 kernels.
+  Of the SSE4.1 kernels only `<2,2,0>` changes, which no row runs.
+- SSE4.1 under clang-cl: `resizeRowsWith<3,4,0>`, the RGB32 kernel for x runs over 12 taps, has the same code in both
+  builds, 16 bytes apart modulo 32. The padded build has jumps on 32-byte boundaries in two more multiply loops, of 34
+  and 45 instructions. The rows it runs, the RGB32 downscales of 2.4:1 and more, lose 6-12%; 21 MP -> 175x117 reads
+  55.0-55.6 ms plain and 61.6-62.2 ms padded in all eight rounds. The rows on the per-length kernels do not move.
+- Two AVX2 rows read two levels by launch, minimum to minimum the reading there: 720p -> 4K RGB24 10.9-11.1 or
+  12.6-12.9 ms in three of the four builds, native size 1.8-1.9 or 2.1-2.2 ms under MSVC.

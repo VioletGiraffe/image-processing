@@ -57,10 +57,12 @@ Access and per-machine setup are in `AGENTS.local.md`, git-ignored, where it exi
 
 ## Measurement traps
 
-- Code placement moves MSVC's upscale rows with no change to their instructions: 5-8.5% at AVX2, up to 14% at SSE4.1
-  (open lead 6). An MSVC A/B on upscales
+- Code placement moves rows with no change to their instructions (open lead 6): MSVC's upscales by up to 14% in earlier
+  builds, clang-cl's SSE4.1 downscales on the 8500T by 6-12%. Which rows react changes with unrelated edits. An A/B
   needs a placement control: both builds again with 32 bytes of `__nop()` at the start of `resizeRowsWith` (and
   `<intrin.h>` in the kernel TUs). A change whose gain is under the control's spread is not a gain.
+- Under clang-cl `__nop()` is inline assembly and changes the generated code: diff the padded build's kernels against
+  the plain one's with `extract_kernels.py` before reading its rows as placement.
 - The 12600K's P-core shifts between levels 15-20% apart for hours: compare only within one session.
 - A first-set outlier that does not repeat in a second set is run state: rerun before believing a single set.
 

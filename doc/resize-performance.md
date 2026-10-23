@@ -1438,11 +1438,16 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
 5. **Strips cost where the L2 is large:** 1-5% on Neoverse-N2's SIMD rows, 3-8% on the PC's downscales (the column strips
    section). The budget is already the runtime L2 share, taken for the worst case: the smallest share, every logical
    processor busy. A budget by the threads in use, or by the core a band runs on, is untried.
-6. **Placement still moves MSVC's AVX2 upscale rows about 5%** with `/QIntel-jcc-erratum`, and the SSE4.1 ones, built
-   without it, up to 12-14%. Which loop of the upscale path reacts is unidentified: padding at the kernel's start shifts
-   them all together. MSVC has no loop alignment control; clang-cl's code for the reduced loop does not react.
-   - Since 6bb1cec the 8500T's AVX2 RGB32 upscales move under 0.4% with 32 bytes of padding, where they moved 6-8.5%;
-     the P-core's up to 4.5%. The other rows are not remeasured.
+6. **Placement moves the kernels' rows with no change to their instructions.** Which loop reacts is unidentified:
+   padding at the kernel's start shifts them all together. MSVC has no loop alignment control.
+   - MSVC: at 6ab4ba0 the 8500T's rows move at most 1.5% minimum to minimum with 32 bytes of padding, at AVX2 and
+     SSE4.1, the rows that read two levels by launch aside (its log, "MSVC against clang-cl, and the placement control,
+     at 6ab4ba0"). Earlier builds moved 6-8.5% on the AVX2 RGB32 upscales and up to 14% at SSE4.1. The 12600K's P-core:
+     AVX2 RGB32 upscales up to 4.5% at 6bb1cec, the other rows not remeasured.
+   - clang-cl's SSE4.1 kernels, without jump padding, react on the 8500T: the RGB32 downscales of 2.4:1 and more, on
+     `resizeRowsWith<3,4,0>`, 6-12% between two placements, the slow one with jumps on 32-byte boundaries in two more
+     multiply loops. `-mbranches-within-32B-boundaries` at SSE4.1 was measured at b1395f9 only: 4K -> 1080p RGB24 -4%,
+     the other rows within 3%. The Skylake family's CPUs without AVX run this level.
 7. **`/QIntel-jcc-erratum` on the SSE4.1 level is untested on a Sandy Bridge.** Every CPU measured so far loses with it or
    is indifferent (the section on jumps and 32-byte boundaries).
 8. **GCC's 720p -> 4K RGBA32 on Neoverse-N2 moves 10% with the binary's layout** (the call-site attribute notes): 24.1 or
@@ -1463,6 +1468,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     - Not remeasured since eb92f4a. Until then MSVC's SSE4.1 tap loop copied every sum back and kept an accumulator on
       the stack for 4-vector blocks, Grayscale8's and RGBA32's among them ("The listed tap loop accumulates into
       locals"): the likely cause of both rows.
+    - On the 8500T at SSE4.1, 4K -> 1080p Grayscale8 went from clang-cl ahead by 19-21% at b1395f9 to MSVC ahead by 12%
+      at 6ab4ba0; RGBA32 from clang-cl ahead by 2% to 4%.
 12. **Four chains at NEON leave GCC no spare register:** 16 accumulators, 2 weight registers and the block's 16 pixel
     vectors loaded ahead of the multiplies. On the Pi two chains gain GCC 4-6% on downscales, and cost Clang 8% on
     4K -> 64x64 and 3% on 101 MP -> 720p (its log). Not adopted. Neoverse-N2 and Apple Silicon are unmeasured.
@@ -1471,19 +1478,19 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     - Both passes cost the same per multiply-add, so filtering vertically first on downscales would gain nothing.
     - 16-bit fixed-point kernels would drop the conversion, halve the temp rows' bytes and double the multiply-adds
       per instruction.
-14. **MSVC against clang-cl on the 8500T.** At AVX2, with the spread's indices hidden and the conversion's tail loop
-    scalar: level on the RGB32 downscales, clang-cl ahead by 4-8% on Grayscale8.
+14. **MSVC against clang-cl on the 8500T** at 6ab4ba0 (its log, "MSVC against clang-cl, and the placement control, at
+    6ab4ba0"). The listings behind these gaps have not been compared.
+    - AVX2: clang-cl ahead by 5-8% on the RGB32 and RGBA32 downscales of 3.7:1 and more (3% at 4.5:1), 3% on 4K ->
+      1080p RGBA32; level on 2-3:1 RGB32, RGB24 and Grayscale8; MSVC ahead by 2-3% on 2.8 MP -> 1920x1280 and 720p -> 4K
+      RGB32.
+    - SSE4.1: clang-cl ahead by 4-5% on 4K -> 1080p RGB24, RGB32 and RGBA32, 8.5% on 4K -> 200x113 RGBA32; MSVC ahead by
+      12% on 4K -> 1080p Grayscale8, 15% on 720p -> 4K RGB24, 3% on 720p -> 4K Grayscale8. The RGB32 downscales of
+      2.4:1 and more read either way by clang-cl's placement (lead 6).
     - clang-cl's one-channel four-column loop is short of general registers: 55 instructions with 5 stack accesses, and
       61 with 7 once the tail loop is scalar, the added ones register moves and reloads. 720p -> 4K Grayscale8 loses
       2.5-3.5% to that. Fewer values live across that loop would settle it, perhaps under MSVC too: untried.
-    - At SSE4.1 on the 8500T, both compilers' kernels padded: MSVC ahead by 6-7% on 4K -> 1080p RGB32 and RGB24, 3% on
-      RGBA32, within 2% elsewhere; unpadded, RGB24 reads 4 points worse for clang-cl. The kernels retire the same
-      instructions within 3% and their tap loops match. clang-cl's per-column code around them reloads 9 values from
-      the stack where MSVC's reloads 5, and copies registers: no single cause, no source form tried.
-    - The i3-2310M, the SSE4.1 CPU without the erratum, had MSVC ahead by 7-9% on those rows at e8d2d15: not remeasured
-      since the tail loop went scalar.
-    - None of this is remeasured since eb92f4a, which took the copies and the stack accumulator out of MSVC's tap loop
-      at SSE4.1, AVX and AVX2. Grayscale8's tap loop at AVX2 was among those it changed.
+    - The i3-2310M, the SSE4.1 CPU without the erratum, had MSVC ahead by 7-9% on 4K -> 1080p RGB32 and RGB24 at
+      e8d2d15: not remeasured since.
 15. **The cap of 4 bands leaves threads idle:** a band per thread takes 18-29% off the threaded rows on the 8500T (6
     bands) and 21-36% on the PC (16), 4K -> 64x64 aside (their logs).
     - A count that is not a multiple of the pool's threads loses the gain: 8 bands on 6 threads run like 4.
