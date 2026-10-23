@@ -1535,6 +1535,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
       less time on CI (eeb1af6 to 560ca96), most of it from the horizontal pass: the conversion's share is larger now.
     - The N4100 at SSE4.1 (lead 3): the taps bound by instruction count, whose loads and multiplies per tap would halve.
     - At a6c69e7 both passes cost the same per multiply-add, so filtering vertically first on downscales would gain nothing.
+    - The M1: its upscale's horizontal loop runs at 62-69% of the multiply-add peak (throughput-ceiling.md, U13), the
+      arithmetic two thirds of its time. It has FEAT_FP16: 8 lanes per multiply-add in half-precision floats, untried.
 11. **MSVC against clang-cl on the 8500T** at 6ab4ba0 (its log, "MSVC against clang-cl, and the placement control, at
     6ab4ba0"). The listings behind these gaps have not been compared.
     - AVX2: clang-cl ahead by 5-8% on the RGB32 and RGBA32 downscales of 3.7:1 and more (3% at 4.5:1), 3% on 4K ->
@@ -1643,8 +1645,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
         registers leave no room.
       - SSE4.1: the Skylake family's cores without AVX are already arithmetic-bound, a loss; Goldmont Plus is short of
         loads, perhaps -10%.
-      - NEON: about level on the A72 if it loads 128 bits per cycle, as section U measured it multiply-adds; wider ARM
-        cores unknown.
+      - NEON: about level on the A72 if it loads 128 bits per cycle, as section U measured it multiply-adds. The M1
+        loads three 128-bit vectors per cycle and multiply-adds four (throughput-ceiling.md, section U): untimed there.
       - A 128-bit form of section Y could time them first.
     - Three dest rows per step are untimed.
 26. **Held y taps beyond the x64 levels' 4-tap rows** ("Four y taps held across the dest row"):
@@ -1659,3 +1661,9 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     in order"): 4K -> 64x64, 21 MP -> 175 px wide, 1080p -> 120 px wide; its upscales gain 4-6.6%. The halves are not
     measured apart. The y runs trimmed again fit the upscale gain; the source buffers without room behind a run are the
     suspect for the downscales, which slide them most.
+29. **Interleaved row buffers at NEON on the M1** (throughput-ceiling.md, "The 128-bit levels"): two rows' pixels
+    interleaved in one buffer gain section N up to 9%, 4-5% from 12 taps, and section S's fixed counts 4-5%; the Pi
+    stays within 3%. NEON keeps a buffer per row (`interleavedRowPairs`, as at SSE4.1).
+    - Not found why. A candidate: the M1's L1 serves about two lines per cycle to loads (its log), and a buffer per
+      row spreads a column's loads over two lines.
+    - Unchecked: whether the 256-bit levels' interleaved code builds for NEON, whose `Floats8` is two registers.

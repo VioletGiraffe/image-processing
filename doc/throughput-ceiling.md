@@ -10,6 +10,8 @@ against the kernel's form of 32b0a2f. The design's measurements are in
 - **Peak:** two 256-bit FMA units give 16 float multiply-adds per cycle. 56 G/s on the 8500T at 3.48 GHz, its clock in the
   single-threaded runs by VTune's core cycles against the 2.1 GHz reference clock, 75 G/s on a
   12600K P-core at 4.69 GHz. The 12600K's E-cores ran at 3.59 GHz; their unit count for 256-bit work was not established.
+  The M1's P-core: four 128-bit multiply-adds per cycle, 16 floats, 51.3 G/s at 3.2 GHz (U12); the clock from a chain
+  of dependent integer adds.
 - **Work in one resize:** 274 M float multiply-adds, 4.9 ms at the 8500T's peak.
   - Horizontal: 2160 source rows x 1920 columns x 12 taps x 4 floats = 199 M.
   - Vertical: 1080 rows x 1920 pixels x 3 floats x 12 taps = 75 M.
@@ -393,9 +395,12 @@ the rows in a buffer each or interleaved, and each weight from its lane or broad
 | N4100, clang-cl | 4.1, 4.7 | 3.8, 4.6 | 3.9, 4.7 | 4.0, 4.7 |
 | Pi 4, GCC 14.2 | 2.7, 3.9 | 2.7, 3.5 | 2.6, 3.8 | 2.7, 3.5 |
 | Pi 4, Clang 22 | 2.7, 3.9 | 2.5, 3.6 | 2.7, 3.8 | 2.6, 3.6 |
+| M1 P-core, Apple Clang 21 | 23.4, 28.8 | 20.9, 25.9 | 24.5, 30.0 | 21.8, 26.9 |
 
-- Interleaving the buffer changes nothing at 128 bits: within 3% of the level's form, the N4100 under clang-cl aside (5%).
-- Broadcast weights cost the Pi 8-10% at 48 taps and the P-core 9% under MSVC.
+- Interleaving the buffer changes nothing at 128 bits on x64 and the Pi: within 3% of the level's form, the N4100 under
+  clang-cl aside (5%). The M1 gains: +9% at 4 and 6 taps, +1% at 8, +4-5% from 12 to 48.
+- Broadcast weights cost the Pi 8-10% at 48 taps, the P-core 9% under MSVC, the M1 6-11% at every count.
+- The M1's level form reaches 46% of its peak at 12 taps, 56% at 48; the Pi's 38% and 54%.
 
 Section S is the level's form over a run table as the kernel's, at the whole pass's six run lengths, with the count
 read, fixed, and read over runs of n or n-1 taps. Arithmetic and the run lookup, no conversion. ms, the fixed count
@@ -410,7 +415,21 @@ with its change against the count read, and against the runs of two lengths: the
 | 18 | 47.44 | 47.73 (+1%) | +2% | 67.13 | 61.86 (-8%) | -6% | 64.52 | 60.06 (-7%) | -4% |
 | 24 | 46.68 | 49.05 (+5%) | +4% | 60.73 | 56.17 (-8%) | -8% | 57.80 | 54.82 (-5%) | -5% |
 
-- **A fixed count gains at both levels:** 5-13% up to 12 taps at SSE4.1, 5-21% at every length at NEON.
+M1, Apple Clang 21, 100 repeats, the mean of two runs (median line 0.2% apart):
+
+| Taps | A buffer per row: read | fixed | padding paid | Interleaved: read | fixed | padding paid |
+|---|---:|---:|---:|---:|---:|---:|
+| 5 | 7.97 | 7.47 (-6%) | -3% | 7.79 | 7.20 (-8%) | -2% |
+| 7 | 10.71 | 9.86 (-8%) | -5% | 10.44 | 9.41 (-10%) | -6% |
+| 9 | 10.05 | 9.71 (-3%) | -0% | 9.82 | 9.34 (-5%) | -1% |
+| 12 | 9.14 | 8.90 (-3%) | -2% | 8.89 | 8.55 (-4%) | -4% |
+| 18 | 9.52 | 8.88 (-7%) | -4% | 9.38 | 9.02 (-4%) | -3% |
+| 24 | 8.36 | 8.03 (-4%) | -4% | 8.11 | 7.61 (-6%) | -6% |
+
+- **A fixed count gains at both levels:** 5-13% up to 12 taps at SSE4.1, 5-21% at every length at NEON on the Pi, 3-8%
+  on the M1.
+- On the M1 the interleaved buffer's fixed count is 4-5% faster than a buffer per row's at every length but 18 taps
+  (+2%); its 18-tap fixed line moved 13% between the runs.
 - **At SSE4.1 it loses from 18 taps up.** MSVC's written-out 24-tap column has 66 stack references: 16 registers, and
   no three-operand instructions.
 - The interleaved buffer and broadcast weights gain nothing here with a fixed count either.
@@ -423,22 +442,23 @@ Section U: 720p -> 1080p RGB32's horizontal pass, 360 row pairs of 1920 columns 
 in L1, the temp rows at 3 floats per pixel. U0 is the kernel's loop as Clang 22 compiles it at 901d72e, instruction
 for instruction: 27 per column pair, 10 of them arithmetic. U10 has the arithmetic the kernel has since: one chain per
 row. Cycles per column pair on the Pi at 1.797 GHz (`perf stat`),
-Clang 22 / GCC 14.2, the mean of two runs within 2.5%.
+Clang 22 / GCC 14.2, the mean of two runs within 2.5%. The M1 at 3.2 GHz from the times, Apple Clang 21, the program at
+e3520f9, the mean of two runs of 200 repeats within 2% (U11 4%). Sections N and S on the M1 are from the same build.
 
-| Line | Cycles |
-|---|---:|
-| U0 the kernel's loop: a run table, a test per run | 21.1 / 21.4 |
-| U1 as U0, no stores | 19.6 / 22.1 |
-| U2 as U0, every run at a 64-byte boundary | 21.1 / 21.5 |
-| U3 as U0, one row | 12.3 / 12.0 |
-| U4 three columns per iteration at 1.5x's offsets, no run table | 18.3 / 19.4 |
-| U5 as U4, no stores | 16.7 / 18.7 |
-| U6 as U5, the same pixels every iteration | 16.1 / 18.5 |
-| U7 as U5, the loads alone | 9.0 / 9.0 |
-| U8 as U4, each source pixel loaded once for the three columns | 14.6 / 14.3 |
-| U9 as U8, no stores | 12.3 / 17.4 |
-| U10 as U0, one chain per row: a multiply and three multiply-adds | 18.8 / 18.9 |
-| U11 as U8, one chain per row | 12.1 / 11.6 |
+| Line | Pi | M1 |
+|---|---:|---:|
+| U0 the kernel's loop: a run table, a test per run | 21.1 / 21.4 | 4.9 |
+| U1 as U0, no stores | 19.6 / 22.1 | 4.4 |
+| U2 as U0, every run at a 64-byte boundary | 21.1 / 21.5 | 4.9 |
+| U3 as U0, one row | 12.3 / 12.0 | 2.8 |
+| U4 three columns per iteration at 1.5x's offsets, no run table | 18.3 / 19.4 | 3.4 |
+| U5 as U4, no stores | 16.7 / 18.7 | 3.4 |
+| U6 as U5, the same pixels every iteration | 16.1 / 18.5 | 3.4 |
+| U7 as U5, the loads alone | 9.0 / 9.0 | 3.4 |
+| U8 as U4, each source pixel loaded once for the three columns | 14.6 / 14.3 | 3.0 |
+| U9 as U8, no stores | 12.3 / 17.4 | 2.7 |
+| U10 as U0, one chain per row: a multiply and three multiply-adds | 18.8 / 18.9 | 5.0 |
+| U11 as U8, one chain per row | 12.1 / 11.6 | 2.5 |
 
 - **The A72 runs one 128-bit multiply-add per cycle:** 16 chains by lane in registers, 4.00 floats per cycle (7.19 G/s)
   under both compilers. At that rate the column pair's 8 multiplies and multiply-adds and 2 additions take 10 cycles;
@@ -453,6 +473,17 @@ Clang 22 / GCC 14.2, the mean of two runs within 2.5%.
   per row once for its 3 columns, in place of 12. Both, U11, take 12.1 cycles, 8 of them arithmetic: 34% off U4, 43% off
   U0 with its run table.
 - GCC's U1 and U9 are slower than the same lines with stores. Not investigated; the bullets above are Clang's.
+
+The M1:
+- **Four 128-bit multiply-adds per cycle** (U12): the column pair's 8 multiplies and multiply-adds take 2 cycles at that
+  rate; U0 reaches 41% of the peak rate.
+- **Three 16-byte loads per cycle:** U7's 9 per column pair take 3.4 cycles. Clang merges them into `ldp` of two q
+  registers, which loads as fast. A test loop of independent loads from L1 runs 3 per cycle at any alignment within a
+  line, 2.5 at 64-byte steps, two loads to a line, 1.8 with each load in a new 128-byte line.
+- **The arithmetic hides entirely behind the loads:** U4 to U6 take U7's 3.4 cycles.
+- **The run table and its test cost 1.5 cycles (U0 against U4), 31% of U0;** 2.8 of 21.1 on the Pi. The stores 0.5
+  (U1), the second row 2.1 (U3).
+- **One chain per row gains nothing (U10);** shared loads take 12% off U4 (U8), both 26% (U11).
 
 U13 takes an upscale three columns at a time at six ratios to 1920 columns, each run's first pixel as the kernel's
 builder places it. A group whose runs start 0 or 1 pixel apart, every group of an upscale but those across the buffer's
@@ -479,6 +510,21 @@ Cycles per column pair, the mean of two runs, Clang's up to 5% apart, GCC's with
 - **A group from the run table reads three runs' starts and weights' addresses, and branches on its pattern.** Clang's
   samples at 1.5x fall on the six stores (a fifth), the group's first run-table load and the pattern's compares; 2% of
   groups mispredict. A record is one 16-byte read and the branch.
+
+The M1, Apple Clang 21, the mean of two runs of 200 repeats up to 5.6% apart:
+
+| Ratio | Run table, 2 chains | 1 chain | Groups, 2 chains | 1 chain | Group records, 1 chain |
+|---|---:|---:|---:|---:|---:|
+| 1707 px, 1.125x | 5.2 | 5.3 | 3.9 | 3.8 | 3.1 |
+| 1440 px, 1.333x | 4.9 | 5.0 | 3.7 | 3.5 | 3.1 |
+| 1366 px, 1.406x | 5.3 | 5.5 | 4.0 | 3.9 | 3.1 |
+| 1280 px, 1.5x | 4.9 | 5.0 | 3.8 | 3.7 | 3.2 |
+| 960 px, 2x | 4.9 | 5.0 | 3.6 | 3.4 | 2.9 |
+| 640 px, 3x | 4.9 | 5.0 | 3.5 | 3.4 | 2.9 |
+
+- **Group records take 36-44% off one chain per column,** twice the Pi's share, and run at 62-69% of the peak rate.
+- **Groups from the run table take 26-32% off;** 3-7% on the Pi.
+- Two chains against one: level over the run table, 3-6% slower over groups.
 
 ## The vertical tap loop's forms
 
@@ -524,7 +570,8 @@ weight broadcast from memory and its row pointer loaded. The better of two runs,
     source prefetched").
 - At NEON one chain per row at 4 taps is in the kernel ([resize-performance.md](resize-performance.md), "4-tap runs of
   4-float pixels in one chain per row at NEON"), and so are columns sharing their source pixels' loads, from a record
-  per triple of columns ("Upscales' x runs three at a time"): U13's 19-25% off the loop, 19% in the kernel. AVX2 and AVX
+  per triple of columns ("Upscales' x runs three at a time"): U13's 19-25% off the loop, 19% in the kernel; 36-44% off
+  on the M1, whose loop then runs at 62-69% of its multiply-add peak. AVX2 and AVX
   take them over their interleaved row pairs, F11's form: whole upscales 4-7% faster on the 8500T, 5-9% on the P-core,
   6-9% at AVX on the i3-2310M.
 - The room is in the work per multiply-add. Stepped pointers in the passes and the block loop took 3-7% of it (the
@@ -551,7 +598,8 @@ weight broadcast from memory and its row pointer loaded. The better of two runs,
 - The kernel's rates are MSVC's on the 8500T only. No kernel profile exists for the 12600K.
 - The program's vertical variant packs 64 floats to 64 bytes, not RGB32's 3 floats to 4 bytes.
 - At SSE4.1 only the horizontal forms of sections N and S are measured, without the conversion, not the level's
-  ceiling. At NEON section U measures the A72's: one 128-bit multiply-add per cycle.
+  ceiling. At NEON section U measures the A72's, one 128-bit multiply-add per cycle, and the M1's, four.
+- No section times the vertical pass at 128 bits: section Y is AVX2's.
 - The interleaved form's sections have no straight alpha and no RGB24 source, and section T has no run table.
 - The four-tap runs, sections F and U, are arithmetic and the run lookup: no conversion, no sliding span.
 - The whole pass's runs within one resize are all of one length, or of two in the padding table; the kernel's are

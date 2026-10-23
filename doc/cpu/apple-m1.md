@@ -304,6 +304,17 @@ alternating rounds:
 | 4K -> 200 px RGBA32, threads | 3.91 | -0.1% / +0.5% |
 - Every row within 1.3%, the threaded upscales included: the hint neither costs nor pays here.
 
+## The multiply-add ceiling
+
+Sections N, S and U of `multiply_add_ceiling.cpp` at e3520f9, `clang++ -O2 -std=c++20`: the tables are in
+[throughput-ceiling.md](../throughput-ceiling.md). The core's figures behind them:
+- Clock: 3.20 GHz, from a chain of 16 dependent integer adds per iteration, one cycle each; 3.198 and 3.199 GHz.
+- Peak: 51.3 G/s by U12, 16 floats per cycle: four 128-bit multiply-adds.
+- Loads, 12 independent `ldr q` per iteration from L1: 3.00 per cycle at 16-byte steps, aligned or 4 bytes off; 2.49
+  at 64-byte steps; 1.82 at 128-byte steps, a line each. `ldp` of two q registers: 3.00 q registers per cycle.
+- Section U's lines take about 1 ms. At the default 30 repeats two runs differ by up to 12% on a line; at 200, within
+  2%, U11 4%, U13's lines 5.6%. A run of 3 repeats read U0 at twice its time: the first repeats run slow.
+
 ## Per-instruction-set primitives, not SIMDe (963b54b)
 
 Real M1, Apple Clang, three alternating rounds of 4b5fdf8 and 963b54b: -2% to -12%, the scalar rows within 1%.
