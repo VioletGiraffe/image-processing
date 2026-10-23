@@ -805,6 +805,23 @@ them to the caller after it.
   level at SSE4.1 (its log). clang-cl's code is unchanged.
 - NEON walks its taps, through `addTapToBlock`.
 
+### Two dest rows per step on downscales at AVX2
+
+On downscales of 2x and more the vertical pass filters two adjacent dest rows per step (`verticalDestRowsPerStep`): one
+list over the union of their windows, each entry with both rows' weights (`PairedTaps`), and each temp row's floats
+loaded once for both rows' accumulators. RGB32 and RGB24 take two blocks per row, 12 accumulators; the 4-float and
+1-float layouts one, 8. The ring holds a step's windows together; a band's odd last row is filtered alone.
+- The single row's tap loop is bound by its loads as much as by latency: per tap a row pointer, a broadcast weight and
+  6 operands for 6 multiply-adds. A downscale's window is 6 times its ratio, so adjacent windows share 5 of 6 rows: at 2x
+  a pair loads 126 times against 192, for 168 multiply-adds against 144, the union's zero weights included.
+- The tap loop alone, the ceiling program's section Y: -33% to -38% at 2x on the 8500T and both 12600K cores
+  ([throughput-ceiling.md](throughput-ceiling.md), "The vertical tap loop's forms").
+- Whole rows, the 2x-4.5x downscales: 8500T -1% to -4.6% under MSVC, to -6.7% under clang-cl; 12600K -1% to -10% on both
+  cores. Within 2.1% where the horizontal pass dominates, 21 MP -> 175x117 and 4K -> 64x64 (the CPUs' logs, "Two dest
+  rows per step on downscales").
+- Not below 2x: the 12600K loses 21-50% on 720p -> 4K and 2-13% at 1.07x, where the 8500T is within 2%, and 3% faster at
+  1.07x (open lead 29).
+
 ### The horizontal filter takes the source buffers' range by value
 
 `filterHorizontalRowGroup` prepares the source buffers for one column, then `filterBufferedRuns` filters every following
@@ -1418,6 +1435,10 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     multiply-adds and gain 6 instructions under MSVC, 4-6 under clang-cl. The unpadded kernels' tail steps stay indexed by
     the tap counter, and their column loops gain up to 13 instructions. 8500T, 12 rounds: 4K -> 1080p Grayscale8 +12.6%
     under MSVC, +8.6% under clang-cl; MSVC's 4K -> 720p and -> 1600x900 RGB32 +3% to +4%.
+37. **A dest row pair's lower row staged in an L1 scratch row** (12600K, not committed), copied to the dest after the
+    strip row: one store stream into the dest in place of two interleaved. Against a2d03fc, with every resize paired, the
+    720p -> 4K rows went from +24% to +50% to -1% to +11% on the P-core and +14% to +16% on the E-core, 1.07x from +13% to
+    +8% on the E-core; the downscales of 2x and more stayed within 5 points of the unstaged pair (the 12600K's log).
 
 ## Open leads
 
@@ -1594,6 +1615,20 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
 28. **MSVC's RGBA32 upscales at SSE4.1 trail clang-cl's by 2%** (8500T): 7.45 against 7.29-7.33 ms since eb92f4a. Before
     it VTune put 0.1 s of the 0.3 s gap in the horizontal pass, its conversion loop the same instructions under both
     compilers (the 8500T's log, "MSVC's vertical tap loop: accumulators in locals"). No cause found.
-29. **More accumulators in the vertical pass** ([throughput-ceiling.md](throughput-ceiling.md), "What follows"): on the
-    8500T the FMA units' bound for that pass is 12 cycles. More independent accumulators, or two chains each, are
-    untried; the ceiling program can time them first, as it did the run triples.
+29. **Dest row pairs beyond AVX2's downscales of 2x and more** ("Two dest rows per step on downscales at AVX2"):
+    - The 12600K's upscale loss, 21-50% on 720p -> 4K: half is the pair's two interleaved store streams into the dest
+      (experiment 37). The rest is untraced: at exact 3x a third of the rows have one tap, and pairing one with a 4-tap
+      row makes 8 multiply-adds per vector against 5. VTune is on the 8500T only, which does not lose.
+    - Downscales between 1.07x and 2x are unmeasured, and 2x is a conservative cut-off: paired, the 12600K loses 2-13% at
+      1.07x, but its E-core also reads +7% there unpaired, the column loop moved (open lead 21).
+    - Upscales could hold the weights and row pointers of their 4 taps in registers across the dest row instead:
+      -22% to -30% off the tap loop in the ceiling program's section Y, untried in the kernel.
+    - The other levels, from load and multiply-add counts, untimed:
+      - AVX: no FMA, so the pair's zero-weight products cost a multiply and an add; about level, and its 15 of 16
+        registers leave no room.
+      - SSE4.1: the Skylake family's cores without AVX are already arithmetic-bound, a loss; Goldmont Plus is short of
+        loads, perhaps -10%.
+      - NEON: about level on the A72 if it loads 128 bits per cycle, as section U measured it multiply-adds; wider ARM
+        cores unknown.
+      - A 128-bit form of section Y could time them first.
+    - Three dest rows per step are untimed.

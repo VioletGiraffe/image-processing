@@ -7,7 +7,7 @@
 // The jump-alignment options are the kernels': without them lines differ by up to 14% between builds on the Skylake family.
 // Without /arch:AVX2, or for ARM64 (g++ -O2 -std=c++20), only sections N, S and U exist: the 128-bit levels' horizontal form.
 // Section U is built by g++ and clang++ only, not by cl or clang-cl.
-// Run: multiply_add_ceiling [repeats, default 30] [sections, default HVTFCPRSNU]; each line is the best repeat.
+// Run: multiply_add_ceiling [repeats, default 30] [sections, default HVTFCPRSNUY]; each line is the best repeat.
 // Pinned to a logical processor by mask: start /b /wait /affinity 4 multiply_add_ceiling.exe
 // Rates are float multiply-adds per second, counted as the kernel's are: 4 floats per horizontal tap, 3 per vertical tap.
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1232,6 +1233,231 @@ namespace
 		freeFloats(floatsA); freeFloats(floatsB); freeFloats(interleaved); freeFloats(weights); freeFloats(outA); freeFloats(outB);
 		return seconds;
 	}
+
+	// Section Y: the vertical pass's tap loop over 3-float pixels, a strip of dest rows at a time over a ring of temp rows in L2
+	constexpr size_t yStripFloats = 1728; // a multiple of 6, 9 and 12 vectors
+
+	// Each dest row's taps as the kernel lists them, a temp row pointer and a weight per tap, stride entries per dest row
+	struct ListedVerticalTaps
+	{
+		std::vector<const float*> rows;
+		std::vector<float> weights;
+		std::vector<uint32_t> counts;
+		size_t stride;
+	};
+
+	// Each dest row's first temp row: tapCount rows centered as the kernel's window, inside the image
+	std::vector<size_t> windowFirstRows(size_t tempRows, size_t destRows, size_t tapCount)
+	{
+		std::vector<size_t> firstRows;
+		const double scale = static_cast<double>(tempRows) / static_cast<double>(destRows);
+		for (size_t destRow = 0; destRow < destRows; ++destRow)
+		{
+			const double center = (static_cast<double>(destRow) + 0.5) * scale - 0.5;
+			const ptrdiff_t first = static_cast<ptrdiff_t>(std::floor(center)) - static_cast<ptrdiff_t>(tapCount / 2 - 1);
+			firstRows.push_back(static_cast<size_t>(std::clamp<ptrdiff_t>(first, 0, static_cast<ptrdiff_t>(tempRows - tapCount))));
+		}
+		return firstRows;
+	}
+
+	// One dest row per entry; a temp row's index wraps in the ring
+	ListedVerticalTaps listedVerticalTaps(const float* ring, size_t ringRows, const std::vector<size_t>& firstRows, size_t tapCount)
+	{
+		ListedVerticalTaps taps{ {}, {}, {}, tapCount };
+		for (const size_t first : firstRows)
+		{
+			for (size_t tap = 0; tap < tapCount; ++tap)
+			{
+				taps.rows.push_back(ring + (first + tap) % ringRows * yStripFloats);
+				taps.weights.push_back(1.0f / static_cast<float>(tapCount));
+			}
+			taps.counts.push_back(static_cast<uint32_t>(tapCount));
+		}
+		return taps;
+	}
+
+	// Two dest rows per entry over the union of their windows: unionTaps.weights is the first row's, secondWeights the second's, 0 outside its window
+	struct PairedVerticalTaps
+	{
+		ListedVerticalTaps unionTaps;
+		std::vector<float> secondWeights;
+	};
+
+	PairedVerticalTaps pairedVerticalTaps(const float* ring, size_t ringRows, const std::vector<size_t>& firstRows, size_t tapCount)
+	{
+		const size_t stride = 2 * tapCount;
+		PairedVerticalTaps paired{ { {}, {}, {}, stride }, {} };
+		const auto windowWeight = [tapCount](size_t row, size_t first) { return row >= first && row < first + tapCount ? 1.0f / static_cast<float>(tapCount) : 0.0f; };
+		for (size_t pair = 0; pair + 1 < firstRows.size(); pair += 2)
+		{
+			const size_t firstA = firstRows[pair], firstB = firstRows[pair + 1];
+			const size_t begin = std::min(firstA, firstB), end = std::max(firstA, firstB) + tapCount;
+			for (size_t row = begin; row < begin + stride; ++row)
+			{
+				paired.unionTaps.rows.push_back(ring + row % ringRows * yStripFloats);
+				paired.unionTaps.weights.push_back(windowWeight(row, firstA));
+				paired.secondWeights.push_back(windowWeight(row, firstB));
+			}
+			paired.unionTaps.counts.push_back(static_cast<uint32_t>(end - begin));
+		}
+		return paired;
+	}
+
+	FORCEINLINE __m256 weighted(const float* source, __m256 weight) { return _mm256_mul_ps(_mm256_loadu_ps(source), weight); }
+	FORCEINLINE __m256 addWeighted(const float* source, __m256 weight, __m256 sum) { return _mm256_fmadd_ps(_mm256_loadu_ps(source), weight, sum); }
+
+	// The kernel's form at Vectors accumulators: each tap's weight broadcast from memory and its row pointer loaded, the first tap assigned
+	template <int Vectors>
+	NOINLINE void listedTapsDestRow(const float* const* rows, const float* weights, size_t count, size_t floats, float* scratch)
+	{
+		static_assert(Vectors == 6 || Vectors == 9 || Vectors == 12);
+		for (size_t f = 0; f + Vectors * 8 <= floats; f += Vectors * 8)
+		{
+			__m256 w = _mm256_broadcast_ss(weights);
+			const float* source = rows[0] + f;
+			__m256 a0 = weighted(source, w), a1 = weighted(source + 8, w), a2 = weighted(source + 16, w);
+			__m256 a3 = weighted(source + 24, w), a4 = weighted(source + 32, w), a5 = weighted(source + 40, w);
+			__m256 a6 = w, a7 = w, a8 = w, a9 = w, a10 = w, a11 = w; // assigned below where Vectors takes them
+			if constexpr (Vectors >= 9)
+			{
+				a6 = weighted(source + 48, w); a7 = weighted(source + 56, w); a8 = weighted(source + 64, w);
+			}
+			if constexpr (Vectors == 12)
+			{
+				a9 = weighted(source + 72, w); a10 = weighted(source + 80, w); a11 = weighted(source + 88, w);
+			}
+
+			for (size_t tap = 1; tap < count; ++tap)
+			{
+				w = _mm256_broadcast_ss(weights + tap);
+				source = rows[tap] + f;
+				a0 = addWeighted(source, w, a0); a1 = addWeighted(source + 8, w, a1); a2 = addWeighted(source + 16, w, a2);
+				a3 = addWeighted(source + 24, w, a3); a4 = addWeighted(source + 32, w, a4); a5 = addWeighted(source + 40, w, a5);
+				if constexpr (Vectors >= 9)
+				{
+					a6 = addWeighted(source + 48, w, a6); a7 = addWeighted(source + 56, w, a7); a8 = addWeighted(source + 64, w, a8);
+				}
+				if constexpr (Vectors == 12)
+				{
+					a9 = addWeighted(source + 72, w, a9); a10 = addWeighted(source + 80, w, a10); a11 = addWeighted(source + 88, w, a11);
+				}
+			}
+
+			_mm256_storeu_ps(scratch, a0); _mm256_storeu_ps(scratch + 8, a1); _mm256_storeu_ps(scratch + 16, a2);
+			_mm256_storeu_ps(scratch + 24, a3); _mm256_storeu_ps(scratch + 32, a4); _mm256_storeu_ps(scratch + 40, a5);
+			if constexpr (Vectors >= 9)
+			{
+				_mm256_storeu_ps(scratch + 48, a6); _mm256_storeu_ps(scratch + 56, a7); _mm256_storeu_ps(scratch + 64, a8);
+			}
+			if constexpr (Vectors == 12)
+			{
+				_mm256_storeu_ps(scratch + 72, a9); _mm256_storeu_ps(scratch + 80, a10); _mm256_storeu_ps(scratch + 88, a11);
+			}
+		}
+	}
+
+	// Four taps, their weights and row pointers held in registers across the dest row: the loop loads only its operands
+	NOINLINE void heldFourTapsDestRow(const float* const* rows, const float* weights, size_t floats, float* scratch)
+	{
+		const __m256 w0 = _mm256_broadcast_ss(weights), w1 = _mm256_broadcast_ss(weights + 1), w2 = _mm256_broadcast_ss(weights + 2), w3 = _mm256_broadcast_ss(weights + 3);
+		const float* const r0 = rows[0];
+		const float* const r1 = rows[1];
+		const float* const r2 = rows[2];
+		const float* const r3 = rows[3];
+		for (size_t f = 0; f + 48 <= floats; f += 48)
+		{
+			__m256 a0 = weighted(r0 + f, w0), a1 = weighted(r0 + f + 8, w0), a2 = weighted(r0 + f + 16, w0);
+			__m256 a3 = weighted(r0 + f + 24, w0), a4 = weighted(r0 + f + 32, w0), a5 = weighted(r0 + f + 40, w0);
+			a0 = addWeighted(r1 + f, w1, a0); a1 = addWeighted(r1 + f + 8, w1, a1); a2 = addWeighted(r1 + f + 16, w1, a2);
+			a3 = addWeighted(r1 + f + 24, w1, a3); a4 = addWeighted(r1 + f + 32, w1, a4); a5 = addWeighted(r1 + f + 40, w1, a5);
+			a0 = addWeighted(r2 + f, w2, a0); a1 = addWeighted(r2 + f + 8, w2, a1); a2 = addWeighted(r2 + f + 16, w2, a2);
+			a3 = addWeighted(r2 + f + 24, w2, a3); a4 = addWeighted(r2 + f + 32, w2, a4); a5 = addWeighted(r2 + f + 40, w2, a5);
+			a0 = addWeighted(r3 + f, w3, a0); a1 = addWeighted(r3 + f + 8, w3, a1); a2 = addWeighted(r3 + f + 16, w3, a2);
+			a3 = addWeighted(r3 + f + 24, w3, a3); a4 = addWeighted(r3 + f + 32, w3, a4); a5 = addWeighted(r3 + f + 40, w3, a5);
+			_mm256_storeu_ps(scratch, a0); _mm256_storeu_ps(scratch + 8, a1); _mm256_storeu_ps(scratch + 16, a2);
+			_mm256_storeu_ps(scratch + 24, a3); _mm256_storeu_ps(scratch + 32, a4); _mm256_storeu_ps(scratch + 40, a5);
+		}
+	}
+
+	// Two dest rows over the union of their taps, 6 accumulators each: every temp row vector loaded once for both
+	NOINLINE void pairedDestRows(const float* const* rows, const float* weightsA, const float* weightsB, size_t count, size_t floats, float* scratch)
+	{
+		for (size_t f = 0; f + 48 <= floats; f += 48)
+		{
+			__m256 wa = _mm256_broadcast_ss(weightsA), wb = _mm256_broadcast_ss(weightsB);
+			const float* source = rows[0] + f;
+			__m256 x = _mm256_loadu_ps(source);
+			__m256 a0 = _mm256_mul_ps(x, wa), b0 = _mm256_mul_ps(x, wb);
+			x = _mm256_loadu_ps(source + 8);
+			__m256 a1 = _mm256_mul_ps(x, wa), b1 = _mm256_mul_ps(x, wb);
+			x = _mm256_loadu_ps(source + 16);
+			__m256 a2 = _mm256_mul_ps(x, wa), b2 = _mm256_mul_ps(x, wb);
+			x = _mm256_loadu_ps(source + 24);
+			__m256 a3 = _mm256_mul_ps(x, wa), b3 = _mm256_mul_ps(x, wb);
+			x = _mm256_loadu_ps(source + 32);
+			__m256 a4 = _mm256_mul_ps(x, wa), b4 = _mm256_mul_ps(x, wb);
+			x = _mm256_loadu_ps(source + 40);
+			__m256 a5 = _mm256_mul_ps(x, wa), b5 = _mm256_mul_ps(x, wb);
+			for (size_t tap = 1; tap < count; ++tap)
+			{
+				wa = _mm256_broadcast_ss(weightsA + tap);
+				wb = _mm256_broadcast_ss(weightsB + tap);
+				source = rows[tap] + f;
+				x = _mm256_loadu_ps(source); a0 = _mm256_fmadd_ps(x, wa, a0); b0 = _mm256_fmadd_ps(x, wb, b0);
+				x = _mm256_loadu_ps(source + 8); a1 = _mm256_fmadd_ps(x, wa, a1); b1 = _mm256_fmadd_ps(x, wb, b1);
+				x = _mm256_loadu_ps(source + 16); a2 = _mm256_fmadd_ps(x, wa, a2); b2 = _mm256_fmadd_ps(x, wb, b2);
+				x = _mm256_loadu_ps(source + 24); a3 = _mm256_fmadd_ps(x, wa, a3); b3 = _mm256_fmadd_ps(x, wb, b3);
+				x = _mm256_loadu_ps(source + 32); a4 = _mm256_fmadd_ps(x, wa, a4); b4 = _mm256_fmadd_ps(x, wb, b4);
+				x = _mm256_loadu_ps(source + 40); a5 = _mm256_fmadd_ps(x, wa, a5); b5 = _mm256_fmadd_ps(x, wb, b5);
+			}
+
+			_mm256_storeu_ps(scratch, a0); _mm256_storeu_ps(scratch + 8, a1); _mm256_storeu_ps(scratch + 16, a2);
+			_mm256_storeu_ps(scratch + 24, a3); _mm256_storeu_ps(scratch + 32, a4); _mm256_storeu_ps(scratch + 40, a5);
+			_mm256_storeu_ps(scratch + 48, b0); _mm256_storeu_ps(scratch + 56, b1); _mm256_storeu_ps(scratch + 64, b2);
+			_mm256_storeu_ps(scratch + 72, b3); _mm256_storeu_ps(scratch + 80, b4); _mm256_storeu_ps(scratch + 88, b5);
+		}
+	}
+
+	// Form: 6, 9, 12 - the kernel's form at that many accumulators; 1 - four taps held; 2 - dest rows paired.
+	// Each strip passes over the same ring: the kernel's strips each have a ring of their own, of this size.
+	template <int Form>
+	double verticalTapLoopSeconds(size_t tempRows, size_t destRows, size_t tapCount, size_t ringRows, size_t strips, int repeats)
+	{
+		float* ring = alignedFloats(ringRows * yStripFloats + 64);
+		const std::vector<size_t> firstRows = windowFirstRows(tempRows, destRows, tapCount);
+		const ListedVerticalTaps listed = listedVerticalTaps(ring, ringRows, firstRows, tapCount);
+		const PairedVerticalTaps paired = pairedVerticalTaps(ring, ringRows, firstRows, tapCount);
+		alignas(32) float scratch[96];
+		const double seconds = bestSeconds([&] {
+			for (size_t strip = 0; strip < strips; ++strip)
+			{
+				if constexpr (Form == 2)
+				{
+					for (size_t pair = 0; pair < destRows / 2; ++pair)
+					{
+						const size_t entry = pair * paired.unionTaps.stride;
+						pairedDestRows(paired.unionTaps.rows.data() + entry, paired.unionTaps.weights.data() + entry, paired.secondWeights.data() + entry, paired.unionTaps.counts[pair], yStripFloats, scratch);
+					}
+				}
+				else
+				{
+					for (size_t destRow = 0; destRow < destRows; ++destRow)
+					{
+						const float* const* rows = listed.rows.data() + destRow * listed.stride;
+						const float* weights = listed.weights.data() + destRow * listed.stride;
+						if constexpr (Form == 1)
+							heldFourTapsDestRow(rows, weights, yStripFloats, scratch);
+						else
+							listedTapsDestRow<Form>(rows, weights, listed.counts[destRow], yStripFloats, scratch);
+					}
+				}
+			}
+		}, repeats);
+		volatile float sink = scratch[7];
+		(void)sink;
+		freeFloats(ring);
+		return seconds;
+	}
 #endif // __AVX2__
 
 	// The 128-bit levels' horizontal form for a row pair of 4-float pixels: a pixel per register, as the kernel compiles at SSE4.1 and NEON
@@ -1932,7 +2158,7 @@ namespace
 int main(int argc, char** argv)
 {
 	const int repeats = argc > 1 ? std::atoi(argv[1]) : 30;
-	const char* const sections = argc > 2 ? argv[2] : "HVTFCPRSNU";
+	const char* const sections = argc > 2 ? argv[2] : "HVTFCPRSNUY";
 	const auto selected = [sections](char section) { return std::strchr(sections, section) != nullptr; };
 
 	if (selected('N'))
@@ -2072,6 +2298,22 @@ int main(int argc, char** argv)
 			reportRatio<18>(image, repeats, "3x, 18 taps", 3 * 256, 1280);
 			reportRatio<24>(image, repeats, "4x, 24 taps", 4 * 256, 958);
 		}
+	}
+
+	if (selected('Y'))
+	{
+		// 720p -> 4K's rows, 3x: 4 taps over 720 temp rows, 7 strips of a 3840-pixel row, a ring of 8 temp rows.
+		// 4K -> 1080p's, 2x: 12 taps over 2160, 3 strips of 1920 pixels, a ring of 16. Rates count each dest row's own taps.
+		const double upscaleWork = 2160.0 * 7 * yStripFloats * 4, downscaleWork = 1080.0 * 3 * yStripFloats * 12;
+		report("Y0 3x, 4 taps: the kernel's form, 6 accumulators", verticalTapLoopSeconds<6>(720, 2160, 4, 8, 7, repeats), upscaleWork);
+		report("Y1 as Y0, 9 accumulators", verticalTapLoopSeconds<9>(720, 2160, 4, 8, 7, repeats), upscaleWork);
+		report("Y2 as Y0, 12 accumulators", verticalTapLoopSeconds<12>(720, 2160, 4, 8, 7, repeats), upscaleWork);
+		report("Y3 as Y0, weights and rows held across the dest row", verticalTapLoopSeconds<1>(720, 2160, 4, 8, 7, repeats), upscaleWork);
+		report("Y4 as Y0, two dest rows over their taps' union", verticalTapLoopSeconds<2>(720, 2160, 4, 8, 7, repeats), upscaleWork);
+		report("Y5 2x, 12 taps: the kernel's form, 6 accumulators", verticalTapLoopSeconds<6>(2160, 1080, 12, 16, 3, repeats), downscaleWork);
+		report("Y6 as Y5, 9 accumulators", verticalTapLoopSeconds<9>(2160, 1080, 12, 16, 3, repeats), downscaleWork);
+		report("Y7 as Y5, 12 accumulators", verticalTapLoopSeconds<12>(2160, 1080, 12, 16, 3, repeats), downscaleWork);
+		report("Y8 as Y5, two dest rows over their taps' union", verticalTapLoopSeconds<2>(2160, 1080, 12, 16, 3, repeats), downscaleWork);
 	}
 
 	if (!selected('H') && !selected('V'))

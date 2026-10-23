@@ -1022,3 +1022,34 @@ of `__nop()` at the start of `resizeRowsWith`. The QImage controls read within 1
   55.0-55.6 ms plain and 61.6-62.2 ms padded in all eight rounds. The rows on the per-length kernels do not move.
 - Two AVX2 rows read two levels by launch, minimum to minimum the reading there: 720p -> 4K RGB24 10.9-11.1 or
   12.6-12.9 ms in three of the four builds, native size 1.8-1.9 or 2.1-2.2 ms under MSVC.
+
+## Two dest rows per step on downscales
+
+AVX2's vertical pass filtering two dest rows over their windows' union, against a2d03fc. Eight alternating rounds,
+median of same-round ratios / minimum to minimum. "Padded": both builds with 32 bytes of `__nop()` at the start of
+`resizeRowsWith`, the pair against the padded a2d03fc. clang-cl against its own build of a2d03fc. The builds paired every
+resize; the kernel pairs downscales of 2x and more only, and the rows below the line take the single-row path.
+
+| Scenario, AVX2 | a2d03fc, MSVC, min ms | Paired, MSVC | Both padded | Paired, clang-cl |
+|---|---:|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | 45.31 | -1.8% / -2.1% | -2.1% / -2.2% | -3.1% / -3.4% |
+| 4K -> 1600x900 RGB32 | 16.30 | -3.9% / -3.9% | -4.2% / -4.2% | -5.7% / -5.5% |
+| 4K -> 720p RGB32 | 14.41 | -4.2% / -3.3% | -3.3% / -3.2% | -3.8% / -3.8% |
+| 1080p -> 240p RGB32 | 3.58 | -1.6% / -1.1% | -1.3% / -1.4% | -4.0% / -3.6% |
+| 1080p -> 120x68 RGB32 | 2.61 | -0.2% / +0.4% | -0.3% / -0.4% | -2.1% / -1.2% |
+| 21 MP -> 175x117 RGB32 | 25.30 | -1.0% / -1.1% | -0.8% / -1.0% | -0.5% / -0.8% |
+| 4K -> 200x113 RGB32 | 11.71 | +0.3% / +0.2% | +0.0% / -0.2% | +0.5% / -0.8% |
+| 4K -> 200x113 RGBA32 | 14.28 | -0.1% / -0.2% | +0.1% / +0.0% | -1.4% / -1.5% |
+| 4K -> 64x64 RGB32 | 9.92 | +0.0% / -0.4% | -0.8% / -0.8% | -1.0% / -2.1% |
+| 4K -> 1080p Grayscale8 | 9.00 | -3.8% / -2.6% | -3.4% / -2.8% | -2.4% / -3.0% |
+| 4K -> 1080p RGB24 | 18.19 | -4.3% / -4.3% | -5.0% / -4.2% | -4.7% / -4.7% |
+| 4K -> 1080p RGB32 | 17.93 | -4.1% / -4.3% | -4.9% / -4.4% | -5.0% / -6.7% |
+| 4K -> 1080p RGBA32 | 21.33 | -4.6% / -4.6% | -4.7% / -4.5% | -4.5% / -4.2% |
+| 2.8 MP -> 1920x1280 RGB32 | 9.10 | -3.1% / -2.5% | -2.6% / -3.2% | -3.3% / -3.6% |
+| 720p -> 4K RGBA32 | 13.35 | +0.1% / -0.6% | -0.9% / +0.0% | -1.8% / -0.5% |
+| 720p -> 4K RGB32 | 12.11 | +0.5% / +0.4% | +0.8% / +0.8% | -0.7% / -0.8% |
+| 720p -> 4K RGB24 | 10.85 | +1.7% / +1.6% | +1.0% / +1.3% | -1.3% / -0.9% |
+| 720p -> 4K Grayscale8 | 4.53 | -0.1% / -0.2% | -0.5% / -0.6% | +0.0% / -0.9% |
+
+- The rows the horizontal pass dominates gain least: the 16x-32x thumbnails and 4K -> 64x64 within 1-2%.
+- The SSE4.1 rows, the same code in both builds: within 1.6%, but 4K -> 1600x900 at +2.1%.

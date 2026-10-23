@@ -41,6 +41,8 @@ namespace ImageProcessing::Detail::Neon
 	inline constexpr size_t verticalBlocksPerStep = 1;
 	// Not listed: a list's load per tap costs Cortex-A72 3-7% under Clang, at any stored weight size
 	inline constexpr bool verticalTapsListed = false;
+	// Dest rows the vertical pass filters per step. 1: a pair needs the listed taps
+	inline constexpr size_t verticalDestRowsPerStep = 1;
 	// As at SSE4.1. On the boundary: no other start is measured at NEON
 	inline constexpr size_t tempRingStartOffset = 0;
 	// 4-tap x runs of 4-float pixels filtered three at a time, their shared source pixels loaded once: Cortex-A72 loads 16 bytes per cycle

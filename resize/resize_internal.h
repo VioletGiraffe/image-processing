@@ -139,8 +139,9 @@ namespace ImageProcessing::Detail
 	{
 	public:
 		// batchRows: the most rows produced at once, so production can pass a window's end by batchRows - 1
+		// destRowsPerStep: dest rows filtered together, in steps from destRowBegin: their windows are in the ring at once
 		// startOffset: the first row's start, in floats past a 64-byte boundary
-		TempRowRing(const AxisWeights& yWeights, uint64_t destRowBegin, uint64_t destRowEnd, size_t rowStride, size_t batchRows, size_t startOffset);
+		TempRowRing(const AxisWeights& yWeights, uint64_t destRowBegin, uint64_t destRowEnd, size_t rowStride, size_t batchRows, size_t destRowsPerStep, size_t startOffset);
 
 		// The first source row the band's windows read
 		[[nodiscard]] uint64_t firstNeededRow() const noexcept { return _firstNeededRow; }

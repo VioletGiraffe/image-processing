@@ -47,7 +47,7 @@ against the kernel's form of 32b0a2f. The design's measurements are in
   | Loop, per iteration | Cycles | Bound | Events |
   |---|---:|---|---|
   | Per-column, a column pair: 46 instructions | 16.4 | Not established | 3.0 uops issued per cycle; the back end full 23% of cycles; 0.8 loads per column pair blocked by a 4K alias; every load an L1 hit; no port above 0.84 uops per cycle |
-  | Vertical, 4 taps of 6 accumulators: 35 instructions | 18 | Latency: 4 dependent multiply-adds per accumulator, 16 cycles | The back end full 43% of cycles; 1.3 multiply-adds per cycle |
+  | Vertical, 4 taps of 6 accumulators: 35 instructions | 18 | Latency, 4 dependent multiply-adds per accumulator, and loads, 32 on two ports: 16 cycles each | The back end full 43% of cycles; 1.3 multiply-adds per cycle |
   | Conversion, 8 pixels: 23 instructions | 11.5 | Memory: the source streams from DRAM | Stalls on L1 misses 27% of cycles; the back end full 49% |
 
 - **The per-column loop, by the main doc's experiments 32, 34 and 35:**
@@ -480,6 +480,32 @@ Cycles per column pair, the mean of two runs, Clang's up to 5% apart, GCC's with
   samples at 1.5x fall on the six stores (a fifth), the group's first run-table load and the pattern's compares; 2% of
   groups mispredict. A record is one 16-byte read and the branch.
 
+## The vertical tap loop's forms
+
+Section Y, at a2d03fc: the tap loop over RGB32's 3 floats per pixel, strips of 1728 floats over a ring of temp rows in L2
+(8 rows at 3x, 16 at 2x), every tap listed, the sums stored to a scratch. The kernel's form: 6 accumulators, each tap's
+weight broadcast from memory and its row pointer loaded. The better of two runs, MSVC / clang-cl, against that form.
+
+| 3x, 4 taps | 8500T | P-core | E-core |
+|---|---:|---:|---:|
+| The kernel's form, ms | 3.49 / 3.59 | 2.05 / 2.08 | 6.12 / 5.91 |
+| 9 accumulators | -5% / -7% | -9% / -11% | -7% / -6% |
+| 12 accumulators | -6% / -6% | -9% / -15% | -3% / -2% |
+| Weights and row pointers held across the dest row | -22% / -30% | -25% / -23% | -30% / -30% |
+| Two dest rows over their windows' union | -23% / -22% | -21% / -25% | -21% / -18% |
+
+| 2x, 12 taps | 8500T | P-core | E-core |
+|---|---:|---:|---:|
+| The kernel's form, ms | 2.83 / 2.96 | 1.91 / 1.89 | 5.07 / 4.91 |
+| 9 accumulators | -1% / -5% | -5% / -5% | -5% / -4% |
+| 12 accumulators | -3% / -3% | -4% / -7% | -8% / -7% |
+| Two dest rows over their windows' union | -33% / -34% | -35% / -37% | -38% / -35% |
+
+- The paired rows: per tap of the union, a row pointer, two weights and 6 loads serve 12 multiply-adds, zero weights
+  included. At 2x the union is 14 taps against 12 per row: 126 loads per pair against 192.
+- Held taps fit 4 weights and 6 accumulators in registers; at 12 taps they would not.
+- The kernel's form here takes one tap per iteration; MSVC unrolls the kernel's loop to 4.
+
 ## What follows
 
 - More multiply-add throughput or wider vectors would gain little on the Skylake family: its FMA units are idle half
@@ -487,7 +513,10 @@ Cycles per column pair, the mean of two runs, Clang's up to 5% apart, GCC's with
 - The column loop is 1.6 cycles per column pair short of no stores' 14.8; its 0.8 loads blocked by a 4K alias are
   the candidate, untested.
 - The 8500T's bounds point at two changes:
-  - More independent accumulators, or two chains each, in the vertical pass: the FMA units' bound is 12 cycles. Untried.
+  - Fewer loads per multiply-add in the vertical pass: its loads and its latency bind alike, 16 cycles against the FMA
+    units' 12. Two dest rows over their windows' union take 33-38% off the tap loop at 2x and 18-25% at 3x ("The vertical
+    tap loop's forms"). In the kernel at AVX2 for downscales of 2x and more: whole rows up to 10% faster
+    ([resize-performance.md](resize-performance.md), "Two dest rows per step on downscales at AVX2").
   - The source prefetched while the horizontal pass runs: the conversion's DRAM stalls. The next chunk's prefetch is in the
     kernel: no change on the 8500T, faster on the Pi ([resize-performance.md](resize-performance.md), "The next chunk's
     source prefetched").

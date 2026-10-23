@@ -706,22 +706,30 @@ namespace
 	}
 }
 
-Detail::TempRowRing::TempRowRing(const AxisWeights& yWeights, uint64_t destRowBegin, uint64_t destRowEnd, size_t rowStride, size_t batchRows, size_t startOffset) :
+Detail::TempRowRing::TempRowRing(const AxisWeights& yWeights, uint64_t destRowBegin, uint64_t destRowEnd, size_t rowStride, size_t batchRows, size_t destRowsPerStep, size_t startOffset) :
 	_rowStride{ rowStride }
 {
 	assert(destRowBegin < destRowEnd);
-	assert(batchRows >= 1);
+	assert(batchRows >= 1 && destRowsPerStep >= 1);
 
-	// While writing dest row dy, production has passed dy's window by at most batchRows - 1 rows, and end-trimming lets a
-	// later window start slightly before an earlier one - so each window's end is measured against the earliest start any
-	// not-yet-written row still needs.
+	// While writing a step's dest rows, production has passed the latest end of their windows by at most batchRows - 1 rows,
+	// and end-trimming lets a later window start slightly before an earlier one - so each step's end is measured against the
+	// earliest start any not-yet-written row still needs.
 	uint64_t firstNeededRow = UINT64_MAX;
 	size_t rowCount = 0;
 	for (uint64_t dy = destRowEnd; dy-- > destRowBegin;)
 	{
-		const auto run = yWeights.runFor(dy);
-		firstNeededRow = std::min(firstNeededRow, static_cast<uint64_t>(run.firstSource));
-		rowCount = std::max(rowCount, run.firstSource + run.weights.size() + batchRows - 1 - static_cast<size_t>(firstNeededRow));
+		firstNeededRow = std::min(firstNeededRow, static_cast<uint64_t>(yWeights.runFor(dy).firstSource));
+		if ((dy - destRowBegin) % destRowsPerStep != 0)
+			continue;
+
+		size_t stepWindowEnd = 0;
+		for (uint64_t stepRow = dy; stepRow < std::min(dy + destRowsPerStep, destRowEnd); ++stepRow)
+		{
+			const auto run = yWeights.runFor(stepRow);
+			stepWindowEnd = std::max(stepWindowEnd, run.firstSource + run.weights.size());
+		}
+		rowCount = std::max(rowCount, stepWindowEnd + batchRows - 1 - static_cast<size_t>(firstNeededRow));
 	}
 
 	_firstNeededRow = firstNeededRow;
