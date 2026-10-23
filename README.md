@@ -29,6 +29,7 @@ Image resizer with hand-optimized SIMD kernels for x64 and ARM64
   - `--benchmark` runs the benchmarks instead and prints the ratio table.
   - `--debug` uses the debug build.
   - `--no-build` skips the build.
+  - `--build-only` builds and runs nothing.
   - Anything else goes to the Catch2 runner.
 
 ## Dependencies

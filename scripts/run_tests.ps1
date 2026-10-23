@@ -5,6 +5,7 @@
 #   --benchmark - benchmarks instead of tests
 #   --debug     - the debug configuration; the default is release
 #   --no-build  - runs what is already built
+#   --build-only - builds and runs nothing
 # The remaining arguments go to the Catch2 runner: a test spec narrows either mode, options such as --benchmark-samples 50 override the defaults.
 # Tests: exclusions alone, e.g. ~[slow], get ~[.] added; see the test run below.
 # No param block: the parameter binder would claim Catch2's options, e.g. --warn as an abbreviation of -WarningAction.
@@ -15,12 +16,14 @@
 $Configuration = 'release'
 $Benchmark = $false
 $NoBuild = $false
+$BuildOnly = $false
 $optionCount = 0
 foreach ($argument in $args)
 {
 	if ($argument -eq '--benchmark') { $Benchmark = $true }
 	elseif ($argument -eq '--debug') { $Configuration = 'debug' }
 	elseif ($argument -eq '--no-build') { $NoBuild = $true }
+	elseif ($argument -eq '--build-only') { $BuildOnly = $true }
 	else { break }
 	++$optionCount
 }
@@ -87,6 +90,7 @@ if (-not $NoBuild)
 	}
 	finally { Pop-Location }
 }
+if ($BuildOnly) { exit 0 }
 
 $binaries = Join-Path $testsDirectory "bin\$Configuration"
 $executable = Join-Path $binaries 'image-processing-tests.exe'

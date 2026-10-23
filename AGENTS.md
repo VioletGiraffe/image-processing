@@ -26,6 +26,8 @@ Treat those documents as project memory: update them with any change to the kern
 
 - `run_benchmark_rounds.py`: alternating rounds of Catch2 benchmark binaries; `--pinned P=4 --pinned E=1000` runs a
   series per core type of the 12600K at once. `compare_benchmark_rounds.py` prints the tables.
+- `build_revisions.py`: the tests of git revisions, a tree each; `--patch` for a variant. A history scan: build the
+  revisions, one round of them with `run_benchmark_rounds.py`, then `find_benchmark_steps.py` lists the steps.
 - `annotate_vtune_hotspots.py`: a VTune profile summed over each kernel loop of a `dumpbin`/`objdump` listing.
 - `extract_kernels.py`: kernels in a form two builds diff in; `--loops` lists each kernel's loops.
 - `count_boundary_jumps.py`: jumps on 32-byte boundaries (the JCC erratum).
@@ -54,6 +56,9 @@ Access and per-machine setup are in `AGENTS.local.md`, git-ignored, where it exi
   crashed the machine once.
 - Core i3-2310M (Sandy Bridge): AVX is its level, so it judges AVX changes.
 - Raspberry Pi 4: builds its own, with Clang and GCC. perf in user space only.
+- Mac mini (Apple M1): has a checkout, its dependencies beside it; builds its own with Apple Clang. No pinning: a run
+  at the default QoS lands on a P-core. One run of the whole benchmark: about 30 s, and it reads serial rows of 2 ms
+  or more to 4%, enough for a history scan; ten alternating rounds for a step it flags.
 
 ## Measurement traps
 
@@ -65,6 +70,9 @@ Access and per-machine setup are in `AGENTS.local.md`, git-ignored, where it exi
   the plain one's with `extract_kernels.py` before reading its rows as placement.
 - The 12600K's P-core shifts between levels 15-20% apart for hours: compare only within one session.
 - A first-set outlier that does not repeat in a second set is run state: rerun before believing a single set.
+- A history scan of one run per revision: adjacent runs flip by the noise both ways. Read a step by the median of three
+  revisions on each side, and confirm it with rounds; the fastest of many single runs is no baseline, the noise alone
+  puts it low.
 
 ## Code traps (the listings showed them)
 
@@ -82,3 +90,9 @@ Access and per-machine setup are in `AGENTS.local.md`, git-ignored, where it exi
 - `pwsh -File s.ps1 a b` binds only `a` to a `[string[]]` parameter: use `pwsh -Command "& .\s.ps1 a,b"`.
 - PowerShell pipes corrupt binary streams: `git archive -o file.zip` and `Expand-Archive`, not `git archive | tar`.
 - Re-running `vcvars64.bat` in one process grows PATH until "The input line is too long": start a new process.
+
+## Shell traps (macOS)
+
+- zsh does not split an unquoted `$list` into words: a list of binaries passed so arrives as one argument. Use a bash
+  array.
+- Python is `python3`.

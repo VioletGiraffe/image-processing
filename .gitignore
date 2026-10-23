@@ -18,6 +18,7 @@ tests/build/
 /tests/debug/
 /tests/release/
 /tests/target_wrapper.bat
+/tests/target_wrapper.sh
 /resize-comparison/bin/
 /resize-comparison/build/
 /scripts/local-env.*

@@ -20,7 +20,8 @@ consists of, is in [throughput-ceiling.md](throughput-ceiling.md).
   - windows-latest runner: most rows within 3%, some 10%.
   - ubuntu-24.04-arm runner, Clang: about 1%.
   - macos-latest runner: up to 2x, too noisy to read per scenario.
-  - A real M1, same-session A/B: about 1%.
+  - A real M1 (the Mac mini): one run, serial rows of 2 ms or more within 4%, threaded rows 12-15%. Ten alternating
+    rounds resolve about 1%.
   - Celeron N4100: 0.5-1%.
   - Core i5-8500T: 5-8% between processes on the 4K -> 1080p rows. Twenty alternating rounds resolve about 2%; six do
     not resolve 5% (its log).
@@ -38,6 +39,8 @@ consists of, is in [throughput-ceiling.md](throughput-ceiling.md).
     per pixel on the Pi for the resizer and QImage alike. 720p -> 4K RGB32 is 1% under the threshold.
 - Windows throttles an unfocused console process onto E-cores: such runs came out 2-4x slow. The test runner opts out
   through `runCatchSession` (cpp-template-utils).
+- macOS runs a background-QoS process on the E-cores: the M1 is 7x slower under `taskpolicy -b`. A run at the default
+  QoS lands on a P-core.
 - A Pi 4 without cooling throttles under sustained load: `vcgencmd get_throttled` must print `0x0` after a run.
 - A/B rounds alternate the builds.
 - Under MSVC on the PC, the 3x upscale rows move 5-10% with where the kernel's loops land in memory, with no change to
@@ -93,12 +96,15 @@ In `scripts/perf/`, each with `--help`:
 |---|---|
 | `run_benchmark_rounds.py` | Runs several builds' test executables in alternating rounds, one result file per run, and prints the other processes' CPU time over each run. `--no-controls` leaves out the QImage and SSE4.1 runs, about half of a round; `--controls-only` runs the QImage controls alone. `--pinned NAME=MASK`, repeatable, runs each build once per named series at the same time, each pinned to a hexadecimal affinity mask and at high priority on Windows, with results in a directory per series: a hybrid CPU's two core types in one run. |
 | `compare_benchmark_rounds.py` | Per benchmark, each build against a reference build: the median of same-round ratios and the minimum-to-minimum ratio, the two figures of the per-CPU logs' A/B tables. `--rounds` prints each build's time in each round instead: a row that reads two levels by launch shows there. `--controls` reads the QImage controls in place of the resizer. |
+| `build_revisions.py` | Builds the tests of git revisions, each in a tree of its own: the revision's `git archive` with the three sibling repositories linked beside it at their current state, built by this checkout's `run_tests --build-only`. The executable lands in `<out>/bin/<label>`, the label the short hash; `--patch` applies a diff to every tree and appends its file name to the label. A tree keeps its build, for listings. Labels already built are skipped. |
+| `find_benchmark_steps.py` | Reads a history scan, builds in history order run once each by `run_benchmark_rounds.py`: each build against the one before, and the steps that persist over three builds on each side. Only the rows one run resolves: serial, 1 ms or more. `--tsv` writes every row's time per build. |
 | `count_boundary_jumps.py` | Counts the kernels' jumps that cross or end on a 32-byte boundary in a `dumpbin` or x86 `objdump` listing. A padded build counts under 1%, a plain one 15-25%. `--loops` prints the loops holding such jumps. |
 | `extract_kernels.py` | Prints a listing's kernels in a form two builds diff in: padding dropped, a jump's target as its distance in instructions. `--loops` numbers each kernel's loops and prints their sizes, multiplies, calls and stack references, `--stack-references` the referencing instructions too. `--loop N` prints one loop's instructions. Takes ARM64 `objdump` listings as well. |
 | `annotate_vtune_hotspots.py` | Sums a VTune by-address hotspots report over the kernels' loops of a listing, or over each instruction. |
 | `multiply_add_ceiling.cpp` | A standalone program: the two passes' multiply-adds without the kernel's bookkeeping, and other forms of the horizontal pass, by section. Builds for AVX2, plain x64 and ARM64. Its header has the build commands. |
 
-The builds to compare are made by hand, the toolchain paths differing per machine:
+A revision, or a patch on one, builds with `build_revisions.py`. Other builds are made by hand, the toolchain paths
+differing per machine:
 
 1. A second worktree beside the checkout, `git worktree add ../image-processing-ab <commit>`: the tests reach the
    sibling repositories by relative path.
@@ -124,6 +130,7 @@ The builds to compare are made by hand, the toolchain paths differing per machin
 | [ubuntu-24.04-arm](cpu/neoverse-n2.md) | Cobalt 100 (Neoverse N2), 4 cores | 1 MB private L2 per core | GCC and Clang jobs |
 | [ubuntu-latest, windows-latest](cpu/x64-ci-runners.md) | 2 cores, 4 threads, varying by run. Seen: AMD EPYC 9V45 (Zen 5), 9V74 (Zen 4), 7763 (Zen 3); Xeon Platinum 8573C, 8370C, Xeon 6973P-C | Private L2 per core: 1 MB on Zen 4 and 5, 512 KB on Zen 3, 2 MB on the Xeons (1.25 MB on the 8370C) | GCC and Clang; MSVC and clang-cl |
 | [macos-latest](cpu/apple-m1.md) | Apple M1 (virtual), 3 cores | 12 MB L2 | Apple Clang |
+| [Mac mini](cpu/apple-m1.md) | Apple M1: 4 P-cores, 4 E-cores | P-cores: 128 KB L1D, 12 MB L2 shared; 128-byte lines | Apple Clang 21.0, Qt 6.11.2 |
 
 ## Standing against Qt
 
@@ -858,8 +865,8 @@ the batched horizontal loop lost it (threaded upscales +33% to +72%); Clang's ba
 - Against the per-column loop with plain stores (the Pi's log): threaded upscales of 32-byte layouts +5% to +6% under
   GCC and +3% to +8% under Clang, the price of not depending on detection; threaded 720p -> 4K RGB24 +12% under GCC,
   -17% under Clang; single-threaded rows within 3.5%, 4K -> 1080p Grayscale8 -3% to -7%.
-- Neoverse N2 pays nothing for it: threaded upscales within 2.5% under GCC and Clang (its log). The M1 runner shows
-  no collapse and is too noisy for more.
+- Neoverse N2 pays nothing for it: threaded upscales within 2.5% under GCC and Clang (its log). Nor does the M1:
+  `STP` for `STNP` moves every row by 1.3% at most, the threaded upscales included (its log).
 
 ### The horizontal passes' shape is part of their tuning
 
@@ -1151,6 +1158,7 @@ With the y runs trimmed again and no room behind a run in the source buffers, ag
   that session, one binary 13.2 and 14.1 ms (open lead 23).
 - The source buffers' change alone, against the commit before it: within 2% on the 8500T and the E-core at both
   levels; on the Pi 4K -> 1080p RGB32 -2.5%.
+- M1, ten rounds against d5da600: upscales -4% to -6.6%; the strongest downscales +2.7% to +3.5% (open lead 31).
 
 ### Straight alpha premultiplied in integer outside the filters
 
@@ -1216,6 +1224,7 @@ horizontal pass filters the current one.
   sizes. At 720p -> 1080p RGB32 it takes 1.3-1.4 ms off the conversion's 1.7 ms of DRAM latency (its log, "where an
   upscale's time goes").
 - x64: no change at AVX2 on the 8500T under MSVC and clang-cl, nor at SSE4.1 on the 8500T and the 12600K's P-core.
+- M1: RGB32 and RGBA32 downscales +1.3% to +3.5%, Grayscale8 +2%, RGB24 and the colour upscales level (open lead 30).
 - One-channel rows on x64 go without: the 12600K's E-core lost 2-4% on them at SSE4.1, in two sessions, where a padded
   placement control moved nothing.
 - The next row pair's first chunk as well: nothing more (experiment 13).
@@ -1519,8 +1528,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
 16. **The destination's first touch:** in a VTune run of 720p -> 4K RGBA32 on the 8500T, the destination allocated
     inside the timed call, `touchDestPagesInOrder` takes 0.8 s against the AVX2 kernel's 6.9 s, and 2.5 s more fall
     outside the binary's sources, not attributed. Streaming stores leave the row's time unchanged (experiment 21).
-17. **`STNP` on Apple Silicon is unmeasured** beyond the CI runner's noise. Why the A72 detects a stream of plain
-    stores in one build and not in another is not found. Lead 8 may be the same effect.
+17. **Why the A72 detects a stream of plain stores in one build and not in another** is not found ("NEON stores its
+    output blocks with `STNP`"). Lead 8 may be the same effect.
 18. **What the horizontal loop executes besides arithmetic** (8500T, VTune, MSVC, 4K -> 1080p RGB32):
     - The per-column loop is 65% of the kernel, conversion 18%, the vertical pass 16%.
     - It retires about 3.3 instructions per cycle: instruction count limits it, not stalls or the shuffle port.
@@ -1632,3 +1641,10 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
         cores unknown.
       - A 128-bit form of section Y could time them first.
     - Three dest rows per step are untimed.
+30. **The source prefetch on Apple Silicon** ("The next chunk's source prefetched"): without it e3520f9's RGB32 and
+    RGBA32 downscales are 1.3-4.4% faster on the M1 and no row is slower; 128-byte steps, the M1's line size, recover about three quarters
+    of that on most downscales (its log). The M1 is the only Apple core measured.
+31. **32b0a2f costs the M1's strongest downscales 2.7-3.5%** ("A run holds its weights' address, and the x runs start
+    in order"): 4K -> 64x64, 21 MP -> 175 px wide, 1080p -> 120 px wide; its upscales gain 4-6.6%. The halves are not
+    measured apart. The y runs trimmed again fit the upscale gain; the source buffers without room behind a run are the
+    suspect for the downscales, which slide them most.

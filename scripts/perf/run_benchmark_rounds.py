@@ -65,6 +65,14 @@ def process_cpu_seconds():
         for line in listing.splitlines():
             process_id, seconds, name = line.split("|", 2)
             processes[int(process_id)] = (float(seconds), name)
+    elif system == "Darwin":
+        # time is [[dd-]hh:]mm:ss.ss; comm is the executable's path, which may hold spaces
+        listing = subprocess.run(["ps", "-A", "-o", "pid=,time=,comm="], capture_output=True, text=True).stdout
+        for line in listing.splitlines():
+            process_id, cpu_time, path = line.split(None, 2)
+            days, _, clock = cpu_time.rpartition("-")
+            seconds = sum(float(part) * 60 ** power for power, part in enumerate(reversed(clock.split(":"))))
+            processes[int(process_id)] = (int(days or 0) * 86400 + seconds, Path(path).name)
     return processes
 
 

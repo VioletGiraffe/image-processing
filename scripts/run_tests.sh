@@ -6,6 +6,7 @@
 #   --benchmark - benchmarks instead of tests
 #   --debug     - the debug configuration; the default is release
 #   --no-build  - runs what is already built
+#   --build-only - builds and runs nothing
 # The remaining arguments go to the Catch2 runner: a test spec narrows either mode, options such as --benchmark-samples 50 override the defaults.
 # Tests: exclusions alone, e.g. ~[slow], get ~[.] added; see the test run below.
 # qmake comes from $QT_ROOT_DIR/bin when that is set, otherwise from PATH.
@@ -16,11 +17,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG=release
 BENCHMARK=0
 BUILD=1
+BUILD_ONLY=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--benchmark) BENCHMARK=1 ;;
 		--debug) CONFIG=debug ;;
 		--no-build) BUILD=0 ;;
+		--build-only) BUILD_ONLY=1 ;;
 		*) break ;;
 	esac
 	shift
@@ -39,6 +42,7 @@ if [ "$BUILD" = 1 ]; then
 	"${QT_ROOT_DIR:+$QT_ROOT_DIR/bin/}qmake" image-processing-tests.pro -config "$CONFIG" CONFIG+="$CONFIG"
 	make -j"$(getconf _NPROCESSORS_ONLN)"
 fi
+if [ "$BUILD_ONLY" = 1 ]; then exit 0; fi
 
 BINARIES="$ROOT/tests/bin/$CONFIG"
 EXECUTABLE="$BINARIES/image-processing-tests"
