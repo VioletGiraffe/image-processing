@@ -33,11 +33,12 @@ Image resizer with hand-optimized SIMD kernels for x64 and ARM64
 
 ## Dependencies
 
-- [htpps://github.com/VioletGiraffe/cpp-template-utils](cpp-template-utils) header-only module - put it alongside this repo.
+- [cpp-template-utils](https://github.com/VioletGiraffe/cpp-template-utils) header-only module - put it alongside this repo.
 - Qt only for the bridge, the tests and `resize-comparison`.
 
 ## Docs
 
 - [doc/resize-performance.md](doc/resize-performance.md): measurements behind the design, and the experiments that lost.
+- [doc/throughput-ceiling.md](doc/throughput-ceiling.md): the kernels against the hardware's multiply-add ceiling.
 - [doc/cpu/](doc/cpu/): per-CPU measurement logs.
 - [doc/tests_spec.md](doc/tests_spec.md): test work still to add.

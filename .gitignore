@@ -21,4 +21,5 @@ tests/build/
 /resize-comparison/bin/
 /resize-comparison/build/
 /scripts/local-env.*
+/AGENTS.local.md
 .qmake.stash

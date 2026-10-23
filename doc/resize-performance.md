@@ -1441,6 +1441,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
 6. **Placement still moves MSVC's AVX2 upscale rows about 5%** with `/QIntel-jcc-erratum`, and the SSE4.1 ones, built
    without it, up to 12-14%. Which loop of the upscale path reacts is unidentified: padding at the kernel's start shifts
    them all together. MSVC has no loop alignment control; clang-cl's code for the reduced loop does not react.
+   - Since 6bb1cec the 8500T's AVX2 RGB32 upscales move under 0.4% with 32 bytes of padding, where they moved 6-8.5%;
+     the P-core's up to 4.5%. The other rows are not remeasured.
 7. **`/QIntel-jcc-erratum` on the SSE4.1 level is untested on a Sandy Bridge.** Every CPU measured so far loses with it or
    is indifferent (the section on jumps and 32-byte boundaries).
 8. **GCC's 720p -> 4K RGBA32 on Neoverse-N2 moves 10% with the binary's layout** (the call-site attribute notes): 24.1 or
@@ -1458,6 +1460,9 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
 11. **MSVC against clang-cl on the N4100, after the one-channel fixes:** clang-cl ahead by 12% on the Grayscale8
     downscale and 5% on the RGBA32 downscale, MSVC by 4-5% on the RGB32 and RGB24 downscales. The listings of those
     kernels have not been compared.
+    - Not remeasured since eb92f4a. Until then MSVC's SSE4.1 tap loop copied every sum back and kept an accumulator on
+      the stack for 4-vector blocks, Grayscale8's and RGBA32's among them ("The listed tap loop accumulates into
+      locals"): the likely cause of both rows.
 12. **Four chains at NEON leave GCC no spare register:** 16 accumulators, 2 weight registers and the block's 16 pixel
     vectors loaded ahead of the multiplies. On the Pi two chains gain GCC 4-6% on downscales, and cost Clang 8% on
     4K -> 64x64 and 3% on 101 MP -> 720p (its log). Not adopted. Neoverse-N2 and Apple Silicon are unmeasured.
@@ -1477,6 +1482,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
       the stack where MSVC's reloads 5, and copies registers: no single cause, no source form tried.
     - The i3-2310M, the SSE4.1 CPU without the erratum, had MSVC ahead by 7-9% on those rows at e8d2d15: not remeasured
       since the tail loop went scalar.
+    - None of this is remeasured since eb92f4a, which took the copies and the stack accumulator out of MSVC's tap loop
+      at SSE4.1, AVX and AVX2. Grayscale8's tap loop at AVX2 was among those it changed.
 15. **The cap of 4 bands leaves threads idle:** a band per thread takes 18-29% off the threaded rows on the 8500T (6
     bands) and 21-36% on the PC (16), 4K -> 64x64 aside (their logs).
     - A count that is not a multiple of the pool's threads loses the gain: 8 bands on 6 threads run like 4.
@@ -1571,3 +1578,15 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     - Sources of one size to one target size share their weights whole.
     - On the Pi at 720p -> 1080p RGB32 the weights, allocations and the rest outside the kernel's loops take 0.2 of
       27.7 ms.
+27. **Weights broadcast from memory for the E-core** (12600K): in the ceiling program's triples loop, broadcast weights
+    (F12) run 9-12% faster than lane weights (F11) on the E-core, up to 11.5% slower on the big cores, level on the
+    8500T under MSVC ([throughput-ceiling.md](throughput-ceiling.md), "Four-tap runs"). The kernel takes lane weights,
+    and the E-core's whole upscales moved -1.6% to +1.9% with triples ("Upscales' x runs three at a time"). A resize's
+    threads run on both core types, so the form cannot follow the core: the open question is a form level on the big
+    cores.
+28. **MSVC's RGBA32 upscales at SSE4.1 trail clang-cl's by 2%** (8500T): 7.45 against 7.29-7.33 ms since eb92f4a. Before
+    it VTune put 0.1 s of the 0.3 s gap in the horizontal pass, its conversion loop the same instructions under both
+    compilers (the 8500T's log, "MSVC's vertical tap loop: accumulators in locals"). No cause found.
+29. **More accumulators in the vertical pass** ([throughput-ceiling.md](throughput-ceiling.md), "What follows"): on the
+    8500T the FMA units' bound for that pass is 12 cycles. More independent accumulators, or two chains each, are
+    untried; the ceiling program can time them first, as it did the run triples.
