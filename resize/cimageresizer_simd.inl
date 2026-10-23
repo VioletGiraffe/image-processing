@@ -1202,6 +1202,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 		// FourHeldTaps: a ListedTaps of 4, with its row pointers and broadcast weights taken once for the dest row, so that the
 		// block loop loads only the temp rows' floats. listed serves the pixels past the blocks.
+		// Padded to the vectors' alignment by design: only ever a local of the row loop.
+		STORE_COMPILER_WARNINGS
+		DISABLE_MSVC_WARNING(4324)
 		struct FourHeldTaps
 		{
 			ListedTaps listed;
@@ -1214,6 +1217,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			Floats8 weight2;
 			Floats8 weight3;
 		};
+		RESTORE_COMPILER_WARNINGS
 
 		[[nodiscard]] IMAGE_PROCESSING_SIMD_INLINE FourHeldTaps heldFourTaps(const ListedTaps& taps) noexcept
 		{
