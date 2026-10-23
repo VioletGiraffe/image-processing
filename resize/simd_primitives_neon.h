@@ -43,6 +43,8 @@ namespace ImageProcessing::Detail::Neon
 	inline constexpr bool verticalTapsListed = false;
 	// Dest rows the vertical pass filters per step. 1: a pair needs the listed taps
 	inline constexpr size_t verticalDestRowsPerStep = 1;
+	// Held taps need the listed taps too
+	inline constexpr bool verticalFourTapsHeld = false;
 	// As at SSE4.1. On the boundary: no other start is measured at NEON
 	inline constexpr size_t tempRingStartOffset = 0;
 	// 4-tap x runs of 4-float pixels filtered three at a time, their shared source pixels loaded once: Cortex-A72 loads 16 bytes per cycle

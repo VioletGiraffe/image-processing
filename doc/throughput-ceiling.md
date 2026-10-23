@@ -516,7 +516,9 @@ weight broadcast from memory and its row pointer loaded. The better of two runs,
   - Fewer loads per multiply-add in the vertical pass: its loads and its latency bind alike, 16 cycles against the FMA
     units' 12. Two dest rows over their windows' union take 33-38% off the tap loop at 2x and 18-25% at 3x ("The vertical
     tap loop's forms"). In the kernel at AVX2 for downscales of 2x and more: whole rows up to 10% faster
-    ([resize-performance.md](resize-performance.md), "Two dest rows per step on downscales at AVX2").
+    ([resize-performance.md](resize-performance.md), "Two dest rows per step on downscales at AVX2"). Held taps, -22% to
+    -30% off the 3x tap loop, are in the kernel at the x64 levels for 4-tap rows: whole upscales 2-6% faster at AVX2 on
+    the big cores, up to 5% at SSE4.1, 5-14% at AVX on Sandy Bridge ("Four y taps held across the dest row").
   - The source prefetched while the horizontal pass runs: the conversion's DRAM stalls. The next chunk's prefetch is in the
     kernel: no change on the 8500T, faster on the Pi ([resize-performance.md](resize-performance.md), "The next chunk's
     source prefetched").
