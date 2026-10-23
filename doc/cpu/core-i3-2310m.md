@@ -399,3 +399,22 @@ alternating rounds, median of same-round ratios / minimum to minimum. The SSE4.1
 - Placement control, MSVC, a second session: both builds also with 32 bytes of `__nop()` at the start of
   `resizeRowsWith`. The padding alone moved 6bb1cec's rows 1.4% at most; the triples took the upscales 6.0-9.5% faster
   against the padded build, padded or not, the 1080p -> 720p control level.
+
+## Four y taps held across the dest row
+
+AVX's vertical pass holding a 4-tap dest row's row pointers and weights in registers, as AVX2 and SSE4.1 do since
+e70ecc5, against e70ecc5: each compiler against its own build, four alternating rounds of the "Common" sections, median
+of same-round ratios / minimum to minimum.
+
+| Scenario, AVX | e70ecc5, MSVC, min ms | Held, MSVC | Held, clang-cl |
+|---|---:|---:|---:|
+| 720p -> 4K RGBA32 | 43.92 | -5.1% / -5.5% | -17.0% / -14.3% |
+| 720p -> 4K RGB32 | 38.53 | -11.0% / -6.7% | -14.4% / -13.6% |
+| 720p -> 4K RGB24 | 33.87 | +2.2% / -8.7% | -14.3% / -14.4% |
+| 720p -> 4K Grayscale8 | 13.86 | -10.0% / -11.9% | -9.2% / -6.3% |
+
+- MSVC's held RGB24 upscale took 31 ms in two rounds and 39-41 ms in the other two.
+- The downscales within 1.6%, but MSVC's 4K -> 1600x900 -2.9%; native size, the same code, -15.8% minimum to minimum
+  under MSVC.
+- The held loops have no stack references but RGB32's alpha tails, as at AVX2.
+- The test executable: MSVC 3.63 -> 3.91 MB, clang-cl 4.69 -> 5.02 MB.

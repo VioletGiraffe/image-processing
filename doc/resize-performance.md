@@ -825,7 +825,7 @@ loaded once for both rows' accumulators. RGB32 and RGB24 take two blocks per row
 
 ### Four y taps held across the dest row
 
-At AVX2 and SSE4.1 a dest row of four listed taps, Catmull-Rom's window on an upscale, takes them as `FourHeldTaps`
+At AVX2, AVX and SSE4.1 a dest row of four listed taps, Catmull-Rom's window on an upscale, takes them as `FourHeldTaps`
 (`verticalFourTapsHeld`): their row pointers and broadcast weights stay in registers across the row, and the block loop
 loads only the temp rows' floats.
 - The tap loop alone: -22% to -30% at 3x in the ceiling program's section Y on the 8500T and both 12600K cores
@@ -837,10 +837,12 @@ loads only the temp rows' floats.
   MSVC the 720p -> 4K rows: the 8500T -0.7% to -5.1%, the 12600K's E-core -3.5% to -5.4%, Grayscale8 level there.
   clang-cl's unpadded SSE4.1 kernels moved by placement in that build, downscales -11% to +12% (open lead 5), and its
   upscales' -6% to -17% are not attributable.
+- At AVX, without FMA, the i3-2310M's 720p -> 4K rows: -5.5% to -11.9% under MSVC and -6.3% to -14.4% under clang-cl,
+  minimum to minimum over four rounds (its log).
 - A third of the rows at exact 3x have one tap and keep the listed loop.
 - The sums are the listed loop's to the bit: the taps are added in the same order.
-- Each kernel carries a second vertical pass: the test executable 10% larger under MSVC and clang-cl, three quarters of it
-  AVX2's.
+- Each kernel carries a second vertical pass: the test executable 18% larger under MSVC and clang-cl, AVX2's and AVX's
+  kernels two fifths of that each.
 
 ### The horizontal filter takes the source buffers' range by value
 
@@ -1636,8 +1638,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
         cores unknown.
       - A 128-bit form of section Y could time them first.
     - Three dest rows per step are untimed.
-26. **Held y taps beyond AVX2's and SSE4.1's 4-tap rows** ("Four y taps held across the dest row"):
-    - AVX untimed: the i3-2310M judges it. NEON walks its taps, and holding them needs the list.
+26. **Held y taps beyond the x64 levels' 4-tap rows** ("Four y taps held across the dest row"):
+    - NEON walks its taps, and holding them needs the list.
     - Other tap counts take the listed loop: the single-tap rows, a third of a 3x upscale, and Lanczos3's 6-tap upscales.
     - Without a placement control: the 12600K's E-core reads its AVX2 upscales -1.3% to +3.2%, and clang-cl's SSE4.1
       build moved by placement. The N4100 is unmeasured.
