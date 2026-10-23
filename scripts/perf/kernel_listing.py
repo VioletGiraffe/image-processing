@@ -1,5 +1,5 @@
 # Reads a disassembly listing into functions of instructions, for the scripts beside it.
-# Takes `dumpbin /disasm` and `objdump -d` output, both with the instruction bytes: a length comes from its bytes.
+# Takes `dumpbin /disasm` and `objdump -d` output, GNU's and macOS's, all with the instruction bytes: a length comes from its bytes.
 import re
 from dataclasses import dataclass
 
@@ -23,6 +23,8 @@ class Instruction:
 _DUMPBIN_INSTRUCTION = re.compile(r"\s+([0-9A-F]{8,16}): ((?:[0-9A-F]{2} ?)+?)\s+([a-z][a-z0-9]*)\s*(.*)")
 _DUMPBIN_MORE_BYTES = re.compile(r"\s+((?:[0-9A-F]{2} ?)+)")
 _OBJDUMP_LABEL = re.compile(r"[0-9a-f]+ <(.+)>:")
+# macOS's llvm-objdump starts an instruction line with its address and pads its bytes with spaces before the tab
+_UNINDENTED_OBJDUMP_INSTRUCTION = re.compile(r"([0-9a-f]+:) ([0-9a-f]+(?: [0-9a-f]+)*) *\t(.*)")
 # x86 jumps; ARM64 branches, without the calls (bl, blr) and the computed ones (br)
 _JUMP_MNEMONIC = re.compile(r"j[a-z]+|b|b\.[a-z]+|cbn?z|tbn?z")
 _MULTIPLY_MNEMONIC = re.compile(r"v?mul[ps]s|vfn?m(?:add|sub)\d+[ps]s|fmul|fmla|fmls|fmadd")
@@ -44,6 +46,10 @@ def read_functions(path, name_pattern=KERNEL_PATTERN):
             line = line.rstrip("\r\n")
             if not line:
                 continue
+
+            unindented = _UNINDENTED_OBJDUMP_INSTRUCTION.fullmatch(line)
+            if unindented:
+                line = " " + "\t".join(unindented.groups())  # GNU's layout
 
             if not line[0].isspace():
                 label = _OBJDUMP_LABEL.fullmatch(line)
