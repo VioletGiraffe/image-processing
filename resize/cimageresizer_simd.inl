@@ -1184,22 +1184,39 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 		template <size_t BlockFloats, size_t Blocks>
 		IMAGE_PROCESSING_SIMD_INLINE void filterTapsIntoBlocks(const ListedTaps& taps, size_t sourceOffset, BlockAccums& first, [[maybe_unused]] BlockAccums& second) noexcept
 		{
+			// Accumulates into locals with addProduct written out: through first and second, or through addTapToBlock, MSVC copies every sum back each tap and keeps an accumulator on the stack
+			BlockAccums firstAccums, secondAccums;
 			{
 				const Floats8 weightVector = broadcastFloats8(taps.weights[0]);
 				const float* const source = taps.rows[0] + sourceOffset;
-				assignTapToBlock<BlockFloats>(first, source, weightVector);
+				assignTapToBlock<BlockFloats>(firstAccums, source, weightVector);
 				if constexpr (Blocks == 2)
-					assignTapToBlock<BlockFloats>(second, source + BlockFloats, weightVector);
+					assignTapToBlock<BlockFloats>(secondAccums, source + BlockFloats, weightVector);
 			}
 
 			for (size_t tap = 1; tap < taps.count; ++tap)
 			{
 				const Floats8 weightVector = broadcastFloats8(taps.weights[tap]);
 				const float* const source = taps.rows[tap] + sourceOffset;
-				addTapToBlock<BlockFloats>(first, source, weightVector);
+				addProduct(firstAccums.accum0, loadFloats8(source), weightVector);
+				addProduct(firstAccums.accum1, loadFloats8(source + 8), weightVector);
+				addProduct(firstAccums.accum2, loadFloats8(source + 16), weightVector);
+				if constexpr (BlockFloats == 32)
+					addProduct(firstAccums.accum3, loadFloats8(source + 24), weightVector);
 				if constexpr (Blocks == 2)
-					addTapToBlock<BlockFloats>(second, source + BlockFloats, weightVector);
+				{
+					const float* const secondSource = source + BlockFloats;
+					addProduct(secondAccums.accum0, loadFloats8(secondSource), weightVector);
+					addProduct(secondAccums.accum1, loadFloats8(secondSource + 8), weightVector);
+					addProduct(secondAccums.accum2, loadFloats8(secondSource + 16), weightVector);
+					if constexpr (BlockFloats == 32)
+						addProduct(secondAccums.accum3, loadFloats8(secondSource + 24), weightVector);
+				}
 			}
+
+			first = firstAccums;
+			if constexpr (Blocks == 2)
+				second = secondAccums;
 		}
 
 		template <size_t BlockFloats, size_t Blocks>

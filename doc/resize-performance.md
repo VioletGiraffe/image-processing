@@ -794,6 +794,17 @@ Each primitives header states its level's form in `verticalTapsListed`. Both for
   tap; GCC keeps the scalar load and multiplies by its lane. Clang's `float` list is the worse of its two for that.
 - The restructured code matches the experiments' inline form on the 8500T, the i3-2310M and the Pi.
 
+### The listed tap loop accumulates into locals
+
+`filterTapsIntoBlocks` over `ListedTaps` accumulates into local blocks, each product written out in the loop, and hands
+them to the caller after it.
+- Through the caller's blocks or through `addTapToBlock`, MSVC computed each sum in a second register, copied it back
+  and kept an accumulator on the stack, at every x64 level: the RGBA32 tap loop took 45 instructions at SSE4.1 for
+  clang-cl's 30, and 29 at AVX2 for 13. Which kernels it hit moved with unrelated changes to the kernel function.
+- 8500T, MSVC: RGBA32 upscales -8% to -9% at SSE4.1 and -6.5% to -7% at AVX2, RGB32 upscales -5% to -6% at AVX2 and
+  level at SSE4.1 (its log). clang-cl's code is unchanged.
+- NEON walks its taps, through `addTapToBlock`.
+
 ### The horizontal filter takes the source buffers' range by value
 
 `filterHorizontalRowGroup` prepares the source buffers for one column, then `filterBufferedRuns` filters every following
@@ -1221,9 +1232,9 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON take their runs th
   pattern are the difference.
 - A strip's columns before its first whole triple and after its last are filtered one at a time.
 - x64 filters its runs one at a time: open lead 27.
-- SSE4.1 does too. Under MSVC a triple's windows and broadcast weights outgrow the 16 registers, and part of them goes
-  through the stack. On the 8500T: RGB32 upscales 0.2-4.5% slower, RGBA32 5.5-7.6% faster (its log, "x runs three at
-  a time, at SSE4.1").
+- SSE4.1 does too. On the 8500T triples are slower or level under both compilers: RGB32 upscales up to 3.3% under MSVC
+  and 6.5% under clang-cl, RGBA32 up to 11% and 3.1% (its log, "x runs three at a time, at SSE4.1"). Under MSVC a
+  triple's windows and broadcast weights outgrow the 16 registers, and part of them goes through the stack.
 
 ## Experiments that lost
 

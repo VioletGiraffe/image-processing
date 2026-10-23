@@ -50,7 +50,7 @@ namespace ImageProcessing::Detail::Sse41
 	inline constexpr bool verticalTapsListed = true;
 	// The temp ring's start, in floats past a 64-byte boundary. 16 bytes past: Goldmont Plus is 2-6% slower from the boundary, other cores within 1%
 	inline constexpr size_t tempRingStartOffset = 4;
-	// x runs one at a time: MSVC spills the triples' windows and weights from its 16 registers. Coffee Lake: RGB32 upscales up to 4.5% slower, RGBA32 5.5-7.6% faster
+	// x runs one at a time: triples slow Coffee Lake's upscales by up to 11% under MSVC and 6.5% under clang-cl
 	inline constexpr bool xRunTriplesFiltered = false;
 
 	IMAGE_PROCESSING_SIMD_INLINE void leaveKernel() noexcept {}

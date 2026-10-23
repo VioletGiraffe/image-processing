@@ -874,3 +874,69 @@ builds: the control.
 
 - MSVC's listing of the pattern bodies keeps part of a triple's window and broadcast weights on the stack: three
   columns' 12 weights and up to 6 pixels outgrow the 16 registers, every SSE multiply needing a copy of its operand.
+
+clang-cl, the same builds' sources, ten alternating rounds:
+
+| Scenario | Runs one at a time, min ms | Triples |
+|---|---:|---:|
+| 960x540 -> 1920x1080 RGB32 | 5.33 | +6.1% / +3.0% |
+| 1280x720 -> 1920x810 RGB32 | 5.19 | +6.5% / +3.5% |
+| 1280x720 -> 1920x1080 RGB32 | 6.05 | +4.8% / +3.3% |
+| 1280x720 -> 1920x1440 RGB32 | 7.21 | +1.2% / +2.6% |
+| 1080p -> 1440p RGB32 | 11.56 | +1.9% / +1.8% |
+| 720p -> 4K RGB32 | 16.73 | +1.8% / +2.0% |
+| 1280x720 -> 1920x1080 RGBA32 | 7.29 | -1.6% / +2.3% |
+| 1080p -> 1440p RGBA32 | 13.98 | +3.1% / +3.1% |
+| 1280x720 -> 1920x1080 RGB32, AVX2 | 4.14 | +0.0% / +0.2% |
+| 1080p -> 1440p RGB32, AVX2 | 8.01 | -0.0% / +0.4% |
+
+- MSVC's RGBA32 gain is not the triples': with them on, MSVC happened to compile the vertical tap loop without the copies
+  of the next section. With that loop fixed, triples cost MSVC's RGBA32 upscales 9.7-11.2% (7.47 -> 8.31 ms, 14.37 ->
+  15.76) and its RGB32 upscales up to 3.3%, ten alternating rounds.
+
+## MSVC's vertical tap loop: accumulators in locals
+
+clang-cl's RGBA32 upscales at SSE4.1 were 11-12% faster than MSVC's: 7.29 against 8.16 ms. VTune hotspots on 300
+resizes of 1280x720 -> 1920x1080 RGBA32 at SSE4.1, split by the kernel's two call lines and by loop address ranges:
+
+| Part | MSVC, s | clang-cl, s |
+|---|---:|---:|
+| Horizontal pass, conversion included | 0.964 | 0.864 |
+| Vertical pass and output | 1.357 | 1.155 |
+| of which the tap loop | 0.806 | 0.582 |
+
+- The tap loop held three quarters of the gap: 45 instructions per tap under MSVC for clang-cl's 30, the same loads,
+  multiplies and adds. MSVC computed each sum in a second register, copied it back, and kept one of the 8 accumulators
+  on the stack. Its AVX2 tap loop: 29 instructions for 13.
+- The horizontal pass's 0.1 s has no codegen difference behind it: the conversion loops match instruction for instruction.
+- Accumulators in local blocks with the products written out compile to clang-cl's loop at every x64 level. Local
+  blocks through `addTapToBlock`, or the products written out on the caller's blocks, kept the copies.
+
+MSVC, the change against the tree before it, two sets of ten alternating rounds, median of same-round ratios / minimum
+to minimum:
+
+| Scenario | Before, min ms | After |
+|---|---:|---:|
+| 960x540 -> 1920x1080 RGB32 | 5.50 | +0.8% / +0.7% |
+| 1280x720 -> 1920x810 RGB32 | 5.34 | -1.4% / +0.7% |
+| 1280x720 -> 1920x1080 RGB32 | 6.23 | +2.2% / +0.6% |
+| 1280x720 -> 1920x1440 RGB32 | 7.69 | -5.1% / -2.7% |
+| 1080p -> 1440p RGB32 | 11.89 | +0.5% / +0.5% |
+| 720p -> 4K RGB32 | 17.28 | +0.8% / +1.0% |
+| 1280x720 -> 1920x1080 RGBA32 | 8.20 | -12.1% / -9.1% |
+| 1080p -> 1440p RGBA32 | 15.59 | -7.9% / -8.0% |
+| 1080p -> 720p RGB32 | 8.05 | +0.7% / +0.5% |
+| 4K -> 1080p RGB32 | 28.70 | -1.0% / -1.1% |
+| 1080p -> 720p RGBA32 | 10.57 | -7.5% / -7.6% |
+| 4K -> 1080p RGBA32 | 34.88 | -0.3% / -0.4% |
+| 1280x720 -> 1920x1080 RGB32, AVX2 | 4.34 | -3.1% / -6.0% |
+| 1080p -> 1440p RGB32, AVX2 | 8.37 | -2.7% / -5.4% |
+| 1280x720 -> 1920x1080 RGBA32, AVX2 | 5.04 | -6.7% / -6.9% |
+| 1080p -> 1440p RGBA32, AVX2 | 9.69 | -7.0% / -6.5% |
+| 1080p -> 720p RGB32, AVX2 | 5.09 | -0.2% / -0.4% |
+| 4K -> 1080p RGB32, AVX2 | 17.89 | -1.6% / -1.6% |
+| 4K -> 1080p RGBA32, AVX2 | 21.48 | -2.4% / -2.3% |
+
+- Rows without AVX2 run at SSE4.1. The 960x540 row came out +7.0% / +1.1% in a first set, the change at 5.9 ms in nine
+  of ten rounds; it did not repeat.
+- MSVC's RGBA32 upscales at SSE4.1 now trail clang-cl's by 2%: 7.45 against 7.29-7.33 ms.
