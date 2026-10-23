@@ -493,8 +493,9 @@ Cycles per column pair, the mean of two runs, Clang's up to 5% apart, GCC's with
     source prefetched").
 - At NEON one chain per row at 4 taps is in the kernel ([resize-performance.md](resize-performance.md), "4-tap runs of
   4-float pixels in one chain per row at NEON"), and so are columns sharing their source pixels' loads, from a record
-  per triple of columns ("Upscales' x runs three at a time"): U13's 19-25% off the loop, 19% in the kernel. AVX2 takes
-  them over its interleaved row pairs, F11's form: whole upscales 4-7% faster on the 8500T, 5-9% on the P-core.
+  per triple of columns ("Upscales' x runs three at a time"): U13's 19-25% off the loop, 19% in the kernel. AVX2 and AVX
+  take them over their interleaved row pairs, F11's form: whole upscales 4-7% faster on the 8500T, 5-9% on the P-core,
+  6-9% at AVX on the i3-2310M.
 - The room is in the work per multiply-add. Stepped pointers in the passes and the block loop took 3-7% of it (the
   main doc's sections on them); the horizontal form itself is the larger term.
 - **The interleaved form is in the kernel** for the 4-float layouts' row pairs at padded lengths, with lane weights

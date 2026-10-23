@@ -375,3 +375,27 @@ Eight alternating rounds of plain and AVX: the threaded rows, 4K -> 64x64 and 10
 - Plain 4K -> 1080p RGBA32: 88.3 ms, against 85.2 at 1e18e27 in another session; VEX encoding alone takes 11.7% off
   it. Not investigated.
 - The tests pass under both builds on the 12600K at both levels.
+
+## x runs three at a time over the interleaved row pairs
+
+AVX's run triples, as AVX2 takes them since 6bb1cec, against 6bb1cec: each compiler against its own build, ten
+alternating rounds, median of same-round ratios / minimum to minimum. The SSE4.1 rows run the same code in both builds.
+
+| Scenario | 6bb1cec, MSVC, min ms | MSVC | clang-cl |
+|---|---:|---:|---:|
+| 960x540 -> 1920x1080 RGB32 | 12.03 | -11.6% / -7.1% | -1.9% / -5.6% |
+| 1280x720 -> 1920x810 RGB32 | 11.50 | -13.6% / -9.0% | -1.8% / -8.0% |
+| 1280x720 -> 1920x1440 RGB32 | 16.23 | -6.8% / -6.6% | -4.2% / -5.4% |
+| 720p -> 4K RGB32 | 36.13 | -5.4% / -8.2% | -3.7% / -4.9% |
+| 960x540 -> 1920x1080 RGBA32 | 13.80 | -8.2% / -5.8% | -5.6% / -5.7% |
+| 1080p -> 1440p RGBA32 | 29.00 | -6.1% / -6.8% | -5.8% / -5.8% |
+| 720p -> 4K RGBA32 | 40.62 | -4.8% / -5.6% | -3.3% / -4.0% |
+| 1080p -> 720p RGB32 | 18.03 | -0.0% / +0.0% | -0.2% / -0.2% |
+| 4K -> 1080p RGBA32 | 66.15 | +0.1% / +0.0% | +0.0% / +0.0% |
+| 1280x720 -> 1920x1080 RGB32, SSE4.1 | 14.72 | -2.5% / -0.3% | -1.4% / -0.4% |
+| 1280x720 -> 1920x1080 RGBA32, SSE4.1 | 16.97 | +2.0% / +0.2% | -0.3% / -0.7% |
+
+- The medians spread up to 2.5% on the SSE4.1 rows: minimum to minimum is the reading here.
+- Placement control, MSVC, a second session: both builds also with 32 bytes of `__nop()` at the start of
+  `resizeRowsWith`. The padding alone moved 6bb1cec's rows 1.4% at most; the triples took the upscales 6.0-9.5% faster
+  against the padded build, padded or not, the 1080p -> 720p control level.
