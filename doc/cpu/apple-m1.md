@@ -10,6 +10,9 @@ holds each one's rationale.
 | macos-latest runner | Apple M1 (virtual), 3 cores, 12 MB L2, Apple Clang |
 | Mac mini (Macmini9,1), the real M1 | 4 P-cores: 128 KB L1D, 12 MB L2 shared; 4 E-cores: 4 MB L2; 128-byte cache lines. macOS 27, Apple Clang 21.0, Qt 6.11.2 |
 
+- ISA beyond NEON: FP16, FHM, DotProd, RDM; no BF16, no I8MM (`sysctl hw.optional.arm.FEAT_*`).
+- `sysctl hw.l1dcachesize` reads 64 KB, the E-cores'. A core type's own sizes are under `hw.perflevel<n>.`, 0 the P-cores.
+
 Run-to-run noise: up to 2x on the runner, too noisy to read per scenario. The Mac mini: below.
 
 ## Measuring on the Mac mini
@@ -303,6 +306,172 @@ alternating rounds:
 | 4K -> 200 px RGB32, threads | 3.26 | -0.2% / -0.3% |
 | 4K -> 200 px RGBA32, threads | 3.91 | -0.1% / +0.5% |
 - Every row within 1.3%, the threaded upscales included: the hint neither costs nor pays here.
+
+## Column strips (b9fea7e)
+
+The ring budget is half the smallest L2 share: the E-cores' 1 MB, so 512 KB. A P-core's share is 3 MB.
+
+A sweep at a1f1e22, single-threaded, through `Detail::resizeWithRingBudget`: the budgets alternating, ten rounds of three
+resizes each, a fresh destination per resize. Median ms, the strip count in parentheses; min and median within 1%.
+
+| Scenario | y run | 256 KB | 512 KB | 1 MB | 1.5 MB | 64 MB |
+|---|---:|---:|---:|---:|---:|---:|
+| 101 MP -> 1280x720 RGB32 | 73 | 134.18 (5) | 132.00 (3) | 131.57 (2) | 129.20 (1) | 129.07 (1) |
+| 101 MP -> 1920x1440 RGB32 | 37 | 141.79 (4) | 140.29 (2) | 139.20 (1) | 139.22 (1) | 139.13 (1) |
+| 101 MP -> 3840x2880 RGB32 | 19 | 169.32 (4) | 164.61 (2) | 163.29 (1) | 162.09 (1) | 162.19 (1) |
+| 50 MP -> 3840x2880 RGBA32 | 13 | 110.79 (4) | 107.98 (2) | 106.44 (1) | 106.28 (1) | 106.65 (1) |
+
+- One strip against 512 KB's 2-3: 0.8-2.3% faster. Fewer strips that are still several gain little: 0.3% from 3 to 2.
+- A single-strip ring here is 0.8-1.4 MB: past 1.5 MB the budget changes nothing.
+
+The benchmark, a1f1e22 with the budget fixed at 1.5 MB, ten alternating rounds. 101 MP -> 720p is the only row 512 KB
+splits; the rest of 2 ms and more within 1%, 720p -> 4K Grayscale8 aside (+2.0% / +0.9%).
+
+| Scenario | a1f1e22, min ms | 1.5 MB |
+|---|---:|---:|
+| 101 MP -> 720p RGB32 | 132.31 | -1.7% / -1.5% |
+| 101 MP -> 720p RGB32, threads | 37.00 | -2.1% / -2.4% |
+
+## A row pair converted in one loop
+
+a8253c4 against 67935c2, ten alternating rounds, median of same-round ratios / minimum to minimum. Rows under 0.1 ms are
+left out. Nearest neighbor converts nothing: its rows are the control.
+
+| Scenario | 67935c2, min ms | a8253c4 |
+|---|---:|---:|
+| 24 MP -> 1080p RGB32 | 37.13 | -0.6% / -0.9% |
+| 2.8 MP -> 1920x1280 RGB32 | 6.80 | -1.0% / -0.4% |
+| 4K -> 1600x900 RGB32 | 14.24 | -1.1% / -1.2% |
+| 4K -> 720p RGB32 | 12.95 | -0.9% / -1.1% |
+| 720p -> 4K RGBA32 | 7.86 | -1.4% / +0.5% |
+| 720p -> 4K RGB32 | 6.60 | +0.6% / -1.8% |
+| 1080p -> 240p RGB32 | 3.07 | -0.9% / -0.3% |
+| 1080p -> 120 px RGB32 | 2.44 | +0.2% / +0.7% |
+| 21 MP -> 175 px RGB32 | 24.50 | -0.2% / -0.5% |
+| 4K -> 200 px RGB32 | 9.85 | -0.2% / -0.2% |
+| 4K -> 200 px RGBA32 | 12.07 | -1.4% / -1.1% |
+| Native size | 0.22 | -1.7% / +11.5% |
+| 4K -> 1080p Grayscale8 | 5.76 | -1.7% / -2.2% |
+| 4K -> 1080p RGB24 | 14.50 | -0.1% / -0.1% |
+| 4K -> 1080p RGB32 | 14.48 | -1.2% / -0.9% |
+| 4K -> 1080p RGBA32 | 17.78 | -0.4% / -0.6% |
+| 720p -> 4K Grayscale8 | 2.52 | -0.2% / -0.4% |
+| 720p -> 4K RGB24 | 6.51 | -1.6% / -2.2% |
+| 1080p -> 4K NN RGB32 | 1.61 | +1.3% / -0.4% |
+| 1080p -> 4K NN RGBA32 | 1.75 | -0.5% / +0.2% |
+| 640x480 -> 1080p NN RGB32 | 0.24 | +0.3% / +0.8% |
+| 640x480 -> 1080p NN RGBA32 | 0.29 | +0.2% / -2.3% |
+| 4K -> 64x64 RGB32 | 9.54 | -1.2% / -1.3% |
+| 101 MP -> 720p RGB32 | 134.16 | -0.7% / -1.1% |
+| 24 MP -> 1080p RGB32, threads | 10.35 | -0.7% / -0.9% |
+| 4K -> 1080p RGBA32, threads | 5.01 | -0.8% / -0.8% |
+| 4K -> 1080p RGB24, threads | 4.13 | -0.0% / +0.3% |
+| 720p -> 4K RGBA32, threads | 2.31 | +0.5% / +0.2% |
+| 720p -> 4K RGB24, threads | 1.94 | -1.3% / -2.1% |
+| 1080p -> 240p RGB32, threads | 0.96 | -0.6% / -0.4% |
+| 4K -> 64x64 RGB32, threads | 3.42 | -1.3% / -0.8% |
+| 101 MP -> 720p RGB32, threads | 36.97 | -0.1% / -0.2% |
+| 1080p -> 4K NN RGB32, threads | 1.01 | -0.5% / +1.6% |
+| 1080p -> 4K NN RGBA32, threads | 1.03 | +1.5% / -3.3% |
+| 4K -> 200 px RGB32, threads | 3.25 | -0.9% / -0.5% |
+| 4K -> 200 px RGBA32, threads | 3.94 | -1.6% / -1.5% |
+- Level to 2% faster: the filtered rows +0.7% to -2.2%, none slower beyond the control's spread of 1.5%. The Pi's
+  Clang build was level too.
+- Clang's NEON kernels 12 KB smaller.
+
+## Row pairs interleaved at AVX2, at padded lengths
+
+8bba85d with `interleavedRowPairs` true at NEON, against 8bba85d: ten alternating rounds. Its tests pass. The 12-tap
+RGB32 column loop takes 56 instructions for its 24 multiply-adds, against 64.
+
+| Scenario | 8bba85d, min ms | Interleaved |
+|---|---:|---:|
+| 24 MP -> 1080p RGB32 | 37.12 | -0.5% / -0.8% |
+| 2.8 MP -> 1920x1280 RGB32 | 6.79 | -1.4% / -1.4% |
+| 4K -> 1600x900 RGB32 | 14.23 | -2.3% / -2.3% |
+| 4K -> 720p RGB32 | 12.96 | -3.6% / -3.9% |
+| 720p -> 4K RGBA32 | 7.88 | +7.3% / +7.7% |
+| 720p -> 4K RGB32 | 6.53 | +5.2% / +5.5% |
+| 1080p -> 240p RGB32 | 3.08 | +0.9% / +0.3% |
+| 1080p -> 120 px RGB32 | 2.44 | +0.5% / -0.1% |
+| 21 MP -> 175 px RGB32 | 24.50 | +0.9% / +0.1% |
+| 4K -> 200 px RGB32 | 9.88 | +0.2% / -0.0% |
+| 4K -> 200 px RGBA32 | 12.10 | -0.0% / -0.2% |
+| Native size | 0.23 | +2.0% / +17.1% |
+| 4K -> 1080p Grayscale8 | 5.78 | -0.1% / -0.1% |
+| 4K -> 1080p RGB24 | 14.49 | +0.8% / +0.8% |
+| 4K -> 1080p RGB32 | 14.53 | -0.4% / -0.0% |
+| 4K -> 1080p RGBA32 | 17.78 | +0.3% / +0.3% |
+| 720p -> 4K Grayscale8 | 2.52 | +0.0% / -0.0% |
+| 720p -> 4K RGB24 | 6.48 | +3.3% / +4.8% |
+| 1080p -> 4K NN RGB32 | 1.60 | +0.5% / +6.8% |
+| 1080p -> 4K NN RGBA32 | 1.84 | +0.4% / +0.6% |
+| 640x480 -> 1080p NN RGB32 | 0.25 | -1.1% / -3.1% |
+| 640x480 -> 1080p NN RGBA32 | 0.29 | +0.4% / +0.2% |
+| 4K -> 64x64 RGB32 | 9.53 | -0.1% / +0.1% |
+| 101 MP -> 720p RGB32 | 133.33 | -0.2% / -0.1% |
+| 24 MP -> 1080p RGB32, threads | 10.34 | -1.5% / -1.5% |
+| 4K -> 1080p RGBA32, threads | 5.02 | +0.6% / +0.8% |
+| 4K -> 1080p RGB24, threads | 4.14 | +2.6% / +2.2% |
+| 720p -> 4K RGBA32, threads | 2.31 | +4.0% / +4.3% |
+| 720p -> 4K RGB24, threads | 1.93 | +2.1% / +2.1% |
+| 1080p -> 240p RGB32, threads | 0.96 | -0.0% / +0.2% |
+| 4K -> 64x64 RGB32, threads | 3.43 | -0.0% / -0.2% |
+| 101 MP -> 720p RGB32, threads | 36.93 | +0.6% / +0.1% |
+| 1080p -> 4K NN RGB32, threads | 1.01 | -0.1% / +1.2% |
+| 1080p -> 4K NN RGBA32, threads | 1.04 | +0.0% / -2.0% |
+| 4K -> 200 px RGB32, threads | 3.24 | +0.3% / +1.0% |
+| 4K -> 200 px RGBA32, threads | 3.95 | +0.1% / -0.8% |
+- The downscales whose x runs are padded gain by run length: 4K -> 720p (17 taps) -3.6%, 4K -> 1600x900 (14-15) -2.3%,
+  2.8 MP -> 1920x1280 (6-7) -1.4%; 4K -> 1080p (12) level.
+- The upscales lose, their 4-tap runs filtered three at a time over pixel pairs: 720p -> 4K RGBA32 +7.3%, RGB32 +5.2%,
+  RGB24 +3.3%.
+- Grayscale8, the runs read per run (over 32 taps) and nearest neighbor: within 1%.
+
+The same against a1f1e22, a8253c4's conversion in both: ten alternating rounds. The variant's tests pass.
+
+| Scenario | a1f1e22, min ms | Interleaved |
+|---|---:|---:|
+| 24 MP -> 1080p RGB32 | 36.85 | +0.3% / +0.2% |
+| 2.8 MP -> 1920x1280 RGB32 | 6.79 | -1.2% / -1.3% |
+| 4K -> 1600x900 RGB32 | 14.11 | -1.7% / -1.2% |
+| 4K -> 720p RGB32 | 12.81 | -2.8% / -2.7% |
+| 720p -> 4K RGBA32 | 7.88 | +8.0% / +8.1% |
+| 720p -> 4K RGB32 | 6.48 | +5.6% / +6.0% |
+| 1080p -> 240p RGB32 | 3.05 | +1.9% / +1.4% |
+| 1080p -> 120 px RGB32 | 2.45 | +0.6% / +0.8% |
+| 21 MP -> 175 px RGB32 | 24.34 | +1.3% / +0.2% |
+| 4K -> 200 px RGB32 | 9.82 | +0.4% / +0.1% |
+| 4K -> 200 px RGBA32 | 11.95 | +0.1% / +0.0% |
+| Native size | 0.30 | -1.1% / -23.2% |
+| 4K -> 1080p Grayscale8 | 5.63 | +0.1% / +0.2% |
+| 4K -> 1080p RGB24 | 14.48 | +0.4% / +0.8% |
+| 4K -> 1080p RGB32 | 14.37 | +0.7% / +1.0% |
+| 4K -> 1080p RGBA32 | 17.64 | +0.9% / +0.9% |
+| 720p -> 4K Grayscale8 | 2.51 | +0.3% / +0.2% |
+| 720p -> 4K RGB24 | 6.35 | +5.9% / +6.6% |
+| 1080p -> 4K NN RGB32 | 1.60 | -2.7% / +0.5% |
+| 1080p -> 4K NN RGBA32 | 1.84 | +0.3% / +0.2% |
+| 640x480 -> 1080p NN RGB32 | 0.25 | -4.0% / -1.7% |
+| 640x480 -> 1080p NN RGBA32 | 0.30 | -0.5% / -0.6% |
+| 4K -> 64x64 RGB32 | 9.42 | +0.4% / +0.0% |
+| 101 MP -> 720p RGB32 | 132.78 | -0.5% / -0.1% |
+| 24 MP -> 1080p RGB32, threads | 10.28 | -0.8% / -0.8% |
+| 4K -> 1080p RGBA32, threads | 4.96 | +1.8% / +2.0% |
+| 4K -> 1080p RGB24, threads | 4.14 | +2.6% / +2.1% |
+| 720p -> 4K RGBA32, threads | 2.30 | +3.4% / +4.3% |
+| 720p -> 4K RGB24, threads | 1.89 | +3.4% / +4.1% |
+| 1080p -> 240p RGB32, threads | 0.95 | +1.1% / +1.2% |
+| 4K -> 64x64 RGB32, threads | 3.40 | -0.2% / -0.1% |
+| 101 MP -> 720p RGB32, threads | 36.92 | -0.5% / -0.6% |
+| 1080p -> 4K NN RGB32, threads | 1.01 | +0.8% / +2.5% |
+| 1080p -> 4K NN RGBA32, threads | 1.01 | +2.2% / +4.9% |
+| 4K -> 200 px RGB32, threads | 3.23 | +0.3% / +0.3% |
+| 4K -> 200 px RGBA32, threads | 3.87 | +0.1% / +0.5% |
+- a8253c4 took up to 2% off the per-row conversion and nothing off the pair conversion the variant takes: the downscale
+  gains shrink, 4K -> 720p -2.8%, 4K -> 1600x900 -1.7%, 2.8 MP -> 1920x1280 -1.2%.
+- The 12- and 27-tap rows turn slower: 4K -> 1080p RGB32 +0.7%, RGBA32 +0.9% (threaded +1.8%), 1080p -> 240p +1.9%.
+- The upscales +5.6% to +8.0%, threaded +3.4%.
 
 ## The multiply-add ceiling
 

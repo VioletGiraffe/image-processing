@@ -70,7 +70,8 @@ consists of, is in [throughput-ceiling.md](throughput-ceiling.md).
 ## Reading the generated code
 
 - The release builds use link-time optimization on every compiler, so the object files hold no machine code. Disassemble
-  the executable: `objdump -d -C`, or `dumpbin /disasm` with the PDB next to it.
+  the executable: `objdump -d -C`, or `dumpbin /disasm` with the PDB next to it. The scripts read the instruction
+  bytes: no `--no-show-raw-insn`. macOS's objdump prints Apple's syntax (`fmla.4s`), which they read too.
 - Under MSVC the kernel levels are generated differently: the SSE4.1 source at link time with the rest of the
   project, the AVX and AVX2 sources by their own compile rules. An inlining decision can differ between them.
 - Two builds' kernels compare by instruction sequence with the `nop`s and jump targets removed: `extract_kernels.py`.
@@ -577,7 +578,8 @@ loaded weights by an in-lane shuffle; the sum's halves are the two rows' temp pi
 weight over two pixels of one row with a cross-lane permute, and sums each row's halves at the end.
 
 - The 256-bit levels only (`interleavedRowPairs`): at 128 bits a register is one pixel either way, and the
-  micro-benchmark found the form within 3% ([throughput-ceiling.md](throughput-ceiling.md)). Every level has the pair primitives: GCC and Clang
+  micro-benchmark found the form within 3% ([throughput-ceiling.md](throughput-ceiling.md)). The M1 gains it 4-9% from
+  the buffer's layout alone, its whole rows not (experiment 38). Every level has the pair primitives: GCC and Clang
   look up the outline's non-dependent names in discarded branches too.
 - The conversion unpacks the two rows' 16 loaded bytes into pixel pairs, then widens them (`convertPixelPairsToFloats`).
 - The column is written out per tap in 4 chains, 1 at 4 taps: 4 chains there take 4 multiplies and 3 adds.
@@ -759,7 +761,8 @@ their premultiplies, then their stores.
   open lead 27.
 - Whole rows against 67935c2 (the CPUs' logs, "A row pair converted in one loop"): the downscales 1-6% faster at AVX2 and
   SSE4.1 on the 8500T and the 12600K, 4-16% on the i3-2310M under MSVC, 4-12% on the Pi under GCC; the Pi's Clang build
-  and the upscales level. clang-cl's i3-2310M 4K -> 200x113 RGBA32 +6%, the only steady loss.
+  and the upscales level. clang-cl's i3-2310M 4K -> 200x113 RGBA32 +6%, the only steady loss. The M1 under Apple Clang:
+  level to 2% faster.
 - clang-cl's kernels 88 KB smaller; GCC's on the Pi 0.26 MB larger.
 
 ### Output bytes packed without a clamp
@@ -934,6 +937,7 @@ only the strip's source span (29b97e9).
 | Pi 4 | 256 KB (1 MB, four cores) | 128 KB |
 | PC | 512 KB (E-core cluster: 2 MB, four cores) | 256 KB |
 | N4100 | 1024 KB (4 MB, four cores) | 512 KB |
+| M1 | 1024 KB (E-core cluster: 4 MB, four cores; P-cores 3 MB) | 512 KB |
 
 The tests pass the Pi's budget on every machine, so they cover the same strip layouts everywhere.
 
@@ -943,7 +947,7 @@ read back.
 - Both paths scale 3.1-3.6x on the Pi's four cores; before strips the SIMD path scaled 1.3-3.1x.
 - Single-threaded the Pi is about neutral.
 - Where full-width rings already fit, only the overhead shows: SIMD +1-5% single-threaded on Neoverse-N2, 3-5% on the
-  PC's downscales.
+  PC's downscales, 0.8-2.3% on the M1's (open lead 4).
 
 Without the pre-touch below, strips cost x64 Windows single-threaded, the SIMD upscales most: 720p -> 4K +53-62% on the
 EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' demand-zero page faults on a fresh destination:
@@ -1487,6 +1491,15 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     strip row: one store stream into the dest in place of two interleaved. Against a2d03fc, with every resize paired, the
     720p -> 4K rows went from +24% to +50% to -1% to +11% on the P-core and +14% to +16% on the E-core, 1.07x from +13% to
     +8% on the E-core; the downscales of 2x and more stayed within 5 points of the unstaged pair (the 12600K's log).
+38. **Interleaved row buffers at NEON** (M1, not committed): `interleavedRowPairs` at NEON, the kernel's interleaved
+    path as it is, a pixel pair in a `Floats8`'s two registers. On the M1 the layout alone gains the ceiling program's
+    sections N and S 4-9% (throughput-ceiling.md, "The 128-bit levels"); a candidate cause is its L1 serving loads
+    about two lines per cycle, where a buffer per row spreads a column's loads over two. The whole rows, against
+    a1f1e22 (the M1's log, "Row pairs interleaved at AVX2, at padded lengths"):
+    - 1.2-2.8% faster at 6-7 and 14-17 taps, 0.7-1.9% slower at 12 and 27.
+    - The upscales' 4-tap triples over pixel pairs 5.6-8% slower.
+    - Against 8bba85d, before a8253c4 sped up the per-row conversion and not the pair conversion: up to 3.9% at 17 taps.
+    - Interleaving outside the triples alone, untried, would leave the downscales about level.
 
 ## Open leads
 
@@ -1505,6 +1518,11 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
 4. **Strips cost where the L2 is large:** 1-5% on Neoverse-N2's SIMD rows, 3-8% on the PC's downscales (the column strips
    section). The budget is already the runtime L2 share, taken for the worst case: the smallest share, every logical
    processor busy. A budget by the threads in use, or by the core a band runs on, is untried.
+   - The M1 (its log, "Column strips"): the smallest share is the E-cores'. Rings of a P-core's share, 1.5 MB, put the
+     downscales that 512 KB cuts into 2-3 strips in one: 0.8-2.3% faster single-threaded; 101 MP -> 720p 2.1% faster
+     with threads, half of them on the E-cores, whose L2 then holds their four rings only just.
+   - Sizing the budget from the largest share instead: untried in code. Homogeneous CPUs keep theirs; the 12600K's
+     would go from 256 to 320 KB, unmeasured.
 5. **Placement moves the kernels' rows with no change to their instructions.** Which loop reacts is unidentified:
    padding at the kernel's start shifts them all together. MSVC has no loop alignment control.
    - MSVC: at 6ab4ba0 the 8500T's rows move at most 1.5% minimum to minimum with 32 bytes of padding, at AVX2 and
@@ -1682,9 +1700,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     in order"): 4K -> 64x64, 21 MP -> 175 px wide, 1080p -> 120 px wide; its upscales gain 4-6.6%. The halves are not
     measured apart. The y runs trimmed again fit the upscale gain; the source buffers without room behind a run are the
     suspect for the downscales, which slide them most.
-30. **Interleaved row buffers at NEON on the M1** (throughput-ceiling.md, "The 128-bit levels"): two rows' pixels
-    interleaved in one buffer gain section N up to 9%, 4-5% from 12 taps, and section S's fixed counts 4-5%; the Pi
-    stays within 3%. NEON keeps a buffer per row (`interleavedRowPairs`, as at SSE4.1).
-    - Not found why. A candidate: the M1's L1 serves about two lines per cycle to loads (its log), and a buffer per
-      row spreads a column's loads over two lines.
-    - Unchecked: whether the 256-bit levels' interleaved code builds for NEON, whose `Floats8` is two registers.
+30. **NEON's vertical pass on the M1 keeps the A72's settings** (`simd_primitives_neon.h`): one block per step, 6-8
+    accumulators; the taps walked, a list's load per tap having cost the A72 3-7%, so no dest-row pairs (lead 25) and
+    no held taps (lead 26). The M1 multiply-adds four 128-bit vectors per cycle and loads three (throughput-ceiling.md,
+    section U): neither reason holds there. Unmeasured; no 128-bit form of section Y times them first. An `__APPLE__`
+    build runs on Apple cores alone, so the settings can differ from the Pi's at compile time.
