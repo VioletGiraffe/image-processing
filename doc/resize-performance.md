@@ -947,7 +947,7 @@ read back.
 - Both paths scale 3.1-3.6x on the Pi's four cores; before strips the SIMD path scaled 1.3-3.1x.
 - Single-threaded the Pi is about neutral.
 - Where full-width rings already fit, only the overhead shows: SIMD +1-5% single-threaded on Neoverse-N2, 3-5% on the
-  PC's downscales, 0.8-2.3% on the M1's (open lead 4).
+  PC's downscales at b9fea7e and under the noise on a P-core at 23f9399, 0.8-2.3% on the M1's (open lead 4).
 
 Without the pre-touch below, strips cost x64 Windows single-threaded, the SIMD upscales most: 720p -> 4K +53-62% on the
 EPYC 7763 under MSVC and clang-cl, +43-46% on the PC. The cost is Windows' demand-zero page faults on a fresh destination:
@@ -1515,14 +1515,16 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
      weights in L1.
    - Otherwise the taps are bound by instruction count on a core that decodes 3 per cycle (lead 10).
    - A ring small enough for L1 gains upscales 3-7% and costs downscales up to 25%.
-4. **Strips cost where the L2 is large:** 1-5% on Neoverse-N2's SIMD rows, 3-8% on the PC's downscales (the column strips
-   section). The budget is already the runtime L2 share, taken for the worst case: the smallest share, every logical
-   processor busy. A budget by the threads in use, or by the core a band runs on, is untried.
+4. **Strips cost where the L2 is large:** 1-5% on Neoverse-N2's SIMD rows, 3-8% on the PC's downscales at b9fea7e (the
+   column strips section). The budget is already the runtime L2 share, taken for the worst case: the smallest share,
+   every logical processor busy. A budget by the threads in use, or by the core a band runs on, is untried.
    - The M1 (its log, "Column strips"): the smallest share is the E-cores'. Rings of a P-core's share, 1.5 MB, put the
      downscales that 512 KB cuts into 2-3 strips in one: 0.8-2.3% faster single-threaded; 101 MP -> 720p 2.1% faster
      with threads, half of them on the E-cores, whose L2 then holds their four rings only just.
+   - The 12600K at 23f9399 (its log, "The ring budget, at 23f9399"): 640 KB and 1.25 MB, half and all of a P-core's L2,
+     are level with 256 KB single-threaded on a P-core, and cost the large downscales 5-17% with threads.
    - Sizing the budget from the largest share instead: untried in code. Homogeneous CPUs keep theirs; the 12600K's
-     would go from 256 to 320 KB, unmeasured.
+     would go from 256 to 320 KB.
 5. **Placement moves the kernels' rows with no change to their instructions.** Which loop reacts is unidentified:
    padding at the kernel's start shifts them all together. MSVC has no loop alignment control.
    - MSVC: at 6ab4ba0 the 8500T's rows move at most 1.5% minimum to minimum with 32 bytes of padding, at AVX2 and
