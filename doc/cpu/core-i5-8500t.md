@@ -1128,3 +1128,103 @@ The AVX level, an AVX2 build capped at it, 4K -> 200x113, probe builds of 67935c
 | RGBA32 at SSE4.1 | 29.44 | 29.71 |
 
 - clang-cl is ahead by 6-7% in every layout, as at AVX2. Premultiplying costs both compilers 1.6-1.8 ms.
+
+## MSVC's source prefetch and conversion loads (open lead 11)
+
+clang-cl against MSVC at e7f3800, each level against MSVC's at that level: four rounds with controls, median of
+same-round ratios / minimum to minimum.
+
+| Scenario | MSVC AVX2, min ms | clang-cl, AVX2 | clang-cl, SSE4.1 |
+|---|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | 43.28 | -4.2% / -5.8% | -7.5% / -7.0% |
+| 2.8 MP -> 1920x1280 RGB32 | 9.13 | +0.9% / +1.7% | -1.6% / -2.3% |
+| 4K -> 1600x900 RGB32 | 15.71 | -1.1% / -1.2% | -9.8% / -9.8% |
+| 4K -> 720p RGB32 | 13.95 | -0.5% / -0.4% | -0.9% / -0.7% |
+| 720p -> 4K RGBA32 | 13.27 | -2.6% / -3.0% | -1.7% / -4.0% |
+| 720p -> 4K RGB32 | 11.93 | +1.0% / +1.2% | -5.8% / -5.9% |
+| 1080p -> 240p RGB32 | 3.48 | -1.8% / -5.2% | -6.9% / -6.9% |
+| 1080p -> 120x68 RGB32 | 2.56 | -7.2% / -7.2% | -7.9% / -7.1% |
+| 21 MP -> 175x117 RGB32 | 24.38 | -6.7% / -6.6% | -8.4% / -8.2% |
+| 4K -> 200x113 RGB32 | 11.45 | -4.6% / -5.1% | -8.1% / -8.0% |
+| 4K -> 200x113 RGBA32 | 13.75 | -7.1% / -7.7% | -6.9% / -7.0% |
+| 1080p at native size RGB32 | 1.79 | +3.5% / +3.6% | - |
+| 4K -> 1080p Grayscale8 | 8.72 | +0.7% / -1.0% | +14.8% / +14.7% |
+| 4K -> 1080p RGB24 | 17.43 | -0.6% / -0.7% | -1.4% / -1.8% |
+| 4K -> 1080p RGB32 | 17.18 | +4.9% / -1.3% | +0.3% / +0.1% |
+| 4K -> 1080p RGBA32 | 20.37 | -2.7% / -2.7% | -4.9% / -5.2% |
+| 720p -> 4K Grayscale8 | 4.35 | +7.7% / +0.5% | -0.1% / -0.4% |
+| 720p -> 4K RGB24 | 10.67 | +7.2% / -0.7% | +4.9% / +2.4% |
+| 1080p -> 4K NN RGB32 | 6.48 | +8.4% / -0.0% | - |
+| 1080p -> 4K NN RGBA32 | 6.99 | +10.1% / +24.0% | - |
+| 640x480 -> 1080p NN RGB32 | 1.60 | +1.0% / -0.0% | - |
+| 640x480 -> 1080p NN RGBA32 | 1.69 | +2.5% / +3.5% | - |
+| 4K -> 64x64 RGB32 | 9.92 | -3.3% / -3.5% | -8.9% / -8.5% |
+| 101 MP -> 720p RGB32 | 149.30 | -6.1% / -6.6% | -7.6% / -7.7% |
+
+VTune, 21 MP -> 175x117 RGB32 at AVX2, 400 resizes, `resizeRowsWith<3,4,0>`:
+
+| Loop | MSVC | clang-cl |
+|---|---:|---:|
+| Whole kernel | 9.35 s | 8.80 s |
+| The row pair's conversion | 2.54 s, 24.2 G instructions | 1.99 s, 19.0 G |
+| The block loop, 8 taps a step | 4.79 s | 4.87 s |
+| The rest | 2.02 s | 1.94 s |
+
+The conversion loop's hardware events, counted throughout:
+
+| | MSVC | MSVC, 8-byte loads | clang-cl |
+|---|---:|---:|---:|
+| Cycles | 9.26 G | 8.74 G | 7.04 G |
+| Instructions per cycle | 2.73 | 2.28 | 2.68 |
+| Stall cycles on an L3 miss | 1.34 G | 1.41 G | 0.64 G |
+| Loads retired that missed L3 | 13.5 M | 13.4 M | 9.2 M |
+| Loads blocked by a 4K alias | 385 M | 872 M | 967 M |
+| Store buffer full | 1% | 2% | 4% |
+
+- MSVC's `prefetchPixels` requested the first row's lines alone in every row-pair path, at all three levels: from a
+  loop over the rows it keeps the first iteration. clang-cl requested both. 342 `prefetcht0` in MSVC's executable
+  against clang-cl's 618; 618 with the rows written out.
+- MSVC's AVX2 conversion widened the 16 loaded bytes' high half after a `vpunpckhqdq`; clang-cl loads each 8 bytes into
+  its `vpmovzxbd`. Loading them so took MSVC's loop from 22 to 18 instructions and left its time: row B still waited
+  on DRAM.
+- With both, on 1080p -> 120x68 the conversion loop takes 0.24 s against clang-cl's 0.23 s, the block loop 0.55 s
+  against 0.56 s. What remains is the column loop's code around the block loop, 0.26 s against 0.20 s, spread over
+  its instructions.
+
+Both against e7f3800, each compiler against its own build: three rounds with controls.
+
+| Scenario | e7f3800, MSVC AVX2, min ms | MSVC, AVX2 | MSVC, SSE4.1 | clang-cl, AVX2 | clang-cl, SSE4.1 |
+|---|---:|---:|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | 43.10 | -1.7% / -1.4% | -1.4% / -1.0% | -0.3% / +0.1% | +9.9% / +9.9% |
+| 2.8 MP -> 1920x1280 RGB32 | 9.15 | -5.4% / -0.3% | +0.1% / +0.1% | -0.3% / -0.6% | +1.9% / +0.2% |
+| 4K -> 1600x900 RGB32 | 15.70 | -1.1% / -1.1% | -2.7% / -2.7% | -0.2% / +0.0% | +6.1% / +5.8% |
+| 4K -> 720p RGB32 | 13.93 | -1.2% / -0.7% | -1.2% / -1.2% | -0.7% / +0.0% | +3.4% / +3.4% |
+| 720p -> 4K RGBA32 | 13.22 | +1.4% / +0.0% | +2.0% / +0.8% | -0.1% / -0.3% | +0.2% / +0.6% |
+| 720p -> 4K RGB32 | 11.94 | -0.1% / -0.1% | +4.8% / +0.4% | -8.2% / -0.3% | -0.7% / +0.8% |
+| 1080p -> 240p RGB32 | 3.47 | -1.5% / -0.6% | -1.5% / -1.7% | -0.1% / +0.1% | +9.4% / +9.4% |
+| 1080p -> 120x68 RGB32 | 2.57 | -1.5% / -2.4% | -0.7% / -0.7% | -0.3% / -0.3% | +12.3% / +12.4% |
+| 21 MP -> 175x117 RGB32 | 24.37 | -4.1% / -3.7% | -1.3% / -1.8% | -0.4% / -0.0% | +13.5% / +13.5% |
+| 4K -> 200x113 RGB32 | 11.43 | -2.9% / -2.9% | -1.0% / -0.9% | +0.7% / +0.4% | +11.3% / +11.7% |
+| 4K -> 200x113 RGBA32 | 13.72 | -4.7% / -4.9% | -1.6% / -1.6% | +0.7% / +0.3% | -3.4% / -3.5% |
+| 1080p at native size RGB32 | 1.80 | +0.2% / +1.0% | - | +0.0% / -0.2% | - |
+| 4K -> 1080p Grayscale8 | 8.84 | -0.7% / -1.2% | +0.4% / +0.8% | -0.5% / +0.6% | -1.3% / -1.1% |
+| 4K -> 1080p RGB24 | 17.39 | +0.0% / -0.2% | +0.7% / +0.5% | -0.5% / +0.3% | -0.4% / -0.7% |
+| 4K -> 1080p RGB32 | 17.15 | -0.4% / -0.8% | -0.3% / -0.3% | +4.8% / +4.9% | -1.0% / -1.1% |
+| 4K -> 1080p RGBA32 | 20.35 | -0.5% / -0.3% | -0.1% / -0.1% | -0.4% / -0.1% | +0.3% / +0.9% |
+| 720p -> 4K Grayscale8 | 4.39 | +29.1% / +2.6% | -0.6% / -0.3% | +7.4% / +2.8% | +0.0% / +0.0% |
+| 720p -> 4K RGB24 | 10.88 | -2.4% / -2.7% | -0.2% / -0.2% | -1.8% / +0.4% | -1.8% / -2.5% |
+| 1080p -> 4K NN RGB32 | 6.47 | +22.1% / +1.1% | - | +0.7% / +1.1% | - |
+| 1080p -> 4K NN RGBA32 | 8.43 | -17.2% / -16.7% | - | +0.6% / -0.7% | - |
+| 640x480 -> 1080p NN RGB32 | 1.62 | -17.5% / -1.1% | - | +1.0% / +2.0% | - |
+| 640x480 -> 1080p NN RGBA32 | 2.00 | -10.5% / -14.8% | - | -0.3% / -0.1% | - |
+| 4K -> 64x64 RGB32 | 9.95 | -2.2% / -2.2% | -0.8% / +0.2% | +0.6% / +0.1% | +11.3% / +11.7% |
+| 101 MP -> 720p RGB32 | 149.19 | -1.9% / -1.6% | -1.1% / -1.1% | +0.0% / +0.6% | +11.2% / +11.2% |
+
+- MSVC: the RGB32 and RGBA32 downscales of 3.7:1 and more 1.5-4.9% faster at AVX2 by their medians, 0.7-1.8% at
+  SSE4.1, 4K -> 1600x900 2.7%. Nearest neighbor, whose code neither change touches, reads -17% to +22% at AVX2: this
+  session's noise, as 720p -> 4K Grayscale8's +29% median.
+- clang-cl's SSE4.1 downscales of 2.4:1 and more, 3-13.5% slower: its inner loops are the same instructions, a block of
+  the kernel moved (open lead 5). Its AVX2 rows within 1% minimum to minimum, 4K -> 1080p RGB32 +4.9% and 720p -> 4K
+  Grayscale8 +2.8% aside.
+- The prefetch alone, without the loads: MSVC's strong downscales 0.3-2.5% faster at AVX2 (four rounds).
+- On top of both, the spread indices hidden from MSVC (experiment 29 again): within 1% of the fix on every filtered row.

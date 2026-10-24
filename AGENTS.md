@@ -82,6 +82,7 @@ Access and per-machine setup are in `AGENTS.local.md`, git-ignored, where it exi
   updated through a helper call: accumulate into locals, products written out ("The listed tap loop accumulates into
   locals"). Also see the comments on `addProduct` and `RowChains`.
 - MSVC moves small arrays of vectors through memory: hold a window of vectors in named variables.
+- From a loop over a constant count of rows MSVC keeps the first row's prefetches only: write the rows out.
 - Under clang-cl a lambda does not carry the kernel's target attribute: SIMD helpers it calls fail to inline. Use
   functions.
 - After changing a hot loop, read its listing under MSVC and clang-cl: instruction count, register copies, stack

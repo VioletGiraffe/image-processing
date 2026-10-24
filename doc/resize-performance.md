@@ -750,6 +750,8 @@ indexed form to stepped pointers by itself; its kernels and Clang's are untimed.
 
 - Grayscale8's loop had 13 instructions: one fewer now.
 - RGBA32's loop premultiplies, and RGB24's shuffles its bytes first: neither gained on the 8500T.
+- AVX2 widens each 8 bytes from its own load (`loadSixteenBytesAsFloats`): from one 16-byte load MSVC moves the high
+  half down with a `vpunpckhqdq`, a second shuffle per 8 pixels. Alone, the 8500T's strong downscales 1-4% faster.
 
 ### A row pair converted in one loop
 
@@ -1262,10 +1264,15 @@ horizontal pass filters the current one.
 - Pi: every filtered row of the benchmark 1.4-9.9% faster, the threaded ones included; 0-6.6% on Grayscale8 at display
   sizes. At 720p -> 1080p RGB32 it takes 1.3-1.4 ms off the conversion's 1.7 ms of DRAM latency (its log, "where an
   upscale's time goes").
-- x64: no change at AVX2 on the 8500T under MSVC and clang-cl, nor at SSE4.1 on the 8500T and the 12600K's P-core.
+- x64, clang-cl: no change at AVX2 on the 8500T.
+- x64, MSVC: from a loop over the rows MSVC keeps the first row's requests only, so `prefetchPixels` writes the rows out.
+  With both rows and the AVX2 conversion's 8-byte loads (the conversion's block loop section), the 8500T's RGB32 and
+  RGBA32 downscales of 3.7:1 and more are 1.5-4.9% faster at AVX2 and 0.7-1.8% at SSE4.1; the prefetch alone 0.3-2.5%
+  at AVX2 (its log, "MSVC's source prefetch and conversion loads"). The first row alone read level on the 8500T and the
+  12600K. The 12600K is unmeasured with both.
 - M1: RGB32 and RGBA32 downscales +1.3% to +3.5%, Grayscale8 +2%, RGB24 and the colour upscales level (open lead 28).
 - One-channel rows on x64 go without: the 12600K's E-core lost 2-4% on them at SSE4.1, in two sessions, where a padded
-  placement control moved nothing.
+  placement control moved nothing. Measured under MSVC, with the first row's requests only.
 - The next row pair's first chunk as well: nothing more (experiment 13).
 
 ### 4-tap runs of 4-float pixels in one chain per row at NEON
@@ -1444,6 +1451,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     - Six rounds, both "Common" sections: no row moved on the 8500T or the 12600K's E-core; the P-core's -1.5% to
       -3% is its Grayscale8 rows' too, whose code has no spread.
     - A removed instruction is not a gain by itself in these loops: these loads cost less than the rows' noise.
+    - Again with MSVC prefetching both rows and loading 8 bytes per widening, four rounds on the 8500T: every filtered
+      row within 1%.
 30. **Interleaved row pairs on runs read per run** (against 963e6bc, not committed): blocks of 8 taps in 4 chains, then
     steps of 4, 2 and 1 tap. Medians against the kernel's form:
     - E-core: -22% to -30% from 22 taps up, both compilers.
@@ -1537,6 +1546,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
      `resizeRowsWith<3,4,0>`, 6-12% between two placements, the slow one with jumps on 32-byte boundaries in two more
      multiply loops. `-mbranches-within-32B-boundaries` at SSE4.1 was measured at b1395f9 only: 4K -> 1080p RGB24 -4%,
      the other rows within 3%.
+   - The same rows 3-13.5% slower in a build whose change left that kernel's inner loops the same instructions and moved
+     a block of it (the 8500T's log, "MSVC's source prefetch and conversion loads").
    - The SSE4.1 level runs unpadded under every compiler, a trade-off: the Skylake family's Pentiums and Celerons have
      the erratum and no AVX, and the 8500T gains up to 15% at SSE4.1 padded; the CPUs without the erratum lose up to 35%
      (the section on jumps under MSVC).
@@ -1570,15 +1581,20 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     - At a6c69e7 both passes cost the same per multiply-add, so filtering vertically first on downscales would gain nothing.
     - The M1: its upscale's horizontal loop runs at 62-69% of the multiply-add peak (throughput-ceiling.md, U13), the
       arithmetic two thirds of its time. It has FEAT_FP16: 8 lanes per multiply-add in half-precision floats, untried.
-11. **MSVC against clang-cl on the 8500T** at 6ab4ba0 (its log, "MSVC against clang-cl, and the placement control, at
-    6ab4ba0"). The listings behind these gaps have not been compared.
-    - AVX2: clang-cl ahead by 5-8% on the RGB32 and RGBA32 downscales of 3.7:1 and more (3% at 4.5:1), 3% on 4K ->
-      1080p RGBA32; level on 2-3:1 RGB32, RGB24 and Grayscale8; MSVC ahead by 2-3% on 2.8 MP -> 1920x1280 and 720p -> 4K
-      RGB32.
-    - SSE4.1: clang-cl ahead by 4-5% on 4K -> 1080p RGB24, RGB32 and RGBA32, 8.5% on 4K -> 200x113 RGBA32; MSVC ahead by
-      12% on 4K -> 1080p Grayscale8, 15% on 720p -> 4K RGB24, 3% on 720p -> 4K Grayscale8. The RGB32 downscales of
-      2.4:1 and more read either way by clang-cl's placement (lead 5), and so does 4K -> 200x113 RGBA32: level in a
-      build of 67935c2, clang-cl 9% ahead in others.
+11. **MSVC against clang-cl on the 8500T** (its log: "MSVC against clang-cl, and the placement control, at 6ab4ba0";
+    "MSVC's source prefetch and conversion loads").
+    - AVX2: clang-cl ahead by 3-8% on the RGB32 and RGBA32 downscales of 3.7:1 and more at e7f3800, as at 6ab4ba0; the
+      other rows within 3% either way. About half of it was the conversion: MSVC requested one row's source lines of
+      each pair, and widened through an extra shuffle. With both fixed clang-cl leads by 1-6% there.
+      - What remains on 1080p -> 120x68: the column loop's code around the block loop, 0.26 s against 0.20 s, spread
+        over its instructions.
+      - Not the spread indices' reloads (experiment 29). Untried: the two stack reloads (lead 21), the front end.
+    - SSE4.1, at 6ab4ba0: clang-cl ahead by 4-5% on 4K -> 1080p RGB24, RGB32 and RGBA32, 8.5% on 4K -> 200x113
+      RGBA32; MSVC ahead by 12% on 4K -> 1080p Grayscale8, 15% on 720p -> 4K RGB24, 3% on 720p -> 4K Grayscale8. The
+      RGB32 downscales of 2.4:1 and more read either way by clang-cl's placement (lead 5), and so does 4K -> 200x113
+      RGBA32: level in a build of 67935c2, clang-cl 9% ahead in others.
+    - SSE4.1, at e7f3800: clang-cl ahead by 7-10% on the RGB32 downscales of 3.7:1 and more and on 4K -> 1600x900,
+      MSVC by 15% on 4K -> 1080p Grayscale8. MSVC's second row's prefetch gained it 0.7-2.7% on those downscales.
     - AVX, the AVX2 build capped: clang-cl ahead by 6-7% on 4K -> 200x113 in every layout, RGBA32 included (at
       67935c2, its log).
     - clang-cl's one-channel four-column loop is short of general registers: 55 instructions with 5 stack accesses, and
@@ -1695,6 +1711,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     the same block-loop instructions; the 8500T paid 1.8 ms under both at AVX. With a row pair per loop MSVC pays 6.4 ms
     and clang-cl 8.2. Ruled out: code placement (16 and 32 bytes), the process's earlier work, the AVX-SSE transition.
     No hardware counters on that machine.
+    - Measured while MSVC requested the first row's source lines only ("The next chunk's source prefetched"); clang-cl
+      requested both rows. Not remeasured since.
 28. **The source prefetch on Apple Silicon** ("The next chunk's source prefetched"): without it e3520f9's RGB32 and
     RGBA32 downscales are 1.3-4.4% faster on the M1 and no row is slower; 128-byte steps, the M1's line size, recover
     about three quarters of that on most downscales (its log). The M1 is the only Apple core measured.

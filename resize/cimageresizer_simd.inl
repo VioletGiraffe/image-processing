@@ -278,16 +278,22 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			}
 
 			// Requests the source lines of pixels [begin, end) in every row
+			// The rows are written out: from a loop over the rows MSVC keeps the first row's requests only
 			IMAGE_PROCESSING_SIMD_INLINE void prefetchPixels(size_t begin, size_t end) const noexcept
+			{
+				static_assert(Rows == 1 || Rows == 2);
+				prefetchRowPixels(pixels[0], begin, end);
+				if constexpr (Rows == 2)
+					prefetchRowPixels(pixels[1], begin, end);
+			}
+
+			IMAGE_PROCESSING_SIMD_INLINE void prefetchRowPixels(const uint8_t* rowPixels, size_t begin, size_t end) const noexcept
 			{
 				constexpr uintptr_t lineBytes = 64;
 				const size_t pixelStride = effectivePixelStride<PixelStride>(runtimePixelStride);
-				for (size_t row = 0; row < Rows; ++row)
-				{
-					const uintptr_t endAddress = reinterpret_cast<uintptr_t>(pixels[row] + end * pixelStride);
-					for (uintptr_t line = reinterpret_cast<uintptr_t>(pixels[row] + begin * pixelStride) & ~(lineBytes - 1); line < endAddress; line += lineBytes)
-						SimdSupport::prefetchLine(reinterpret_cast<const void*>(line));
-				}
+				const uintptr_t endAddress = reinterpret_cast<uintptr_t>(rowPixels + end * pixelStride);
+				for (uintptr_t line = reinterpret_cast<uintptr_t>(rowPixels + begin * pixelStride) & ~(lineBytes - 1); line < endAddress; line += lineBytes)
+					SimdSupport::prefetchLine(reinterpret_cast<const void*>(line));
 			}
 
 			// Converts pixels [converted, end) into the buffers

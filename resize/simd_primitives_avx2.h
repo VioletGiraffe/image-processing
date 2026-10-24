@@ -206,11 +206,11 @@ namespace ImageProcessing::Detail::Avx2
 	}
 
 	// 16 bytes as 16 floats: the first 8 go to first
+	// Each widening loads its own 8 bytes: MSVC otherwise moves the high half down with a shuffle
 	IMAGE_PROCESSING_SIMD_INLINE void loadSixteenBytesAsFloats(const uint8_t* bytes, Floats8& first, Floats8& second) noexcept
 	{
-		const __m128i loaded = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes));
-		first = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(loaded));
-		second = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_unpackhi_epi64(loaded, loaded)));
+		first = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(bytes))));
+		second = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(bytes + 8))));
 	}
 
 	// 4 RGB pixels as 4 bytes each, the 4th 0. Reads 16 bytes, 4 past the pixels.
