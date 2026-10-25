@@ -466,3 +466,30 @@ minimum.
 | 4K -> 1080p RGBA32 | 68.73 | +0.6% / +0.6% | -0.6% / -0.4% |
 | 720p -> 4K Grayscale8 | 12.46 | +0.3% / -0.2% | +1.7% / -2.1% |
 | 720p -> 4K RGB24 | 31.69 | -1.5% / -1.6% | -1.3% / -0.3% |
+
+## 87bebbc to 54b7a6b: the conversion, the tap steps, the block loop
+
+54b7a6b against e7f3800 at AVX, each compiler against its own build: clang-cl three rounds; MSVC two, in a session
+where one run shared the machine with 26 s of `svchost`.
+
+| Scenario | MSVC | clang-cl |
+|---|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | -8.1% / -3.6% | +0.9% / -0.4% |
+| 4K -> 1600x900 RGB32 | +2.1% / +2.3% | -0.1% / -0.4% |
+| 4K -> 720p RGB32 | +0.4% / -0.2% | -0.1% / -0.1% |
+| 720p -> 4K RGBA32 | -3.3% / -1.4% | +0.8% / +0.9% |
+| 720p -> 4K RGB32 | +0.2% / +1.5% | +1.7% / +1.7% |
+| 720p -> 4K RGB24 | +3.3% / +3.1% | +0.3% / +0.7% |
+| 1080p -> 240p RGB32 | +1.1% / +1.4% | -2.5% / -6.2% |
+| 1080p -> 120x68 RGB32 | -4.9% / -3.3% | -7.5% / -7.6% |
+| 21 MP -> 175x117 RGB32 | -5.2% / -5.2% | -8.0% / -8.3% |
+| 4K -> 200x113 RGB32 | -2.7% / -2.7% | -5.2% / -5.1% |
+| 4K -> 200x113 RGBA32 | -3.7% / -3.2% | -4.3% / -4.7% |
+| 4K -> 1080p, 3 and 4 channels | -1.6% to +0.8% | -0.8% to +0.4% |
+| 4K -> 64x64 RGB32 | -1.9% / -3.4% | -5.7% / -6.2% |
+| 101 MP -> 720p RGB32 | +0.0% / +1.3% | +2.2% / +2.2% |
+
+- clang-cl by commit, the display and layout scenarios, three rounds: 87bebbc and cf1340b within 1.6% on the thumbnails,
+  54b7a6b 3.5-8% faster there; the upscales within 2% at each.
+- The disturbed session read clang-cl's upscales 10-16% slower; neither later session repeated it.
+- One run of the whole benchmark: about 35 s.

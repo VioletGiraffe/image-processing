@@ -615,6 +615,30 @@ minimum. Every NEON row pair goes through the changed conversion.
 
 - The test executable: GCC 2.85 -> 3.11 MB, Clang 2.22 -> 2.20 MB.
 
+## 87bebbc to 54b7a6b: the conversion, the tap steps, the block loop
+
+54b7a6b against e7f3800, each compiler against its own build; three rounds. `vcgencmd get_throttled` printed
+`0x80000` after them: the soft temperature limit reached at some point since boot.
+
+| Scenario | Clang 22 | GCC 14.2 |
+|---|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | +3.2% / +3.0% | -2.0% / -1.7% |
+| 4K -> 1600x900 RGB32 | +1.8% / +1.2% | -3.2% / -3.2% |
+| 4K -> 720p RGB32 | +0.3% / +0.2% | +2.4% / +2.5% |
+| 1080p -> 240p RGB32 | +0.5% / +0.3% | +1.8% / +0.5% |
+| 1080p -> 120x68 RGB32 | -1.4% / -1.4% | +6.9% / +5.9% |
+| 21 MP -> 175x117 RGB32 | -0.7% / -0.7% | +5.4% / +5.7% |
+| 4K -> 200x113 RGB32 | +0.6% / +0.6% | +4.0% / +5.1% |
+| 4K -> 200x113 RGBA32 | -1.6% / +0.1% | -1.4% / -0.9% |
+| 4K -> 64x64 RGB32 | -0.4% / -4.5% | +4.0% / +5.6% |
+| 101 MP -> 720p RGB32 | -4.0% / -1.1% | +3.9% / +3.9% |
+| 4K -> 1080p, 3 and 4 channels | -0.6% to +0.8% | -0.5% to +0.3% |
+| Upscales, 3 and 4 channels | -0.9% to +0.3% | -2.0% to +0.6% |
+
+- GCC's strongest downscales 4-7% slower, the rows whose runs take the block loop most (open lead 32). Clang's within
+  its noise.
+- One run of the whole benchmark: about 50 s with either compiler.
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing

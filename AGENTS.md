@@ -36,7 +36,7 @@ Treat those documents as project memory: update them with any change to the kern
 ## Building and testing
 
 - `scripts/run_tests.ps1` needs `QT_ROOT_DIR`, or `scripts/local-env.ps1` (git-ignored) setting it. The full suite takes
-  about 9 minutes on the 12600K and runs every SIMD level the CPU has.
+  about 3 minutes on the 12600K, its build included, and runs every SIMD level the CPU has.
 - The release build links with LTO: a kernel's code is in the executable, not its object. For a quick look at one
   level's code, compile its `resize/cimageresizer_simd_<level>.cpp` alone with `resize/resize.pri`'s per-file flags
   and `dumpbin /disasm` the object: seconds, not a build. Under MSVC the SSE4.1 kernels are generated at link time in
@@ -50,13 +50,16 @@ Access and per-machine setup are in `AGENTS.local.md`, git-ignored, where it exi
 - None has a checkout: copy trees over with `git archive -o <zip>` (cpputils, cpp-template-utils and qtutils go beside
   image-processing). Build x64 binaries on the 12600K and copy them; it is faster.
 - Never build on a machine while rounds run on it, and estimate every run longer than 30 s before starting it. A
-  10-round A/B of ten scenarios: about 80 s on the 8500T, 3.5 minutes on the i3-2310M.
-- 12600K (the PC): pin with `start /b /wait /affinity <mask>`, P-core 4 (logical 2), E-core 1000 (logical 12).
+  10-round A/B of ten scenarios: about 80 s on the 8500T, 3.5 minutes on the i3-2310M. One run of the whole benchmark:
+  about 25 s on the 8500T, 65 s with controls.
+- 12600K (the PC): pin with `start /b /wait /affinity <mask>`, P-core 4 (logical 2), E-core 1000 (logical 12). One run
+  of the whole benchmark: about 19 s on the P-core, 27 s on the E-core.
 - Core i5-8500T: MSVC, clang-cl, VTune. VTune: `-collect hotspots -knob sampling-mode=hw`; `uarch-exploration`
   crashed the machine once, and so did a precise event (`_PS`) once in six runs. Over ssh, add keepalives
   (`-o ServerAliveInterval=10`) so a crash ends the session.
-- Core i3-2310M (Sandy Bridge): AVX is its level, so it judges AVX changes.
-- Raspberry Pi 4: builds its own, with Clang and GCC. perf in user space only.
+- Core i3-2310M (Sandy Bridge): AVX is its level, so it judges AVX changes. One run of the whole benchmark: about 35 s.
+- Raspberry Pi 4: builds its own, with Clang and GCC: a release build of the tests takes 4-5 minutes. One run of the
+  whole benchmark: about 50 s. perf in user space only.
 - Mac mini (Apple M1): has a checkout, its dependencies beside it; builds its own with Apple Clang. No pinning: a run
   at the default QoS lands on a P-core. One run of the whole benchmark: about 30 s, and it reads serial rows of 2 ms
   or more to 4%, enough for a history scan; ten alternating rounds for a step it flags.
@@ -82,7 +85,8 @@ Access and per-machine setup are in `AGENTS.local.md`, git-ignored, where it exi
 - MSVC copies a hot loop's accumulators back every iteration, and spills one, when they sit behind a reference or are
   updated through a helper call: accumulate into locals, products written out ("The listed tap loop accumulates into
   locals"). Also see the comments on `addProduct` and `RowChains`.
-- MSVC moves small arrays of vectors through memory: hold a window of vectors in named variables.
+- MSVC moves small arrays through memory: of vectors, and at SSE4.1 of two pointers stepped by one offset, which it adds
+  as one vector through the stack, a store-forwarding stall every column. Hold them in named variables.
 - From a loop over a constant count of rows MSVC keeps the first row's prefetches only: write the rows out.
 - MSVC lays out a jump over each conditional step a path skips. Taken branches per column decide how many columns back the
   branch predictor sees, about 93 taken branches on the 8500T: a branch that depends on more mispredicts ("`filterRun`'s

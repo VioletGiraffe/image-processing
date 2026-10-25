@@ -1373,3 +1373,104 @@ placement control:
   up to 7%. Nearest neighbor, also unchanged, swings up to 22%.
 - VTune's precise events stopped the machine once, bugcheck 0xD1 in its sampling driver; the same collection then ran
   cleanly five times.
+
+## The block loop to an end pointer, the steps from its pointers (open lead 11)
+
+At cf1340b, 1080p -> 120x68 RGB32, 2000 resizes, `resizeRowsWith<3,4,0>`, M cycles:
+
+| Part | MSVC | clang-cl | MSVC, end pointer | clang-cl, end pointer |
+|---|---:|---:|---:|---:|
+| Kernel | 16678 | 15706 | 15686 | 14840 |
+| The block loop | 7740 | 7738 | 6742 | 6520 |
+| The column loop's code around it | 3254 | 2842 | 3738 | 3282 |
+| The row pair's conversion | | | 3098 | 3042 |
+
+- The block loop: 20 micro-ops a block in both builds, 5.3 cycles; MSVC's bookkeeping a `tap` and a `tap + 8` counter
+  and a copy, beside three stepped pointers. To an end pointer: 17, and the loop's 9 loads bind it.
+- The two right columns also convert with one offset into all four streams ("The conversion's block loop steps one
+  offset"). Per 96-tap column then:
+  MSVC 245 issue slots and 117 loads, 75.1 cycles; clang-cl 239 and 113, 70.7. MSVC's extra: the four spread indices
+  reloaded, both sums zeroed, two values reloaded from the stack after the block loop.
+- clang-cl without its conversion unroll: 3130 M cycles in that loop against 3126 M unrolled. MSVC's loop stepped four
+  pointers, 18 instructions a block against clang-cl's 15.
+
+Variants against cf1340b, each compiler against its own build; four rounds without controls, median of same-round
+ratios / minimum to minimum. The last three rows are against the end pointer build.
+
+| Variant | 1080p -> 120x68 | 21 MP -> 175x117 | 4K -> 64x64 | 4K -> 200x113 RGB32 | 4K -> 200x113 RGBA32 |
+|---|---:|---:|---:|---:|---:|
+| One conversion offset, MSVC | -2.0% / -0.6% | -1.5% / -1.1% | +0.4% / +0.6% | -3.4% / -1.2% | -1.6% / -1.6% |
+| With the block loop's end pointer, MSVC | -5.9% / -4.4% | -5.8% / -5.9% | -5.0% / -4.7% | -4.2% / -2.4% | -3.8% / -3.5% |
+| With the block loop's end pointer, clang-cl | -4.8% / -4.7% | -6.9% / -7.4% | -8.8% / -8.0% | -2.0% / -2.0% | -2.0% / -1.8% |
+| Spread indices hidden (experiment 29), MSVC | +0.7% / +0.7% | +1.0% / +0.5% | +0.6% / +0.7% | +0.3% / +0.3% | +0.2% / +0.1% |
+| And sums zeroed on short runs only (experiment 39), MSVC | +1.9% / +1.8% | -0.2% / +0.1% | +0.6% / +0.6% | +1.3% / +1.1% | +1.0% / +1.3% |
+| And the steps from the block loop's pointers, MSVC | -1.8% / -2.3% | -4.9% / -4.6% | -5.2% / -5.1% | -1.1% / -1.1% | -1.0% / -0.4% |
+
+- The two that lose, padded: within 1.3% of their padded base.
+- The steps from the loop's pointers under MSVC: no stack reference left in the AVX2 column loop. Under clang-cl, which had begun to spill with the end
+  pointer: none either, and its rows 1-2% faster.
+
+54b7a6b (the end pointer and the steps from the loop's pointers) against cf1340b, four rounds with controls; MSVC padded too:
+
+| Scenario | MSVC AVX2 | MSVC AVX2, padded | MSVC SSE4.1 | clang-cl AVX2 | clang-cl SSE4.1 |
+|---|---:|---:|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | +1.4% / +1.4% | +0.9% / +1.2% | +0.5% / +0.6% | +0.5% / +1.2% | -5.5% / -5.7% |
+| 4K -> 1600x900 RGB32 | -0.8% / +0.5% | -0.5% / -0.2% | +1.6% / +1.2% | +2.3% / +1.7% | -0.5% / -0.5% |
+| 4K -> 720p RGB32 | -0.3% / +0.3% | -0.2% / +0.2% | -0.1% / -0.4% | -0.9% / -0.1% | -4.8% / -4.4% |
+| 720p -> 4K RGB32 | -0.8% / -0.1% | -0.5% / +0.6% | +0.5% / -1.4% | +3.2% / +3.4% | +3.6% / +3.7% |
+| 1080p -> 240p RGB32 | -0.6% / -0.7% | +0.0% / -1.1% | +0.5% / +0.7% | -0.4% / -0.3% | -4.7% / -4.7% |
+| 1080p -> 120x68 RGB32 | -5.0% / -5.5% | -5.4% / -5.5% | -0.2% / -0.2% | -4.4% / -4.7% | -10.2% / -10.6% |
+| 21 MP -> 175x117 RGB32 | -9.0% / -9.3% | -9.3% / -9.4% | -0.7% / -0.5% | -7.6% / -7.2% | -10.7% / -10.8% |
+| 4K -> 200x113 RGB32 | -2.3% / -1.5% | -2.0% / -2.1% | -0.2% / -0.4% | -5.9% / -4.8% | -10.2% / -10.2% |
+| 4K -> 200x113 RGBA32 | -1.3% / -1.1% | -1.8% / -0.9% | +3.1% / +2.5% | -2.7% / -3.8% | -3.8% / -3.9% |
+| 4K -> 1080p, 3 and 4 channels | -0.2% to +0.4% | -1.3% to +1.1% | -0.8% to +0.7% | -1.4% to +1.1% | -1.1% to +1.0% |
+| 4K -> 64x64 RGB32 | -9.9% / -9.9% | -9.8% / -10.0% | -1.1% / -1.0% | -8.0% / -8.0% | -11.5% / -11.4% |
+| 101 MP -> 720p RGB32 | -1.8% / -2.1% | -2.2% / -2.2% | +0.3% / -0.0% | -0.9% / -1.4% | -8.9% / -8.8% |
+
+- MSVC SSE4.1, padded: 4K -> 200x113 RGBA32 +2.8% / +2.8%, 24 MP +1.9% / +1.8%: runs with taps left after the blocks.
+  At SSE4.1 the steps' pointers are formed from the index after the loop: the column loop holds 136 instructions and
+  reloads its bound from the stack, against 130 and none.
+- The steps' first form held their pointers in the run's pointer array. MSVC's SSE4.1 kernels, all of them, then kept
+  the array on the stack and added the offset to both pointers with one `paddq`: two 8-byte stores reloaded as 16
+  bytes, every column. 2.8 MP -> 1920x1280 +85%, the other downscales +3% to +8%. Written out, the two adds still
+  formed the vector; two variables do not.
+- clang-cl's padded control is not run: `__nop()` changes its code.
+
+clang-cl against MSVC at 54b7a6b, from the same rounds: 1080p -> 120x68 -6.8% / -5.5% (-7.0% / -6.3% at cf1340b),
+21 MP -> 175x117 -3.2% / -2.8% (-4.8% / -5.0%), 4K -> 200x113 RGB32 -3.3% / -3.0% (+0.5% / +0.3%), 24 MP -5.6% / -4.4%
+(-4.1% / -4.3%), 4K -> 64x64 -0.3% / -0.3% (-2.4% / -2.3%); MSVC ahead on 720p -> 4K RGB32, +3.1% / +2.6%. At SSE4.1
+clang-cl leads every 3- and 4-channel row by 1% to 12%, where at cf1340b MSVC led the thumbnails by 3-4%.
+
+### The steps' weights set ahead, the ring's 32-bit divide, the conversion's one offset
+
+1080p -> 120x68 at 54b7a6b, precise events: MSVC's kernel mispredicted 21.2 M times, clang-cl's 16.0 M; 4.0 M of
+MSVC's at `prepareRun`'s slide check, none of clang-cl's. MSVC's 96-tap column took 13 taken branches, clang-cl's 11.
+The temp ring's `row()` divided in 64 bits, about 90 M cycles at the two divides; clang-cl tests both operands and
+divides in 32 bits.
+
+With the steps' weights set ahead of the paths and the ring's divide in 32 bits (ddcfe9d): MSVC's kernel mispredicts
+14 M, none at the slide check; 12 taken branches a column; 34 M cycles at the divides. The kernel's cycles level,
+about 15500 M. Against 54b7a6b, three rounds without controls:
+
+| Scenario | MSVC | MSVC, padded | clang-cl |
+|---|---:|---:|---:|
+| 1080p -> 120x68 RGB32 | +0.5% / -1.0% | -0.9% / -1.0% | +0.5% / +0.4% |
+| 21 MP -> 175x117 RGB32 | +0.3% / +0.2% | +0.3% / +0.3% | -0.0% / -0.0% |
+| 4K -> 200x113 RGB32 | -1.2% / -0.6% | +1.1% / -0.6% | +0.3% / +0.2% |
+| 4K -> 64x64 RGB32 | +1.7% / +0.7% | +0.1% / +0.1% | -2.0% / -0.2% |
+
+The conversion's one offset on top, against ddcfe9d, three rounds:
+
+| Scenario | MSVC | MSVC, padded | clang-cl | clang-cl / MSVC after |
+|---|---:|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | -0.4% / -0.4% | -0.1% / -0.3% | -1.1% / -0.9% | -3.8% / -3.4% |
+| 1080p -> 240p RGB32 | -2.1% / -1.0% | -1.3% / -0.4% | -0.5% / -0.5% | -4.5% / -4.3% |
+| 1080p -> 120x68 RGB32 | -2.6% / -2.0% | -2.6% / -2.7% | -0.6% / -0.6% | -3.2% / -3.2% |
+| 21 MP -> 175x117 RGB32 | -0.9% / -1.0% | -0.9% / -0.9% | -0.9% / -0.4% | -2.0% / -2.1% |
+| 4K -> 200x113 RGB32 | -0.8% / -1.0% | -1.2% / -0.7% | +0.4% / +0.3% | -0.7% / -1.1% |
+| 4K -> 200x113 RGBA32 | -1.4% / -2.1% | -3.0% / -2.8% | +1.0% / +1.0% | -1.4% / -0.9% |
+| 4K -> 1080p, 3 and 4 channels | -2.2% to -0.2% | -0.8% to +0.6% | -1.8% to +0.8% | -1.1% to +1.6% |
+| 101 MP -> 720p RGB32 | -1.3% / -0.6% | -1.2% / -1.2% | -0.2% / -0.2% | -2.2% / -2.5% |
+
+- One profile's regions vary by 100 M cycles and more between runs: the vertical tap loop read MSVC +124 M in one
+  and -18 M in another. Region gaps here are averages of three.
