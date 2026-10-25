@@ -91,6 +91,9 @@ Access and per-machine setup are in `AGENTS.local.md`, git-ignored, where it exi
 - MSVC lays out a jump over each conditional step a path skips. Taken branches per column decide how many columns back the
   branch predictor sees, about 93 taken branches on the 8500T: a branch that depends on more mispredicts ("`filterRun`'s
   last taps are steps, behind one test for none").
+- From an origin plus a float offset MSVC re-derives pointers in scaled-index `lea`s, which Skylake runs on ports 1 and 5
+  only, beside the multiply-adds and the shuffles: form such pointers from a byte offset ("A run's pixels from a byte
+  offset"). A micro-op removed from another port, a load or a zeroing, gains nothing there: count micro-ops per port.
 - Under clang-cl a lambda does not carry the kernel's target attribute: SIMD helpers it calls fail to inline. Use
   functions.
 - After changing a hot loop, read its listing under MSVC and clang-cl: instruction count, register copies, stack

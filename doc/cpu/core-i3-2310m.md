@@ -493,3 +493,9 @@ where one run shared the machine with 26 s of `svchost`.
   54b7a6b 3.5-8% faster there; the upscales within 2% at each.
 - The disturbed session read clang-cl's upscales 10-16% slower; neither later session repeated it.
 - One run of the whole benchmark: about 35 s.
+
+## A run's pixels from a byte offset
+
+MSVC at the AVX level against 9b6d783, three rounds without controls, unpadded, median of ratios / min to min:
+24 MP -> 1620x1080 +1.9% / +2.6%, 101 MP -> 720p +2.2% / +5.2%, 720p -> 4K RGB24 +1.9% / +1.9%,
+4K -> 1600x900 -1.9% / -1.6%; the other rows within 2%, most within 1%.

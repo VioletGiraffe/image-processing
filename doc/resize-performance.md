@@ -760,6 +760,39 @@ Stepped pointers against the pixel index:
 - AVX2 widens each 8 bytes from its own load (`loadSixteenBytesAsFloats`): from one 16-byte load MSVC moves the high
   half down with a `vpunpckhqdq`, a second shuffle per 8 pixels. Alone, the 8500T's strong downscales 1-4% faster.
 
+### A run's pixels from a byte offset
+
+`filterBufferedRuns` forms a run's pixel pointers from its byte offset off the rows' origins. From a float offset MSVC
+re-derives the pointers after the run's first block from origin and offset, in scaled-index `lea`s: 10 per column of the
+AVX2 RGB32 kernel, against clang-cl's 3. From the byte offset: 7.
+- Skylake runs a simple `lea` on ports 1 and 5 only, beside the multiply-adds (ports 0 and 1) and the weights' `vpermps`
+  (port 5) that starts every chain. 8500T, 1080p -> 240p: MSVC's column had 6 more micro-ops per column pair on ports 1
+  and 5 than clang-cl's, and executed 4 micro-ops or more in 60% of cycles against 67%.
+- Micro-ops on other ports cost the column nothing: the spread indices' four loads per column (experiment 29) and the
+  sums' zeroing (experiment 39) removed take 2% of the kernel's issued micro-ops off and no cycles; its resource stalls
+  grow by as much.
+- clang-cl's code is the same with registers renamed. At SSE4.1 the renaming moves its unpadded kernels: the block loop's
+  jump lands on a 32-byte boundary, and its downscales read 3-10% slower on the 8500T (lead 5).
+
+MSVC on the 8500T, three rounds, median of ratios / min to min:
+
+| Scenario | AVX2 | AVX2 with the indices hidden too, padded | SSE4.1 |
+|---|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | -3.4% / -1.7% | -2.7% / -1.9% | -4.7% / -4.3% |
+| 1080p -> 240p RGB32 | -5.0% / -4.7% | -5.0% / -4.8% | -4.5% / -4.7% |
+| 1080p -> 120x68 RGB32 | -0.3% / -0.5% | -1.4% / -1.3% | -3.5% / -3.5% |
+| 21 MP -> 175x117 RGB32 | -0.8% / -0.6% | -0.4% / -0.8% | -4.1% / -4.1% |
+| 4K -> 200x113 RGB32 | -0.1% / -0.5% | -1.9% / -2.1% | -3.2% / -3.2% |
+| 4K -> 64x64 RGB32 | -0.8% / -0.0% | -1.3% / -2.1% | -3.3% / -3.3% |
+| 101 MP -> 720p RGB32 | -1.9% / -1.1% | -1.6% / -1.7% | -3.9% / -4.0% |
+| 4K -> 1080p, 3 and 4 channels | -0.6% to +1.0% | -0.5% to +0.5% | -0.1% to +0.3% |
+| Upscales | -0.8% to +1.3% | -0.4% to +0.6% | -2.5% to -0.1%; Grayscale8 +1.4% / +8.2% |
+
+- The indices hidden as well (experiment 29) level with the byte offset alone.
+- NEON: GCC's kernels compile the same; Clang's the same but one, with two registers swapped.
+- The AVX level, MSVC on the i3-2310M, three rounds unpadded: 24 MP +1.9% / +2.6%, 101 MP -> 720p +2.2% / +5.2%,
+  4K -> 1600x900 -1.9% / -1.6%, the other rows within 2%.
+
 ### A row pair converted in one loop
 
 `convertPixelsToFloats` converts a row pair in one loop, each row into its own floats: per block, both rows' loads, then
@@ -1494,6 +1527,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
       row within 1%.
     - Again over the block loop's end pointer, whose loads then bind it (8500T, MSVC, four rounds): the thumbnails
       within 1%, padded too.
+    - Again at 9b6d783: 2% fewer micro-ops issued in 1080p -> 240p's kernel, the same cycles. Over the byte offset, level
+      with it alone. The loads run on ports 2 and 3; the column's bound is ports 1 and 5 ("A run's pixels from a byte offset").
 30. **Interleaved row pairs on runs read per run** (against 963e6bc, not committed): blocks of 8 taps in 4 chains, then
     steps of 4, 2 and 1 tap. Medians against the kernel's form:
     - E-core: -22% to -30% from 22 taps up, both compilers.
@@ -1552,6 +1587,13 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     - Interleaving outside the triples alone, untried, would leave the downscales about level.
 39. **A column's sums zeroed only on runs under one block** (8500T, not committed): with experiment 29's hidden indices,
     MSVC's 96-tap column 7 micro-ops shorter. The thumbnails level to 1.9% slower, padded too.
+    - The zeroing in its own branch: MSVC jumps over it, a taken branch per column. Without one, in experiment 40: level.
+      A zeroing idiom runs on no port.
+40. **Zero-started chains, every block in the loop** (8500T, 9b6d783, not committed): no first block peeled, so MSVC
+    re-derives no pointers after it, 5 `lea`s per column from 10. With the spread indices hidden, MSVC's 1080p -> 240p
+    2-3.5% faster, padded too; 24 MP and the thumbnails level, the zeroing and a loop iteration more taking ~10
+    instructions per column there. The indices not hidden: MSVC reloads them every block, the strong downscales 12-20%
+    slower. clang-cl loses 2.5-3%. The byte offset keeps the peeled block and gains more ("A run's pixels from a byte offset").
 
 ## Open leads
 
@@ -1590,7 +1632,9 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
      multiply loops. `-mbranches-within-32B-boundaries` at SSE4.1 was measured at b1395f9 only: 4K -> 1080p RGB24 -4%,
      the other rows within 3%.
    - The same rows 3-13.5% slower in a build whose change left that kernel's inner loops the same instructions and moved
-     a block of it (the 8500T's log, "MSVC's source prefetch and conversion loads").
+     a block of it (the 8500T's log, "MSVC's source prefetch and conversion loads"). Again 3-10% with the pixels from a
+     byte offset: two base registers swapped, the block loop's jump and two conversion loops' then on boundaries.
+   - Unmeasured: clang-cl's padding at SSE4.1 on the cores without the erratum, where MSVC's switch costs up to 35%.
    - The SSE4.1 level runs unpadded under every compiler, a trade-off: the Skylake family's Pentiums and Celerons have
      the erratum and no AVX, and the 8500T gains up to 15% at SSE4.1 padded; the CPUs without the erratum lose up to 35%
      (the section on jumps under MSVC).
@@ -1626,7 +1670,7 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
       arithmetic two thirds of its time. It has FEAT_FP16: 8 lanes per multiply-add in half-precision floats, untried.
 11. **MSVC against clang-cl on the 8500T** (its log: "MSVC against clang-cl, and the placement control, at 6ab4ba0";
     "MSVC's source prefetch and conversion loads"; "MSVC's per-column branches and the slide check"; "The block loop to
-    an end pointer, the steps from its pointers").
+    an end pointer, the steps from its pointers"; "MSVC's column on ports 1 and 5").
     - AVX2: clang-cl ahead by 3-8% on the RGB32 and RGBA32 downscales of 3.7:1 and more at e7f3800, as at 6ab4ba0; the
       other rows within 3% either way. About half of it was the conversion: MSVC requested one row's source lines of
       each pair, and widened through an extra shuffle. With both fixed clang-cl leads by 1-6% there.
@@ -1635,14 +1679,21 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
         21 MP -> 175x117 and 101 MP -> 720p by 2-2.5%, 4K -> 200x113 by 1%. The block loop's end pointer and the steps
         from its pointers sped both compilers alike; the one offset took 1-3% off MSVC's downscales, half of the
         thumbnails' lead.
+      - With the pixels from a byte offset, clang-cl leads 24 MP, 1080p -> 120x68, 21 MP -> 175x117 and 4K -> 200x113 by
+        1.7-2.8%, 101 MP -> 720p by 0.5%, 1080p -> 240p by 2.6% / -0.3%: one session, where clang-cl's own times move by
+        up to 3% by launch.
+      - MSVC's column was bound by its `lea`s on ports 1 and 5 ("A run's pixels from a byte offset").
+      - Left at 1080p -> 120x68: the column within 1% of clang-cl's; MSVC's code per chunk +200-260 M cycles of 15200 M,
+        spread over its 401-instruction chunk loop, its prefetch loops +90 M. A chunk is 128 source pixels, 8 dest
+        columns at 16:1.
       - At 54b7a6b, 1080p -> 120x68, averaged over three profiles of 2000 resizes: MSVC's kernel +740 M cycles of
         14760 M, +5.6% micro-ops at the same rate. The conversion +250 M (its four stepped pointers: the one offset
         removes it), the column loop's code around the block loop +260 M, the code per chunk and row pair +280 M; the
         block loop level. A single profile's regions vary by 100 M and more.
       - Not the per-chunk part: MSVC's slide-check mispredicts (4 M again at 54b7a6b, a taken branch more per column)
         and its 64-bit divides in the temp ring (about 90 M cycles) gone, and the kernel's cycles level (ddcfe9d).
-      - Not micro-ops in the column: the indices hidden and the zeroing moved take 7 a column off and gain nothing
-        (experiments 29 and 39).
+      - Not micro-ops in the column as such: the indices hidden and the zeroing moved take 7 a column off and gain
+        nothing (experiments 29 and 39), neither on ports 1 and 5.
       - clang-cl's conversion unroll is not its lead: unrolled or not, its loop takes the same cycles.
     - SSE4.1, at 6ab4ba0: clang-cl ahead by 4-5% on 4K -> 1080p RGB24, RGB32 and RGBA32, 8.5% on 4K -> 200x113
       RGBA32; MSVC ahead by 12% on 4K -> 1080p Grayscale8, 15% on 720p -> 4K RGB24, 3% on 720p -> 4K Grayscale8. The

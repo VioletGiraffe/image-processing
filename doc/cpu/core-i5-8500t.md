@@ -1474,3 +1474,44 @@ The conversion's one offset on top, against ddcfe9d, three rounds:
 
 - One profile's regions vary by 100 M cycles and more between runs: the vertical tap loop read MSVC +124 M in one
   and -18 M in another. Region gaps here are averages of three.
+
+## MSVC's column on ports 1 and 5 (open lead 11)
+
+1080p -> 240p RGB32 at 9b6d783, `resizeRowsWith<3,4,0>` at AVX2, 1000 resizes, mean of three profiles, M cycles:
+
+| Part of the column loop | MSVC | clang-cl | Micro-ops issued, MSVC - clang-cl |
+|---|---:|---:|---:|
+| Run record to pointers | 1242 | 802 | +1674 |
+| First block | 1538 | 1170 | +950 |
+| Block loop | 2071 | 2210 | -211 |
+| Chains summed | 645 | 479 | +347 |
+| Steps | 1349 | 1557 | -1199 |
+| Reduction and stores | 1904 | 1889 | -188 |
+| Kernel | 12339 | 11879 | +881 |
+
+- The column runs from the micro-op cache in both builds; no store-forwarding blocks; 4K aliasing 172 M against 150 M.
+- Ports per column pair: MSVC 20.7, 22.1, 27.1, 26.4 on ports 0, 1, 5, 6, loads 43.5; clang-cl 20.8, 20.4, 22.8,
+  29.9, loads 39.6. Cycles 37.8 against 34.6. Four micro-ops or more executed in 60% of cycles against 67%.
+- MSVC's extra in the first two parts: 10 `lea`s against 3, the four spread indices loaded, both sums zeroed.
+
+Variants, MSVC, each against 9b6d783 in its own rounds, three each; ranges over two or three sets:
+
+| Variant | Column | 1080p -> 240p | 24 MP | 1080p -> 120x68 |
+|---|---|---:|---:|---:|
+| Indices hidden (experiment 29) | 105 instructions, kernel cycles level, 2% fewer micro-ops | profiled only | | |
+| And the sums zeroed in their own branch (experiment 39) | a `jmp` per column | kernel cycles level | | |
+| Zero-started chains, every block in the loop, indices hidden (experiment 40) | 92 instructions, 5 `lea`s | -1.9% to -6.0% | -0.7% to +0.1% | +0.5% to +1.2% |
+| The same, MSVC only, sums from the chains | 90, 5 `lea`s | -2.4% / -2.2% | +0.1% | +1.2% |
+| And the pixels from a byte offset | 90, 3 `lea`s | -3.2% to -3.6% | -0.7% to +0.3% | +0.3% to +1.4% |
+| The pixels from a byte offset, first block peeled, indices hidden | 104, 7 `lea`s | -3.7% / -5.0% | -2.5% / -2.4% | -1.0% / -1.3% |
+| The pixels from a byte offset alone | 108, 7 `lea`s | -5.0% / -4.7% | -3.4% / -1.7% | -0.3% / -0.5% |
+
+- Zero-started chains without the indices hidden: MSVC loads them inside the block loop, the strong downscales 12-20% slower.
+- The indices built once per row group instead of per chunk: clang-cl spills them across `prepareRun`'s `memmove` and
+  reloads them every column.
+- The byte offset under clang-cl: registers renamed, its AVX2 rows within 1%, its SSE4.1 downscales 3-10% slower, a
+  jump moved onto a 32-byte boundary (open lead 5).
+- 24 MP, zero-started chains and the byte offset: the column 8% above clang-cl's in instructions and in cycles, port 5
+  its surplus.
+- 1080p -> 120x68, zero-started chains and the byte offset: the block loop's cycles per block level with clang-cl's, the column within 1%;
+  the rest of the gap in the code per chunk (open lead 11).

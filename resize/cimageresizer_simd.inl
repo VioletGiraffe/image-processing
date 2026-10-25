@@ -819,7 +819,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			// The last pixel a run of FixedTaps may start at
 			[[maybe_unused]] const size_t lastStart = bufferEnd - FixedTaps;
 			// No column index: the run and the temp pixels are stepped, where an index makes every column form them from bases kept across the loop.
-			// The rows' floats as if they began at source pixel 0, for filterRun: a run's pixels are one scaled add away.
+			// The rows' floats as if they began at source pixel 0, for filterRun: a run's pixels are one add away.
 			// Before the allocation unless bufferBegin is 0, and never read below bufferBegin.
 			[[maybe_unused]] const float* const originA = sourceFloats[0] - bufferBegin * pixelFloats;
 			[[maybe_unused]] const float* const originB = sourceFloats[Interleaved ? 0 : Rows - 1] - bufferBegin * pixelFloats;
@@ -852,8 +852,12 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 				else
 				{
-					const size_t floatOffset = firstPixel * pixelFloats;
-					filterRun<Channels, Rows, FixedTaps>(originA + floatOffset, originB + floatOffset, { run->weights, run->weightCount }, weightSpreader, outA, outB);
+					// A byte offset: MSVC re-derives the pointers after a run's first block, from a float offset in more lea's, which
+					// Skylake runs on ports 1 and 5 only, beside the multiply-adds and the weights' vpermps.
+					const size_t byteOffset = firstPixel * pixelFloats * sizeof(float);
+					const float* const pixelsA = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(originA) + byteOffset);
+					const float* const pixelsB = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(originB) + byteOffset);
+					filterRun<Channels, Rows, FixedTaps>(pixelsA, pixelsB, { run->weights, run->weightCount }, weightSpreader, outA, outB);
 				}
 				outA += Channels;
 				if constexpr (Rows == 2)
