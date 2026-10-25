@@ -1228,3 +1228,148 @@ Both against e7f3800, each compiler against its own build: three rounds with con
   Grayscale8 +2.8% aside.
 - The prefetch alone, without the loads: MSVC's strong downscales 0.3-2.5% faster at AVX2 (four rounds).
 - On top of both, the spread indices hidden from MSVC (experiment 29 again): within 1% of the fix on every filtered row.
+
+## MSVC's per-column branches and the slide check (open lead 11)
+
+At 87bebbc. MSVC's executable with clang-cl's AVX2 kernel object linked in place of its own, against both builds: four
+rounds without controls, median of same-round ratios / minimum to minimum.
+
+| Scenario | MSVC, min ms | Hybrid | clang-cl |
+|---|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | 42.33 | -4.2% / -4.1% | -3.6% / -4.0% |
+| 2.8 MP -> 1920x1280 RGB32 | 9.09 | +1.8% / +1.8% | +1.9% / +2.0% |
+| 4K -> 1600x900 RGB32 | 15.50 | +0.1% / -0.3% | -0.6% / -0.2% |
+| 4K -> 720p RGB32 | 13.87 | +0.5% / -0.3% | -0.3% / -0.4% |
+| 720p -> 4K RGBA32 | 13.24 | -2.2% / -2.5% | -2.2% / -2.3% |
+| 720p -> 4K RGB32 | 11.91 | +1.0% / +1.0% | +1.1% / +1.0% |
+| 1080p -> 240p RGB32 | 3.47 | -3.6% / -4.3% | -4.1% / -4.1% |
+| 1080p -> 120x68 RGB32 | 2.52 | -4.9% / -6.0% | -6.4% / -5.9% |
+| 21 MP -> 175x117 RGB32 | 23.49 | -3.4% / -3.5% | -2.8% / -3.5% |
+| 4K -> 200x113 RGB32 | 11.14 | -2.1% / -2.6% | -3.5% / -3.1% |
+| 4K -> 200x113 RGBA32 | 13.07 | -2.1% / -2.1% | -1.9% / -2.3% |
+| 1080p at native size RGB32 | 1.80 | +0.5% / +2.3% | -0.1% / +0.1% |
+| 4K -> 1080p Grayscale8 | 8.79 | +0.9% / +0.8% | -0.9% / -0.2% |
+| 4K -> 1080p RGB24 | 17.41 | -0.3% / -0.4% | -0.5% / -0.5% |
+| 4K -> 1080p RGB32 | 17.14 | -1.1% / -0.6% | -0.8% / -0.6% |
+| 4K -> 1080p RGBA32 | 20.35 | -1.6% / -1.9% | -2.2% / -2.3% |
+| 720p -> 4K Grayscale8 | 4.40 | +0.5% / +0.6% | +12.2% / -0.5% |
+| 720p -> 4K RGB24 | 10.64 | +0.5% / +0.0% | +0.1% / -0.1% |
+| 1080p -> 4K NN RGB32 | 6.48 | +0.3% / +0.0% | -5.4% / -0.3% |
+| 1080p -> 4K NN RGBA32 | 7.05 | +0.7% / +0.2% | +0.5% / +0.2% |
+| 640x480 -> 1080p NN RGB32 | 1.60 | -0.7% / -0.9% | +3.3% / +0.4% |
+| 640x480 -> 1080p NN RGBA32 | 1.66 | +1.5% / +0.6% | +1.8% / -0.0% |
+| 4K -> 64x64 RGB32 | 9.72 | -0.7% / -0.8% | -1.0% / -1.3% |
+| 101 MP -> 720p RGB32 | 145.59 | -3.3% / -3.8% | -4.0% / -3.8% |
+
+- The hybrid runs as clang-cl on every row: the gap is the kernels' code.
+
+1080p -> 120x68 RGB32, 2000 resizes, `resizeRowsWith<3,4,0>`, M cycles (M micro-ops issued):
+
+| Part | MSVC | clang-cl |
+|---|---:|---:|
+| Kernel | 16858 | 15896 |
+| The block loop | 7764 | 7762 |
+| The column loop's code around it | 3456 (12290) | 2804 (10106) |
+| The row pair's conversion | 3498 | 3062 |
+
+- The code around the block loop runs at 3.6 micro-ops a cycle in both, with no stalls on either end: issue-bound.
+- The conversion: clang-cl unrolls it twice, 5 loop instructions per two blocks against MSVC's per one; 6.07 cycles a
+  block against 5.24.
+- Kernel mispredicts, precise events: MSVC 22.8 M, clang-cl 16.4 M. The difference is one branch, `prepareRun`'s slide
+  check, 6.4-7.2 M under MSVC and none under clang-cl; no front-end resteers there in either.
+
+What the slide check sees:
+- It alternates every other chunk, 7 slides a row pair: a slide follows a chunk of 7 columns, none a chunk of 8 (a
+  traced build).
+- After the block loop a 96-tap column took 4 taken branches under MSVC, a jump over each tap step it skips and the
+  loop's, and 3 under clang-cl, whose code after the steps is duplicated: 14 and 13 a column with the block loop's 10.
+- The chunk's start is about 7 x 14 + 1 = 99 taken branches back under MSVC, 92 under clang-cl; Skylake's history holds
+  about 93.
+
+The mispredicts at the check, M, in builds that move one thing:
+
+| Build | Slide check | Kernel |
+|---|---:|---:|
+| MSVC | 6.4-7.2 | 22.8-25.2 |
+| MSVC, 32 and 48 bytes of padding at the kernel's start | 7.2, 7.2 | 22.0, 24.8 |
+| MSVC, chunks of 64 pixels: 3-4 columns | 1.2 | 16.0 |
+| MSVC, no source prefetch: 14 taken branches less a chunk | 4.8 | 20.4 |
+| clang-cl | 0 | 14.8-16.4 |
+| clang-cl, the conversion loop not unrolled: 16 more | 0 | 15.2 |
+| clang-cl, the prefetch over 256 pixels: 16 more | 0 | 21.6 |
+| clang-cl, chunks of 256 pixels: 15-16 columns | 4.0 | 19.6 |
+
+- Branches added ahead of the chunk's columns do not reach the check; the columns' count and their branches do. Removing
+  the prefetch helps MSVC partly: unexplained.
+
+An early return for runs of whole blocks, ahead of the steps: the check's mispredicts gone, 1080p -> 120x68 -1.7% in
+kernel cycles. Four rounds, each compiler against MSVC's 87bebbc and its own:
+
+| Scenario | 87bebbc MSVC, min ms | Early return | clang-cl, 87bebbc | clang-cl, early return |
+|---|---:|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | 42.69 | +0.9% / +0.6% | -3.4% / -4.3% | +2.4% / +2.6% |
+| 2.8 MP -> 1920x1280 RGB32 | 9.09 | +4.7% / +5.1% | +6.5% / +1.9% | -1.2% / +0.2% |
+| 4K -> 1600x900 RGB32 | 15.48 | +1.5% / +1.6% | +0.5% / +0.1% | -0.8% / -0.0% |
+| 4K -> 720p RGB32 | 13.84 | -0.7% / +0.0% | -1.0% / -0.1% | +1.7% / +0.5% |
+| 720p -> 4K RGBA32 | 14.62 | -4.3% / -4.3% | -5.2% / -5.5% | +2.3% / -0.3% |
+| 720p -> 4K RGB32 | 12.96 | -1.9% / -1.6% | +1.9% / +3.7% | -2.6% / -4.4% |
+| 1080p -> 240p RGB32 | 3.47 | +0.7% / +0.5% | -4.2% / -4.0% | +1.0% / +1.4% |
+| 1080p -> 120x68 RGB32 | 2.52 | -1.7% / -1.8% | -5.1% / -5.6% | -2.0% / -1.9% |
+| 21 MP -> 175x117 RGB32 | 23.46 | -0.1% / -0.1% | -3.5% / -3.7% | -1.4% / -1.4% |
+| 4K -> 200x113 RGB32 | 11.08 | -0.1% / +0.6% | -2.1% / -2.4% | +1.5% / +1.7% |
+| 4K -> 200x113 RGBA32 | 13.07 | +1.6% / +1.4% | -0.6% / -2.2% | -0.0% / +1.7% |
+| 1080p at native size RGB32 | 1.98 | -0.9% / -8.3% | +1.7% / -7.0% | -8.0% / +0.9% |
+| 4K -> 1080p Grayscale8 | 8.76 | +1.2% / +0.4% | +0.5% / +0.4% | +1.2% / +1.5% |
+| 4K -> 1080p RGB24 | 17.40 | -0.7% / +0.0% | +0.8% / -0.3% | -0.6% / -0.2% |
+| 4K -> 1080p RGB32 | 17.07 | -1.2% / +0.1% | +0.8% / +2.0% | -1.1% / -1.8% |
+| 4K -> 1080p RGBA32 | 20.54 | -1.8% / -0.8% | -1.6% / -0.9% | -2.0% / -2.0% |
+| 720p -> 4K Grayscale8 | 4.82 | -9.4% / -9.6% | -2.8% / -8.9% | -3.1% / +0.1% |
+| 720p -> 4K RGB24 | 11.21 | -2.3% / -1.0% | -3.8% / -1.4% | +6.1% / +0.6% |
+| 1080p -> 4K NN RGB32 | 7.30 | +5.0% / +9.1% | +1.1% / +1.2% | +0.2% / +0.3% |
+| 1080p -> 4K NN RGBA32 | 7.77 | +8.9% / +9.3% | +9.5% / +9.5% | -6.5% / -6.4% |
+| 640x480 -> 1080p NN RGB32 | 1.85 | -17.4% / -13.9% | -15.2% / -14.5% | +10.4% / +1.1% |
+| 640x480 -> 1080p NN RGBA32 | 1.65 | +1.0% / -0.2% | +1.0% / +6.9% | -3.6% / -6.0% |
+| 4K -> 64x64 RGB32 | 9.82 | +0.2% / -0.2% | -1.8% / -2.1% | -0.5% / -0.4% |
+| 101 MP -> 720p RGB32 | 146.65 | -0.7% / -0.4% | -4.2% / -3.7% | +0.6% / +0.0% |
+
+- MSVC put the early return on the fall-through path: a run with taps left now jumps to its steps, one more taken branch.
+  1080p -> 240p and 4K -> 200x113 RGBA32 +1% to +2%.
+- 2.8 MP -> 1920x1280 takes a kernel of 7-tap runs, the same instructions in both builds: placement.
+
+The committed form, every step behind one test and one end for all runs, against 87bebbc: 2 taken branches after the
+block loop for a run of whole blocks, a run with taps left as before. Precise events: the slide check's mispredicts gone,
+kernel mispredicts 25.2 M to 16.0 M, cycles -2.1% under MSVC and -2.5% under clang-cl. Four rounds, the padded pair a
+placement control:
+
+| Scenario | 87bebbc MSVC, min ms | MSVC | MSVC, padded | clang-cl | clang-cl, 87bebbc |
+|---|---:|---:|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | 42.73 | +0.2% / +0.7% | -1.5% / +0.1% | +0.1% / -0.1% | -4.5% / -4.4% |
+| 2.8 MP -> 1920x1280 RGB32 | 9.09 | +2.4% / +0.4% | +1.3% / +2.0% | -1.9% / -4.2% | +6.7% / +6.8% |
+| 4K -> 1600x900 RGB32 | 15.55 | -0.4% / -0.3% | +0.2% / +0.2% | -0.6% / -0.1% | -0.4% / -0.6% |
+| 4K -> 720p RGB32 | 13.84 | -0.2% / +0.2% | -0.5% / -0.0% | +1.2% / +0.4% | -1.4% / -0.2% |
+| 720p -> 4K RGBA32 | 14.22 | +1.5% / +0.4% | +0.8% / +1.3% | +1.9% / +4.3% | -2.5% / -2.5% |
+| 720p -> 4K RGB32 | 12.93 | +2.4% / +1.7% | +3.1% / -0.2% | -1.7% / -2.2% | +3.4% / +3.5% |
+| 1080p -> 240p RGB32 | 3.47 | -0.6% / -0.3% | +0.5% / +0.6% | +1.1% / +0.9% | -3.9% / -4.0% |
+| 1080p -> 120x68 RGB32 | 2.51 | -1.4% / -1.4% | -2.2% / -1.9% | -1.9% / -1.9% | -5.7% / -5.7% |
+| 21 MP -> 175x117 RGB32 | 23.52 | -0.2% / -0.2% | +0.1% / -0.3% | -1.7% / -1.7% | -3.5% / -3.6% |
+| 4K -> 200x113 RGB32 | 11.10 | -0.2% / -0.2% | -0.8% / -0.7% | +2.3% / +1.7% | -2.7% / -2.6% |
+| 4K -> 200x113 RGBA32 | 13.07 | +0.6% / +0.4% | +0.6% / +0.7% | +0.9% / +0.8% | -2.0% / -2.2% |
+| 1080p at native size RGB32 | 1.86 | +9.3% / +17.0% | +14.5% / +1.2% | +8.9% / +0.9% | -7.5% / -2.0% |
+| 4K -> 1080p Grayscale8 | 8.80 | -0.2% / -0.6% | -0.5% / -0.4% | +0.8% / +0.2% | +0.8% / -0.5% |
+| 4K -> 1080p RGB24 | 17.62 | -1.0% / -1.3% | -1.3% / -0.2% | -1.2% / -1.3% | -0.0% / -0.3% |
+| 4K -> 1080p RGB32 | 17.12 | -1.2% / -0.3% | -0.1% / +0.1% | -1.2% / -1.3% | -0.2% / +0.9% |
+| 4K -> 1080p RGBA32 | 20.36 | -0.3% / -0.1% | +0.7% / +0.1% | -1.4% / -0.2% | -1.7% / -1.6% |
+| 720p -> 4K Grayscale8 | 4.45 | +5.2% / -0.7% | +4.7% / +7.2% | +1.8% / +0.6% | -3.5% / -2.9% |
+| 720p -> 4K RGB24 | 11.24 | +1.0% / +4.7% | +2.1% / -0.6% | +3.3% / +4.3% | -1.7% / -0.2% |
+| 1080p -> 4K NN RGB32 | 7.43 | -0.2% / +1.7% | +1.3% / +2.2% | -0.8% / -4.7% | +2.1% / +6.9% |
+| 1080p -> 4K NN RGBA32 | 8.42 | -4.3% / -4.2% | -5.1% / -5.0% | -3.0% / -0.8% | +0.6% / -3.1% |
+| 640x480 -> 1080p NN RGB32 | 1.62 | +0.9% / +10.6% | +12.8% / +1.2% | +23.6% / +1.3% | -10.6% / -2.2% |
+| 640x480 -> 1080p NN RGBA32 | 1.66 | +21.3% / +22.5% | +22.0% / +2.1% | +0.4% / +22.0% | +10.0% / -0.2% |
+| 4K -> 64x64 RGB32 | 9.73 | +0.9% / +0.5% | +0.3% / +0.3% | +0.0% / +0.1% | -1.4% / -1.8% |
+| 101 MP -> 720p RGB32 | 147.73 | -0.6% / -0.6% | -0.1% / -0.2% | +0.1% / +0.4% | -5.0% / -5.2% |
+
+- MSVC: 1080p -> 120x68 -1.4% to -2.2%, the other downscales within 1% in both pairs.
+- 2.8 MP -> 1920x1280 and the upscales take kernels of fixed run lengths, the same instructions in both builds, and move
+  up to 7%. Nearest neighbor, also unchanged, swings up to 22%.
+- VTune's precise events stopped the machine once, bugcheck 0xD1 in its sampling driver; the same collection then ran
+  cleanly five times.

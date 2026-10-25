@@ -100,6 +100,7 @@ namespace ImageProcessing::Detail::Neon
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 sumHalves(Floats8 values) noexcept { return vaddq_f32(values.low, values.high); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 lowHalf(Floats8 values) noexcept { return values.low; }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 highHalf(Floats8 values) noexcept { return values.high; }
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 addToLowHalf(Floats8 values, Floats4 addend) noexcept { return { vaddq_f32(values.low, addend), values.high }; }
 
 	// Sums a Floats4's 4 / FloatsPerPixel pixels into its first FloatsPerPixel lanes
 	template <size_t FloatsPerPixel>

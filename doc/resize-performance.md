@@ -1042,6 +1042,18 @@ Eight alternating rounds against the loops, the weights aligned in both builds (
 - MSVC's code with taps left, per row: two pointers formed, a compare and branch per step. The test for none skips
   about 11 instructions and 4 branches of a 12-tap Grayscale8 column's 75.
 
+For 4-float pixels the test for none comes before the 4- and 2-tap steps too, and the one tap adds into the low halves of
+the 8-float sums, so every run ends in the same code. Its product is added before the halves are summed: the result can
+differ in the last bit.
+- MSVC lays out a jump over each step a run skips: a run of whole blocks took 4 taken branches after its blocks, 2 with
+  the test. clang-cl duplicates the code after the steps and took 3.
+- The branch predictor's history holds about the last 93 taken branches on the Skylake family. `prepareRun`'s slide
+  check alternates every other chunk; the chunk's column count, 7 or 8 at 96-tap runs, is what predicts it. At 14 taken
+  branches a column MSVC's history no longer reached the chunk's start, and it mispredicted the check about 40% of the
+  time; clang-cl, at 13, never (the 8500T's log, "MSVC's per-column branches and the slide check").
+- 8500T under MSVC: 1080p -> 120x68 1.4-2.2% faster, its slide-check mispredicts 7.2 M to none; the other downscales
+  within 1%. clang-cl -2% to +2%.
+
 ### The general pass steps its run and temp pixels
 
 `filterBufferedRuns` has no column index. Per column it steps a pointer into the run table and one temp pixel
@@ -1582,13 +1594,19 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     - The M1: its upscale's horizontal loop runs at 62-69% of the multiply-add peak (throughput-ceiling.md, U13), the
       arithmetic two thirds of its time. It has FEAT_FP16: 8 lanes per multiply-add in half-precision floats, untried.
 11. **MSVC against clang-cl on the 8500T** (its log: "MSVC against clang-cl, and the placement control, at 6ab4ba0";
-    "MSVC's source prefetch and conversion loads").
+    "MSVC's source prefetch and conversion loads"; "MSVC's per-column branches and the slide check").
     - AVX2: clang-cl ahead by 3-8% on the RGB32 and RGBA32 downscales of 3.7:1 and more at e7f3800, as at 6ab4ba0; the
       other rows within 3% either way. About half of it was the conversion: MSVC requested one row's source lines of
       each pair, and widened through an extra shuffle. With both fixed clang-cl leads by 1-6% there.
-      - What remains on 1080p -> 120x68: the column loop's code around the block loop, 0.26 s against 0.20 s, spread
-        over its instructions.
-      - Not the spread indices' reloads (experiment 29). Untried: the two stack reloads (lead 21), the front end.
+      - MSVC's executable with clang-cl's AVX2 object linked in runs as clang-cl's: the gap is in the kernels' code.
+      - The rest at 87bebbc, 1080p -> 120x68, of 960 M cycles: the column loop's code around the block loop +650 M,
+        issue-bound in both builds with MSVC issuing 22% more micro-ops; the row pair's conversion +440 M, issue-bound
+        too, unrolled twice by clang-cl and not by MSVC; `prepareRun`'s slide check, mispredicted by MSVC, about +130 M,
+        which the tap steps' test for none removes.
+      - Zeroing two sums per column and reloading the four spread indices are 7 of MSVC's extra micro-ops a column. Moving
+        the zeroing to runs under one block takes 3% off that code's cycles, a row's noise; the indices hidden cost more
+        than they save (experiment 29).
+      - Untried: the conversion unrolled in the source; the two stack reloads after the block loop (lead 21).
     - SSE4.1, at 6ab4ba0: clang-cl ahead by 4-5% on 4K -> 1080p RGB24, RGB32 and RGBA32, 8.5% on 4K -> 200x113
       RGBA32; MSVC ahead by 12% on 4K -> 1080p Grayscale8, 15% on 720p -> 4K RGB24, 3% on 720p -> 4K Grayscale8. The
       RGB32 downscales of 2.4:1 and more read either way by clang-cl's placement (lead 5), and so does 4K -> 200x113

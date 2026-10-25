@@ -53,7 +53,8 @@ Access and per-machine setup are in `AGENTS.local.md`, git-ignored, where it exi
   10-round A/B of ten scenarios: about 80 s on the 8500T, 3.5 minutes on the i3-2310M.
 - 12600K (the PC): pin with `start /b /wait /affinity <mask>`, P-core 4 (logical 2), E-core 1000 (logical 12).
 - Core i5-8500T: MSVC, clang-cl, VTune. VTune: `-collect hotspots -knob sampling-mode=hw`; `uarch-exploration`
-  crashed the machine once.
+  crashed the machine once, and so did a precise event (`_PS`) once in six runs. Over ssh, add keepalives
+  (`-o ServerAliveInterval=10`) so a crash ends the session.
 - Core i3-2310M (Sandy Bridge): AVX is its level, so it judges AVX changes.
 - Raspberry Pi 4: builds its own, with Clang and GCC. perf in user space only.
 - Mac mini (Apple M1): has a checkout, its dependencies beside it; builds its own with Apple Clang. No pinning: a run
@@ -83,6 +84,9 @@ Access and per-machine setup are in `AGENTS.local.md`, git-ignored, where it exi
   locals"). Also see the comments on `addProduct` and `RowChains`.
 - MSVC moves small arrays of vectors through memory: hold a window of vectors in named variables.
 - From a loop over a constant count of rows MSVC keeps the first row's prefetches only: write the rows out.
+- MSVC lays out a jump over each conditional step a path skips. Taken branches per column decide how many columns back the
+  branch predictor sees, about 93 taken branches on the 8500T: a branch that depends on more mispredicts ("`filterRun`'s
+  last taps are steps, behind one test for none").
 - Under clang-cl a lambda does not carry the kernel's target attribute: SIMD helpers it calls fail to inline. Use
   functions.
 - After changing a hot loop, read its listing under MSVC and clang-cl: instruction count, register copies, stack

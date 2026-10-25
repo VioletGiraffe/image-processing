@@ -609,47 +609,65 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					accumPairs[1] = sumChains(chainsB);
 			}
 
-			// [[likely]] on the three steps below is for code placement, not a claim about the run lengths:
-			// GCC moves a step whose body is a loop over the rows out of line without it.
-
-			// 16 floats, half a four-chain block: a whole bicubic run of 4-float pixels
-			if constexpr (horizontalChainCount == 4)
+			// 4-float pixels: a run of whole blocks skips all the steps with one test, and every run ends in the same code below.
+			// Not a test per step: MSVC jumps over each step a run skips, and each taken branch per column shortens how far back
+			// the branch predictor sees (resize-performance.md, "`filterRun`'s last taps are steps, behind one test for none").
+			if (floatsPerPixel != 4 || tap != tapCount)
 			{
-				if (tap + 16 / floatsPerPixel <= tapCount) [[likely]]
+				// [[likely]] on the three steps below is for code placement, not a claim about the run lengths:
+				// GCC moves a step whose body is a loop over the rows out of line without it.
+
+				// 16 floats, half a four-chain block: a whole bicubic run of 4-float pixels
+				if constexpr (horizontalChainCount == 4)
 				{
-					// A whole WeightBlock though only 4 weights may be in play: the builder pads the weights array to keep the overread
-					// in bounds. On AVX2 the natural 4-float load + castps128_ps256 compiles under MSVC to a 16-byte stack store that the
-					// 32-byte vpermps memory operand then reloads, and a load wider than the store it overlaps cannot be
-					// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
-					const float* blockWeights = weights.data() + tap;
-					const WeightBlock firstWeights = loadWeightBlock(blockWeights);
-					const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, firstWeights);
-					const Floats8 w1 = chainWeights<1>(weightSpreader, blockWeights, firstWeights);
-					for (size_t row = 0; row < Rows; ++row)
+					if (tap + 16 / floatsPerPixel <= tapCount) [[likely]]
 					{
-						const float* blockPixels = runPixels[row] + tap * floatsPerPixel;
-						// A run known to be shorter than a block starts its sums here, with no zero to add to
-						if constexpr (FixedTaps != 0 && FixedTaps < blockTaps)
-							accumPairs[row] = mul(loadFloats8(blockPixels + 8), w1);
-						else
-							addProduct(accumPairs[row], loadFloats8(blockPixels + 8), w1);
+						// A whole WeightBlock though only 4 weights may be in play: the builder pads the weights array to keep the overread
+						// in bounds. On AVX2 the natural 4-float load + castps128_ps256 compiles under MSVC to a 16-byte stack store that the
+						// 32-byte vpermps memory operand then reloads, and a load wider than the store it overlaps cannot be
+						// store-forwarded - a ~35-cycle stall, measured to roughly double the upscale pass.
+						const float* blockWeights = weights.data() + tap;
+						const WeightBlock firstWeights = loadWeightBlock(blockWeights);
+						const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, firstWeights);
+						const Floats8 w1 = chainWeights<1>(weightSpreader, blockWeights, firstWeights);
+						for (size_t row = 0; row < Rows; ++row)
+						{
+							const float* blockPixels = runPixels[row] + tap * floatsPerPixel;
+							// A run known to be shorter than a block starts its sums here, with no zero to add to
+							if constexpr (FixedTaps != 0 && FixedTaps < blockTaps)
+								accumPairs[row] = mul(loadFloats8(blockPixels + 8), w1);
+							else
+								addProduct(accumPairs[row], loadFloats8(blockPixels + 8), w1);
 
-						addProduct(accumPairs[row], loadFloats8(blockPixels), w0);
+							addProduct(accumPairs[row], loadFloats8(blockPixels), w0);
+						}
+
+						tap += 16 / floatsPerPixel;
 					}
-
-					tap += 16 / floatsPerPixel;
 				}
-			}
 
-			// 8 floats: a whole bicubic run of 2-float pixels
-			if (tap + 8 / floatsPerPixel <= tapCount) [[likely]]
-			{
-				const float* blockWeights = weights.data() + tap;
-				const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, loadWeightBlock(blockWeights));
-				for (size_t row = 0; row < Rows; ++row)
-					addProduct(accumPairs[row], loadFloats8(runPixels[row] + tap * floatsPerPixel), w0);
+				// 8 floats: a whole bicubic run of 2-float pixels
+				if (tap + 8 / floatsPerPixel <= tapCount) [[likely]]
+				{
+					const float* blockWeights = weights.data() + tap;
+					const Floats8 w0 = chainWeights<0>(weightSpreader, blockWeights, loadWeightBlock(blockWeights));
+					for (size_t row = 0; row < Rows; ++row)
+						addProduct(accumPairs[row], loadFloats8(runPixels[row] + tap * floatsPerPixel), w0);
 
-				tap += 8 / floatsPerPixel;
+					tap += 8 / floatsPerPixel;
+				}
+
+				if constexpr (floatsPerPixel == 4)
+				{
+					// One tap at most, into the low halves: see storeTempPixelWithTaps
+					assert(tapCount - tap <= 1);
+					if (tap < tapCount)
+					{
+						const Floats4 weight = broadcastFloats4(weights[tap]);
+						for (size_t row = 0; row < Rows; ++row)
+							accumPairs[row] = addToLowHalf(accumPairs[row], mul(loadFloats4(runPixels[row] + tap * 4), weight));
+					}
+				}
 			}
 
 			Floats4 accum[Rows];
@@ -671,15 +689,6 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 
 			if constexpr (floatsPerPixel == 4)
 			{
-				// One tap at most, as a step: see storeTempPixelWithTaps
-				assert(tapCount - tap <= 1);
-				if (tap < tapCount)
-				{
-					const Floats4 weight = broadcastFloats4(weights[tap]);
-					for (size_t row = 0; row < Rows; ++row)
-						accum[row] = mulAdd(loadFloats4(runPixels[row] + tap * 4), weight, accum[row]);
-				}
-
 				for (size_t row = 0; row < Rows; ++row)
 					storeTempPixel<Channels>(outPixels[row], accum[row]);
 			}

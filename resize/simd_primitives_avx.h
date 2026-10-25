@@ -91,6 +91,7 @@ namespace ImageProcessing::Detail::Avx
 
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 lowHalf(Floats8 values) noexcept { return _mm256_castps256_ps128(values); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 highHalf(Floats8 values) noexcept { return _mm256_extractf128_ps(values, 1); }
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 addToLowHalf(Floats8 values, Floats4 addend) noexcept { return _mm256_add_ps(values, _mm256_zextps128_ps256(addend)); }
 
 	// Sums a Floats4's 4 / FloatsPerPixel pixels into its first FloatsPerPixel lanes
 	template <size_t FloatsPerPixel>
