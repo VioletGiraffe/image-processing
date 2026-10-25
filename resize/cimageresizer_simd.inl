@@ -96,14 +96,22 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				if (pixelCount >= loadedPixels)
 				{
 					const size_t blockCount = (pixelCount - loadedPixels) / blockPixels + 1;
-					// Stepped pointers and an end pointer: for an index bound MSVC keeps a second counter and indexes the stores
-					const uint8_t* blockBytesA = pixelsA;
-					[[maybe_unused]] const uint8_t* blockBytesB = pixelsB;
-					float* blockFloatsA = floatsA;
-					[[maybe_unused]] float* blockFloatsB = floatsB;
-					float* const blockFloatsEndA = floatsA + blockCount * 16;
-					for (; blockFloatsA != blockFloatsEndA; blockBytesA += blockPixels * PixelStride, blockFloatsA += 16)
+					// One byte offset steps all the streams; the float offset equals it where a block has as many floats as bytes.
+					// Not a pointer per stream: MSVC steps each, 18 instructions a block of two RGB32 rows at AVX2 against 15.
+					constexpr size_t blockBytes = blockPixels * PixelStride;
+					const size_t bytesEnd = blockCount * blockBytes;
+					size_t floatOffset = 0;
+					for (size_t byteOffset = 0; byteOffset != bytesEnd; byteOffset += blockBytes)
 					{
+						if constexpr (blockBytes == 16)
+							floatOffset = byteOffset;
+						const uint8_t* const blockBytesA = pixelsA + byteOffset;
+						[[maybe_unused]] const uint8_t* const blockBytesB = pixelsB + byteOffset;
+						float* const blockFloatsA = floatsA + floatOffset;
+						[[maybe_unused]] float* const blockFloatsB = floatsB + floatOffset;
+						if constexpr (blockBytes != 16)
+							floatOffset += 16;
+
 						Floats8 firstA, secondA;
 						[[maybe_unused]] Floats8 firstB, secondB;
 						if constexpr (PixelStride == 3)
@@ -136,8 +144,6 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 						{
 							storeFloats8(blockFloatsB, firstB);
 							storeFloats8(blockFloatsB + 8, secondB);
-							blockBytesB += blockPixels * PixelStride;
-							blockFloatsB += 16;
 						}
 					}
 
@@ -171,13 +177,20 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				if (pixelCount >= loadedPixels)
 				{
 					const size_t blockCount = (pixelCount - loadedPixels) / 4 + 1;
-					// Stepped pointers and an end pointer: see convertPixelsToFloats
-					const uint8_t* blockBytesA = pixelsA;
-					const uint8_t* blockBytesB = pixelsB;
-					float* blockFloats = floats;
-					float* const blockFloatsEnd = floats + blockCount * 32;
-					for (; blockFloats != blockFloatsEnd; blockBytesA += 4 * PixelStride, blockBytesB += 4 * PixelStride, blockFloats += 32)
+					// One byte offset, the float offset twice it where a block has twice as many floats as bytes: see convertPixelsToFloats
+					constexpr size_t blockBytes = 4 * PixelStride;
+					const size_t bytesEnd = blockCount * blockBytes;
+					size_t floatOffset = 0;
+					for (size_t byteOffset = 0; byteOffset != bytesEnd; byteOffset += blockBytes)
 					{
+						if constexpr (blockBytes == 16)
+							floatOffset = 2 * byteOffset;
+						const uint8_t* const blockBytesA = pixelsA + byteOffset;
+						const uint8_t* const blockBytesB = pixelsB + byteOffset;
+						float* const blockFloats = floats + floatOffset;
+						if constexpr (blockBytes != 16)
+							floatOffset += 32;
+
 						Floats8 pair0, pair1, pair2, pair3;
 						if constexpr (PixelStride == 3)
 							loadFourRgbPixelPairsAsFloats(blockBytesA, blockBytesB, pair0, pair1, pair2, pair3);
