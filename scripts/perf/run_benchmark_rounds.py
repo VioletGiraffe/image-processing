@@ -76,12 +76,29 @@ def process_cpu_seconds():
     return processes
 
 
+# Names of the Windows services each process hosts, by process id: an svchost is anonymous without them. Empty elsewhere.
+# Missing for a service that stopped before the lookup.
+def hosted_services(process_ids):
+    if platform.system() != "Windows" or not process_ids:
+        return {}
+    process_filter = " OR ".join(f"ProcessId={process_id}" for process_id in process_ids)
+    command = f"Get-CimInstance Win32_Service -Filter '{process_filter}' | ForEach-Object {{ '{{0}}|{{1}}' -f $_.ProcessId, $_.Name }}"
+    listing = subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True, text=True).stdout
+    services = {}
+    for line in listing.splitlines():
+        process_id, name = line.split("|", 1)
+        services.setdefault(int(process_id), []).append(name)
+    return services
+
+
 def busiest_other_processes(before, after, own_name):
     # Linux reports a name's first 15 characters
     own_names = (own_name, own_name[:15])
-    used = [(after[process_id][0] - seconds, name) for process_id, (seconds, name) in before.items() if process_id in after and name not in own_names]
+    used = [(after[process_id][0] - seconds, name, process_id) for process_id, (seconds, name) in before.items() if process_id in after and name not in own_names]
     used = sorted((item for item in used if item[0] >= REPORTED_CPU_SECONDS), reverse=True)[:4]
-    return ", ".join(f"{name} {seconds:.1f} s" for seconds, name in used) or f"none above {REPORTED_CPU_SECONDS} s"
+    services = hosted_services([process_id for _, _, process_id in used])
+    return ", ".join(f"{name}{' (' + ', '.join(sorted(services[process_id])) + ')' if process_id in services else ''} {seconds:.1f} s"
+                     for seconds, name, process_id in used) or f"none above {REPORTED_CPU_SECONDS} s"
 
 
 # series: (name, affinity mask or None, results directory) each. Every series runs a binary at the same time as the others.
