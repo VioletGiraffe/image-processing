@@ -559,13 +559,17 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			for (size_t row = 0; row < Rows; ++row)
 				accumPairs[row] = zeroFloats8();
 
-			// The steps after the blocks take the remaining taps from stepWeights and stepPixelsA/B: the block loop leaves its pointers there.
-			// Not indexed from the run's start: the bases then stay live through the block loop, and MSVC's column loop reloads two values from the stack.
+			// Every path's blocks end at blockedTaps; the steps after them take the remaining taps from stepWeights and stepPixelsA/B.
+			// stepWeights is set ahead of the paths: as the block loop's own pointer, MSVC joins the short runs' path with a jump, a taken
+			// branch more per column (see the 4-float test below).
+			// The pixel pointers are the block loop's: indexed from the run's start, the bases stay live through the loop, and MSVC's
+			// column loop reloads two values from the stack.
 			// Two variables, not an array: MSVC's SSE4.1 code adds an offset to both of an array's pointers in one vector through the stack, a store-forwarding stall.
-			const float* stepWeights = weights.data();
+			const size_t blockedTaps = tapCount / blockTaps * blockTaps;
+			const float* stepWeights = weights.data() + blockedTaps;
 			const float* stepPixelsA = runPixels[0];
 			[[maybe_unused]] const float* stepPixelsB = runPixels[Rows - 1];
-			size_t remaining = tapCount;
+			size_t remaining = tapCount - blockedTaps;
 
 			// A run is consecutive pixels, so a block goes through independent chains of 8 floats;
 			// per-tap accumulation into one register would serialize on the multiply-add latency.
@@ -574,11 +578,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				RowChains chainsA;
 				RowChains chainsB;
 				filterBlocksFrom<0, FixedTaps / blockTaps, Rows>(weightSpreader, weights.data(), runPixels[0], runPixels[Rows - 1], chainsA, chainsB);
-				constexpr size_t blockedTaps = FixedTaps / blockTaps * blockTaps;
-				stepWeights += blockedTaps;
 				stepPixelsA += blockedTaps * floatsPerPixel;
 				stepPixelsB += blockedTaps * floatsPerPixel;
-				remaining = FixedTaps - blockedTaps;
 
 				accumPairs[0] = sumChains(chainsA);
 				if constexpr (Rows == 2)
@@ -596,24 +597,18 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				if constexpr (horizontalChainCount == 4)
 				{
 					const float* blockWeights = weights.data() + blockTaps;
-					const float* blockPixelsA = runPixels[0] + blockTaps * floatsPerPixel;
-					const float* blockPixelsB = runPixels[Rows - 1] + blockTaps * floatsPerPixel;
-					const float* const blockWeightsEnd = weights.data() + tapCount / blockTaps * blockTaps;
-					while (blockWeights != blockWeightsEnd)
+					stepPixelsA += blockTaps * floatsPerPixel;
+					stepPixelsB += blockTaps * floatsPerPixel;
+					while (blockWeights != stepWeights)
 					{
-						keepInRegister(blockPixelsA);
+						keepInRegister(stepPixelsA);
 						if constexpr (Rows == 2)
-							keepInRegister(blockPixelsB);
-						filterBlock<false, Rows>(weightSpreader, blockWeights, blockPixelsA, blockPixelsB, chainsA, chainsB);
+							keepInRegister(stepPixelsB);
+						filterBlock<false, Rows>(weightSpreader, blockWeights, stepPixelsA, stepPixelsB, chainsA, chainsB);
 						blockWeights += blockTaps;
-						blockPixelsA += blockTaps * floatsPerPixel;
-						blockPixelsB += blockTaps * floatsPerPixel;
+						stepPixelsA += blockTaps * floatsPerPixel;
+						stepPixelsB += blockTaps * floatsPerPixel;
 					}
-
-					stepWeights = blockWeights;
-					stepPixelsA = blockPixelsA;
-					stepPixelsB = blockPixelsB;
-					remaining = tapCount % blockTaps;
 				}
 				else
 				{
@@ -621,10 +616,9 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					for (; tap + blockTaps <= tapCount; tap += blockTaps)
 						filterBlock<false, Rows>(weightSpreader, weights.data() + tap, runPixels[0] + tap * floatsPerPixel, runPixels[Rows - 1] + tap * floatsPerPixel, chainsA, chainsB);
 
-					stepWeights += tap;
+					// tap, not blockedTaps: the same value, and one fewer kept across MSVC's SSE4.1 loop
 					stepPixelsA += tap * floatsPerPixel;
 					stepPixelsB += tap * floatsPerPixel;
-					remaining = tapCount - tap;
 				}
 
 				accumPairs[0] = sumChains(chainsA);

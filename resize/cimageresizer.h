@@ -88,6 +88,7 @@ namespace ImageProcessing
 	using ParallelForFn = std::function<void(size_t count, const std::function<void(size_t index)>& body)>;
 
 	// Requires 1-4 one-byte channels, laid out the same in both views; release builds return on other channel counts or sizes, dest untouched.
+	// Requires a source of fewer than 2^32 rows, unchecked.
 	// The output is premultiplied, so an alpha destination must be marked Premultiplied; a straight source is premultiplied as it is read.
 	// simdCap: the highest level to use, empty for detectedSimdLevel(); it must not exceed that level.
 	void resize(ImageView<false>& dest, const ImageView<true>& source, Rect srcRect = {}, const ParallelForFn& parallelFor = {},

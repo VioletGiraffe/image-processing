@@ -149,19 +149,26 @@ namespace ImageProcessing::Detail
 
 		[[nodiscard]] float* row(uint64_t sourceRow) const noexcept
 		{
-			return _firstRow + static_cast<size_t>(sourceRow % _rowCount) * _rowStride;
+			return _firstRow + slotOf(sourceRow) * _rowStride;
 		}
 
 		// A window is contiguous in the ring except across the wrap, which splits it at most once
 		[[nodiscard]] std::array<TempRowSegment, 2> window(uint64_t firstRow, size_t rowCount) const noexcept
 		{
 			assert(rowCount <= _rowCount);
-			const size_t firstSlot = static_cast<size_t>(firstRow % _rowCount);
+			const size_t firstSlot = slotOf(firstRow);
 			const size_t rowsToRingEnd = std::min(rowCount, _rowCount - firstSlot);
 			return { { { _firstRow + firstSlot * _rowStride, rowsToRingEnd }, { _firstRow, rowCount - rowsToRingEnd } } };
 		}
 
 	private:
+		// A 32-bit divide: a 64-bit one costs Skylake-family cores up to three times as long. Sources have fewer than 2^32 rows (resize()).
+		[[nodiscard]] size_t slotOf(uint64_t sourceRow) const noexcept
+		{
+			assert(sourceRow <= UINT32_MAX && _rowCount <= UINT32_MAX);
+			return static_cast<uint32_t>(sourceRow) % static_cast<uint32_t>(_rowCount);
+		}
+
 		AlignedFloats _rows;
 		float* _firstRow;
 		size_t _rowStride;
