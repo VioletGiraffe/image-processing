@@ -1515,3 +1515,9 @@ Variants, MSVC, each against 9b6d783 in its own rounds, three each; ranges over 
   its surplus.
 - 1080p -> 120x68, zero-started chains and the byte offset: the block loop's cycles per block level with clang-cl's, the column within 1%;
   the rest of the gap in the code per chunk (open lead 11).
+
+## Without link-time code generation (open lead 34)
+
+MSVC at 5a4d2c3 without against with link-time code generation, three rounds with controls, median of ratios / min to
+min. AVX2, the same code: every row within 1.7%. SSE4.1: 2.8 MP -> 1920x1280 +4.4% / +4.4%, 720p -> 4K RGB24
++2.2% / +2.6%, 720p -> 4K Grayscale8 +2.0% / +5.3%, 4K -> 1080p RGB24 +1.5% / +1.2%, the other rows within 1.1%.

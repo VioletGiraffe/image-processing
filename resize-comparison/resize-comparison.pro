@@ -4,7 +4,7 @@ TARGET = resize-comparison
 CONFIG += strict_c++ c++2b
 CONFIG -= c++17 c++2a
 
-CONFIG(release, debug|release):CONFIG += optimize_full ltcg
+CONFIG(release, debug|release):CONFIG += optimize_full
 
 QT += widgets
 

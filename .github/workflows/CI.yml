@@ -90,15 +90,14 @@ jobs:
         $QT_ROOT_DIR/bin/qmake image-processing-tests.pro -config release CONFIG+=release
         make -j$(nproc)
 
-    # lld links Clang's thin LTO objects without a linker plugin
     - name: Build tests on Linux with Clang
       if: startsWith(matrix.os, 'ubuntu') && matrix.compiler == 'clang'
       working-directory: tests
       run: |
         sudo apt update -y
-        sudo apt install -qq clang lld
+        sudo apt install -qq clang
         clang++ --version
-        $QT_ROOT_DIR/bin/qmake image-processing-tests.pro -spec linux-clang -config release CONFIG+=release QMAKE_LFLAGS+=-fuse-ld=lld
+        $QT_ROOT_DIR/bin/qmake image-processing-tests.pro -spec linux-clang -config release CONFIG+=release
         make -j$(nproc)
 
     - name: Run tests on Windows

@@ -37,10 +37,9 @@ Treat those documents as project memory: update them with any change to the kern
 
 - `scripts/run_tests.ps1` needs `QT_ROOT_DIR`, or `scripts/local-env.ps1` (git-ignored) setting it. The full suite takes
   about 3 minutes on the 12600K, its build included, and runs every SIMD level the CPU has.
-- The release build links with LTO: a kernel's code is in the executable, not its object. For a quick look at one
-  level's code, compile its `resize/cimageresizer_simd_<level>.cpp` alone with `resize/resize.pri`'s per-file flags
-  and `dumpbin /disasm` the object: seconds, not a build. Under MSVC the SSE4.1 kernels are generated at link time in
-  the real build, so confirm a finding there in the executable.
+- No build of image-processing uses link-time code generation, Darkroom's included: a kernel's code is in its object.
+  For a quick look at one level's code, compile its `resize/cimageresizer_simd_<level>.cpp` alone with
+  `resize/resize.pri`'s per-file flags and `dumpbin /disasm` the object: seconds, not a build.
 - A wrapper script's exit code can hide a failed compile: search the compiler output for "error" as well.
 
 ## Measurement hosts

@@ -69,11 +69,13 @@ consists of, is in [throughput-ceiling.md](throughput-ceiling.md).
 
 ## Reading the generated code
 
-- The release builds use link-time optimization on every compiler, so the object files hold no machine code. Disassemble
-  the executable: `objdump -d -C`, or `dumpbin /disasm` with the PDB next to it. The scripts read the instruction
-  bytes: no `--no-show-raw-insn`. macOS's objdump prints Apple's syntax (`fmla.4s`), which they read too.
-- Under MSVC the kernel levels are generated differently: the SSE4.1 source at link time with the rest of the
-  project, the AVX and AVX2 sources by their own compile rules. An inlining decision can differ between them.
+- No build uses link-time optimization, Darkroom's library included over its `global.pri`: the kernels ship as the
+  benchmarks build them, and the AVX2 kernels' jump padding is an assembler option that LTO would drop at the link.
+  Against MSVC's link-time code generation at 5a4d2c3 (8500T): the AVX and AVX2 kernels the same; the SSE4.1 ones
+  differ, and lose up to 4.4% (open lead 34).
+- Disassemble the executable or a kernel's object: `objdump -d -C`, or `dumpbin /disasm` with the PDB next to it. The
+  scripts read the instruction bytes: no `--no-show-raw-insn`. macOS's objdump prints Apple's syntax (`fmla.4s`), which
+  they read too.
 - Two builds' kernels compare by instruction sequence with the `nop`s and jump targets removed: `extract_kernels.py`.
 - A variant build takes its define through the `CL` environment variable, set for the msbuild step only: set before
   qmake, it breaks qmake's compiler probe. From Git Bash the value starts with `-D`, as a leading `/` is rewritten into a path.
@@ -388,9 +390,9 @@ On x64 Linux, and under clang-cl, the AVX2 kernel file compiles through its own 
 - PC (Alder Lake, GCC in the VM, 14 rounds): the padding costs 5% on the RGB32 upscales, 2-4% on the 4K -> 1080p RGB32
   and Grayscale8 downscales and 101 MP -> 720p, and gains 2% on the RGBA32 upscale. The older CPUs' gain was preferred.
   AMD is unmeasured.
-- The rule drops LTO for that file: the assembler runs at the link under LTO, and a per-file option is then ignored
-  without a diagnostic. LTO's only effect on a kernel, x64 and NEON alike: `TempRowRing`'s constructor, run once per
-  band and strip, is inlined into it.
+- The option requires a build without LTO: the assembler runs at the link under LTO, and a per-file option is then
+  ignored without a diagnostic. LTO's only effect on a kernel, x64 and NEON alike, when the tests used it:
+  `TempRowRing`'s constructor, run once per band and strip, inlined into it.
 - The SSE4.1 kernels are left alone, as under MSVC: padding them costs the CPUs without the erratum (open lead 5).
 
 ### One-channel upscales filter four columns at a time (0bd90e4)
@@ -1844,3 +1846,7 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     on the 8500T with 54b7a6b, padded; 24 MP, 4K -> 720p and 4K -> 1600x900 1-3% slower on the P-core since cf1340b,
     padded too. At SSE4.1 the steps' pointers are formed after the index loop, 6 instructions and a reload more a
     column ("The block loop steps its pointers where a level has four chains").
+34. **MSVC's SSE4.1 kernels without link-time code generation** (5a4d2c3, the 8500T's log): 2.8 MP -> 1920x1280 +4.4%,
+    720p -> 4K RGB24 +2.2-2.6% and Grayscale8 +2-5%, 4K -> 1080p RGB24 +1.5%, the rest within 1%. In `resizeRowsWith<3,4,0>`
+    a 24-multiply loop adds a loop-invariant 6 times, each time into a copy of it, where at link time it copied it once:
+    102 instructions from 97. Which source loop it is, and an operand order that avoids the copy: not looked into.

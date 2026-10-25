@@ -6,6 +6,10 @@ CONFIG -= qt
 CONFIG += strict_c++
 
 include(../global.pri)
+# No link-time code generation, whatever global.pri sets: the kernels ship as the benchmarks build and measure them
+CONFIG -= ltcg
+QMAKE_CXXFLAGS -= /GL
+QMAKE_LFLAGS -= /LTCG
 
 INCLUDEPATH += \
 	../cpp-template-utils
