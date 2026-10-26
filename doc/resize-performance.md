@@ -1531,6 +1531,8 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
       within 1%, padded too.
     - Again at 9b6d783: 2% fewer micro-ops issued in 1080p -> 240p's kernel, the same cycles. Over the byte offset, level
       with it alone. The loads run on ports 2 and 3; the column's bound is ports 1 and 5 ("A run's pixels from a byte offset").
+    - Again at 9ca6f0b, 1080p -> 120x68, four VTune profiles each: 228 M instructions fewer of 50100 M, the kernel's
+      cycles level (15000 M against 15009 M).
 30. **Interleaved row pairs on runs read per run** (against 963e6bc, not committed): blocks of 8 taps in 4 chains, then
     steps of 4, 2 and 1 tap. Medians against the kernel's form:
     - E-core: -22% to -30% from 22 taps up, both compilers.
@@ -1610,6 +1612,11 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
       but two readings that median and minimum disagree on: the copies cost nothing measurable.
     - Its motive did not hold: MSVC's SSE4.1 kernels without link-time generation lost up to 4.4% in one session on the
       8500T, level with them in the next.
+42. **A 16-byte `TapRun`** (8500T, 9ca6f0b, not committed): `firstSource` and `weightCount` as `uint32_t`. Each pass of
+    `filterHorizontalRowGroup` ends in `run - xRuns`, a division by 24: MSVC's a signed multiply-high and six more
+    instructions, ~110 M cycles of 15000 M charged to them at 1080p -> 120x68; clang-cl's one `imul` for an exact
+    division. By 16 it is a shift. Both compilers' kernels level, three VTune profiles each: those cycles were the
+    column loop's drain, charged to the next instructions.
 
 ## Open leads
 
@@ -1699,9 +1706,12 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
         1.7-2.8%, 101 MP -> 720p by 0.5%, 1080p -> 240p by 2.6% / -0.3%: one session, where clang-cl's own times move by
         up to 3% by launch.
       - MSVC's column was bound by its `lea`s on ports 1 and 5 ("A run's pixels from a byte offset").
-      - Left at 1080p -> 120x68: the column within 1% of clang-cl's; MSVC's code per chunk +200-260 M cycles of 15200 M,
-        spread over its 401-instruction chunk loop, its prefetch loops +90 M. A chunk is 128 source pixels, 8 dest
-        columns at 16:1.
+      - Left at 1080p -> 120x68, at 9ca6f0b, three VTune profiles each: MSVC's kernel +280-320 M cycles of 14700 M,
+        +1000 M instructions. The column's code around the block loop +160-220 M, 61 instructions a column against 52:
+        the 4 spread indices reloaded, a second zeroing, 2 more each for the block loop's end pointer and for the
+        pointers after the peeled block. The block loop level, MSVC's conversion 140-200 M faster.
+      - Not the reloads (experiment 29, again at 9ca6f0b), nor the division at each pass's end (experiment 42). The
+        cycles are ~5 a column, where 9 instructions take ~2 cycles of issue.
       - At 54b7a6b, 1080p -> 120x68, averaged over three profiles of 2000 resizes: MSVC's kernel +740 M cycles of
         14760 M, +5.6% micro-ops at the same rate. The conversion +250 M (its four stepped pointers: the one offset
         removes it), the column loop's code around the block loop +260 M, the code per chunk and row pair +280 M; the
