@@ -72,7 +72,7 @@ consists of, is in [throughput-ceiling.md](throughput-ceiling.md).
 - No build uses link-time optimization, Darkroom's library included over its `global.pri`: the kernels ship as the
   benchmarks build them, and the AVX2 kernels' jump padding is an assembler option that LTO would drop at the link.
   Against MSVC's link-time code generation at 5a4d2c3 (8500T): the AVX and AVX2 kernels the same; the SSE4.1 ones
-  differ, and lose up to 4.4% (open lead 34).
+  differ, and time level (experiment 41).
 - Disassemble the executable or a kernel's object: `objdump -d -C`, or `dumpbin /disasm` with the PDB next to it. The
   scripts read the instruction bytes: no `--no-show-raw-insn`. macOS's objdump prints Apple's syntax (`fmla.4s`), which
   they read too.
@@ -1596,6 +1596,20 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     2-3.5% faster, padded too; 24 MP and the thumbnails level, the zeroing and a loop iteration more taking ~10
     instructions per column there. The indices not hidden: MSVC reloads them every block, the strong downscales 12-20%
     slower. clang-cl loses 2.5-3%. The byte offset keeps the peeled block and gains more ("A run's pixels from a byte offset").
+41. **The SSE4.1 rounding's bias subtracted as -0.5** (c7bacc9, not committed): MSVC's `roundFourFloatsToInts`, an add
+    of `0.5f`, hoists the bias into a register and adds the sum into a copy of it: 505 copies in 71 SSE4.1 kernels, 545
+    under link-time code generation. `values - (-0.5f)` is the same value, and a subtraction cannot be commuted: no copy
+    left, 440 instructions fewer, clang-cl's kernels the same. Swapping the add's operands changes nothing.
+    - The RGB32 kernel's vertical pass with four held y taps (`writeEightRgb32Pixels`) took 6 copies per 8 pixels
+      without link-time generation, 1 with it.
+    - The strong downscales 1.5-2.8% slower at SSE4.1, on the 8500T and the i3-2310M alike, three rounds each; the rest
+      within 2.2%, 2.8 MP -> 1920x1280 -2.6% on the i3-2310M.
+    - Placement: the horizontal pass's loops the same bytes, 16 bytes further from the 32-byte boundaries, which the
+      jumps of the block loop, the short runs' tap loop and a conversion loop then end on (lead 5). On the 8500T, with 16
+      bytes of padding in that kernel alone, the loops back in place, the strong downscales level and the other rows within 1.5%
+      but two readings that median and minimum disagree on: the copies cost nothing measurable.
+    - Its motive did not hold: MSVC's SSE4.1 kernels without link-time generation lost up to 4.4% in one session on the
+      8500T, level with them in the next.
 
 ## Open leads
 
@@ -1846,7 +1860,3 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
     on the 8500T with 54b7a6b, padded; 24 MP, 4K -> 720p and 4K -> 1600x900 1-3% slower on the P-core since cf1340b,
     padded too. At SSE4.1 the steps' pointers are formed after the index loop, 6 instructions and a reload more a
     column ("The block loop steps its pointers where a level has four chains").
-34. **MSVC's SSE4.1 kernels without link-time code generation** (5a4d2c3, the 8500T's log): 2.8 MP -> 1920x1280 +4.4%,
-    720p -> 4K RGB24 +2.2-2.6% and Grayscale8 +2-5%, 4K -> 1080p RGB24 +1.5%, the rest within 1%. In `resizeRowsWith<3,4,0>`
-    a 24-multiply loop adds a loop-invariant 6 times, each time into a copy of it, where at link time it copied it once:
-    102 instructions from 97. Which source loop it is, and an operand order that avoids the copy: not looked into.

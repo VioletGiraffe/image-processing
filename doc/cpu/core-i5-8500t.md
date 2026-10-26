@@ -1516,8 +1516,17 @@ Variants, MSVC, each against 9b6d783 in its own rounds, three each; ranges over 
 - 1080p -> 120x68, zero-started chains and the byte offset: the block loop's cycles per block level with clang-cl's, the column within 1%;
   the rest of the gap in the code per chunk (open lead 11).
 
-## Without link-time code generation (open lead 34)
+## Without link-time code generation, and the rounding's bias subtracted (experiment 41)
 
 MSVC at 5a4d2c3 without against with link-time code generation, three rounds with controls, median of ratios / min to
 min. AVX2, the same code: every row within 1.7%. SSE4.1: 2.8 MP -> 1920x1280 +4.4% / +4.4%, 720p -> 4K RGB24
 +2.2% / +2.6%, 720p -> 4K Grayscale8 +2.0% / +5.3%, 4K -> 1080p RGB24 +1.5% / +1.2%, the other rows within 1.1%.
+
+- A second session, the same two builds: SSE4.1 level, 2.8 MP -> 1920x1280 -0.9% / +1.6%, every row within 2.2%.
+- The bias subtracted as -0.5, same session: SSE4.1 strong downscales +1.5% to +2.1% (21 MP -> 175x117 +1.9%,
+  101 MP -> 720p +1.7%, 4K -> 200x113 RGB32 +1.5% / +1.8%), the rest within 1.5% but the noisy 1-channel and RGBA32
+  upscales; AVX2, the same code, within 2.6%.
+- Again, with a build padded by 16 bytes in `resizeRowsWith<3,4,0>` at SSE4.1 alone, whose horizontal loops then lie as
+  in the base build, their jumps off the boundaries: the bias subtracted +1.1% to +1.9% on the strong downscales again,
+  padded -0.2% to 0.0% there, every row within 1.5% but 2.8 MP -> 1920x1280's median (+2.9% / -0.2%) and
+  720p -> 4K Grayscale8's minimum (+1.1% / +7.5%).

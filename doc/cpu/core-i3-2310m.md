@@ -499,3 +499,10 @@ where one run shared the machine with 26 s of `svchost`.
 MSVC at the AVX level against 9b6d783, three rounds without controls, unpadded, median of ratios / min to min:
 24 MP -> 1620x1080 +1.9% / +2.6%, 101 MP -> 720p +2.2% / +5.2%, 720p -> 4K RGB24 +1.9% / +1.9%,
 4K -> 1600x900 -1.9% / -1.6%; the other rows within 2%, most within 1%.
+
+## The SSE4.1 rounding's bias subtracted (experiment 41)
+
+MSVC at c7bacc9 with the benchmarks' SSE4.1 runs enabled on this AVX CPU, three rounds with controls, median of ratios /
+min to min. SSE4.1: 21 MP -> 175x117 +2.2% / +2.3%, 4K -> 200x113 RGB32 +2.4% / +2.8%, 4K -> 64x64 +2.7% / +2.8%,
+101 MP -> 720p +1.7% / +1.9%, 2.8 MP -> 1920x1280 -2.6% / -1.7%, the rest within 2.2%. AVX, the same code: within 2.2%
+but 1080p at native size and 720p -> 4K Grayscale8, +7-10%. One run with controls and SSE4.1: about 91 s.
