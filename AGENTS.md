@@ -93,6 +93,10 @@ Access and per-machine setup are in `AGENTS.local.md`, git-ignored, where it exi
 - From an origin plus a float offset MSVC re-derives pointers in scaled-index `lea`s, which Skylake runs on ports 1 and 5
   only, beside the multiply-adds and the shuffles: form such pointers from a byte offset ("A run's pixels from a byte
   offset"). A micro-op removed from another port, a load or a zeroing, gains nothing there: count micro-ops per port.
+- MSVC infers no alignment: at SSE4.1 it loads every `_mm_loadu_ps` into a register before the multiply, where an
+  aligned load is the multiply's operand. Load aligned data with the aligned intrinsic (`loadBlockPixels`).
+- An index whose stride exceeds the largest address scale, 8, costs MSVC three instructions a loop iteration at SSE4.1:
+  index by the narrower array's byte offset, the wider one's a scale of it.
 - Under clang-cl a lambda does not carry the kernel's target attribute: SIMD helpers it calls fail to inline. Use
   functions.
 - After changing a hot loop, read its listing under MSVC and clang-cl: instruction count, register copies, stack

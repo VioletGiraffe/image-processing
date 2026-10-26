@@ -1168,7 +1168,8 @@ AVX2, against 7a873c8; eight rounds on the 8500T, five on the 12600K (the one-ch
 ### The block loop steps its pointers where a level has four chains
 
 Past its first block, `filterRun` steps a weights pointer and a pixel pointer per row beside the tap counter at
-AVX2 and NEON. At SSE4.1 it indexes the three by the counter.
+AVX2 and NEON. At SSE4.1 it indexes the three by the weights' byte offset ("SSE4.1's block loop by the weights' byte
+offset, its pixels aligned").
 
 - MSVC addresses an indexed loop's loads by base and scaled index, and keeps a second counter for the bound. On
   Skylake a multiply-add with such an operand is two micro-ops. Its AVX2 block loop: 21 instructions and no indexed
@@ -1237,6 +1238,42 @@ the PC's, the i3-2310M's and the Pi's "87bebbc to 54b7a6b"):
 - 12600K: neither core gains on those rows, the P-core's 1080p -> 240p 3.5% faster.
 - i3-2310M at AVX: the thumbnails and 4K -> 64x64 2-5% faster under MSVC, 4-8% under clang-cl.
 - Pi: Clang level; GCC's strongest downscales 4-7% slower against e7f3800 (open lead 32).
+
+### SSE4.1's block loop by the weights' byte offset, its pixels aligned
+
+At SSE4.1 `filterRun`'s two-chain block loop is indexed by the weights' byte offset, the pixels' `floatsPerPixel`
+times it, and `loadBlockPixels` loads 4-float pixels with the aligned intrinsic.
+- MSVC infers no alignment: from `_mm_loadu_ps` it loads each of a block's 8 pixel operands into a register before the
+  multiply. clang-cl proves the buffers aligned and multiplies the second row's straight from memory: 4 instructions a
+  block fewer.
+- A tap's pixels are 16 bytes, past the largest address scale: from a tap index MSVC formed their offset in a copy and a
+  doubling, and kept its bound in a register of its own, 3 instructions more.
+- MSVC's RGB32 block: 31 instructions from 39, clang-cl's 32. Both issue about 3.9 micro-ops a cycle there, so the
+  instructions are the time: the kernel at SSE4.1 1080p -> 120x68, 18.2 G cycles from 21.2 G, clang-cl's 18.1 G (VTune).
+- clang-cl's per-length kernels compile the same, and its block loop keeps its 32 instructions.
+
+8500T, SSE4.1, three rounds, median of ratios / min to min; MSVC fixed against clang-cl unfixed:
+
+| Scenario | MSVC | clang-cl | MSVC against clang-cl |
+|---|---:|---:|---:|
+| 24 MP -> 1620x1080 RGB32 | -9.4% / -9.5% | +6.8% / +7.0% | +4.8% / +4.8% |
+| 4K -> 1600x900 RGB32 | -7.9% / -7.6% | +8.6% / +8.7% | +6.1% / +6.2% |
+| 4K -> 720p RGB32 | -8.8% / -8.8% | +6.3% / +6.1% | +4.1% / +4.1% |
+| 1080p -> 240p RGB32 | -9.9% / -10.0% | +4.8% / +3.9% | +2.9% / +3.1% |
+| 1080p -> 120x68 RGB32 | -13.2% / -13.4% | -0.1% / -0.2% | +1.1% / +0.5% |
+| 21 MP -> 175x117 RGB32 | -12.1% / -12.3% | -0.2% / -0.2% | +2.0% / +1.3% |
+| 4K -> 200x113 RGB32, RGBA32 | -12.7%, -12.5% / -12.6%, -12.3% | +1.2%, +0.5% / +1.2%, +1.2% | +1.3%, +0.2% / +1.2%, +0.9% |
+| 4K -> 64x64 RGB32 | -12.6% / -12.7% | +0.7% / +0.7% | -0.2% / +0.2% |
+| 101 MP -> 720p RGB32 | -12.4% / -12.4% | +3.0% / +3.0% | +2.5% / +2.5% |
+| 4K -> 1080p RGB24, RGB32, RGBA32 | -3.3% to -4.4% | -0.7% to +0.4% | -5.4% to +1.7% |
+| 4K -> 1080p Grayscale8 | +0.0% / +0.1% | +2.5% / +1.7% | -10.1% / -9.2% |
+| 2.8 MP -> 1920x1280, upscales | -3.0% to +5.2% | -0.1% to +0.3%, 720p -> 4K RGB24 +6.2% | |
+
+- MSVC's 720p -> 4K RGBA32 read +5.2% / +3.7% here and -4.3% / -0.4% in a scratch build of the same loop: launch noise.
+- Its AVX2 rows: within 2.5%, the same code but for operand order.
+- clang-cl's losses are placement on this erratum core (lead 5): 4K -> 1600x900, 4K -> 720p and 720p -> 4K RGB24 run
+  kernels whose code did not change. On 1080p -> 240p its kernel retires 1% fewer instructions, and decodes 28.1 G
+  micro-ops by MITE against 12.8 G.
 
 ### A run holds its weights' address, and the x runs start in order
 
@@ -1729,6 +1766,10 @@ Where every x run is padded to 4 taps, 4-float pixels at NEON, AVX2 and AVX take
       MSVC by 15% on 4K -> 1080p Grayscale8. MSVC's second row's prefetch gained it 0.7-2.7% on those downscales.
     - SSE4.1, at 54b7a6b: clang-cl ahead on every 3- and 4-channel row, by 1-12%. The steps from the block loop's
       pointers took 4-12% off its downscales and nothing off MSVC's.
+    - SSE4.1, at 9ca6f0b: clang-cl ahead by 12-14.5% on every RGB32 downscale of 2.4:1 and more, MSVC's times within
+      1.5% of its 5a4d2c3 build's. MSVC's block loop took 39 instructions to clang-cl's 32. With it indexed by the
+      weights' byte offset and the pixels loaded aligned, clang-cl ahead by 0-6% on those rows; MSVC ahead on 4K -> 1080p
+      RGB24 by 5%, Grayscale8 by 10% ("SSE4.1's block loop by the weights' byte offset, its pixels aligned").
     - AVX, the AVX2 build capped: clang-cl ahead by 6-7% on 4K -> 200x113 in every layout, RGBA32 included (at
       67935c2, its log).
     - clang-cl's one-channel four-column loop is short of general registers: 55 instructions with 5 stack accesses, and

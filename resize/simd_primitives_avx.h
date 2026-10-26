@@ -56,6 +56,8 @@ namespace ImageProcessing::Detail::Avx
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 zeroFloats8() noexcept { return _mm256_setzero_ps(); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 zeroFloats4() noexcept { return _mm_setzero_ps(); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 loadFloats8(const float* floats) noexcept { return _mm256_loadu_ps(floats); }
+	// Requires floats on a 16-byte boundary. The unaligned load: a VEX instruction takes it as its operand too
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 loadAlignedFloats8(const float* floats) noexcept { return loadFloats8(floats); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 loadFloats4(const float* floats) noexcept { return _mm_loadu_ps(floats); }
 	IMAGE_PROCESSING_SIMD_INLINE void storeFloats8(float* floats, Floats8 values) noexcept { _mm256_storeu_ps(floats, values); }
 	IMAGE_PROCESSING_SIMD_INLINE void storeFloats4(float* floats, Floats4 values) noexcept { _mm_storeu_ps(floats, values); }

@@ -63,6 +63,8 @@ namespace ImageProcessing::Detail::Sse41
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 zeroFloats8() noexcept { return { _mm_setzero_ps(), _mm_setzero_ps() }; }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 zeroFloats4() noexcept { return _mm_setzero_ps(); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 loadFloats8(const float* floats) noexcept { return { _mm_loadu_ps(floats), _mm_loadu_ps(floats + 4) }; }
+	// Requires floats on a 16-byte boundary: an SSE arithmetic instruction takes only an aligned load as its operand
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 loadAlignedFloats8(const float* floats) noexcept { return { _mm_load_ps(floats), _mm_load_ps(floats + 4) }; }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 loadFloats4(const float* floats) noexcept { return _mm_loadu_ps(floats); }
 
 	IMAGE_PROCESSING_SIMD_INLINE void storeFloats8(float* floats, Floats8 values) noexcept

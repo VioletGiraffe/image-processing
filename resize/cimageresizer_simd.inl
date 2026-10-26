@@ -409,6 +409,19 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				return spreader.template spread<Chain % FloatsPerPixel>(loadWeightBlock(blockWeights + weightBlock * 8));
 		}
 
+		// 8 floats of a block's pixels. 4-float pixels lie on 16-byte boundaries in SlidingSourceFloats' buffers.
+		template <size_t FloatsPerPixel>
+		[[nodiscard]] IMAGE_PROCESSING_SIMD_INLINE Floats8 loadBlockPixels(const float* pixels) noexcept
+		{
+			if constexpr (FloatsPerPixel == 4)
+			{
+				assert(reinterpret_cast<uintptr_t>(pixels) % 16 == 0);
+				return loadAlignedFloats8(pixels);
+			}
+			else
+				return loadFloats8(pixels);
+		}
+
 		// One chain's 8 floats of a block, for both rows. Start: the products start the chain; otherwise they are added to it.
 		template <bool Start, size_t Chain, size_t Rows, size_t FloatsPerPixel>
 		IMAGE_PROCESSING_SIMD_INLINE void filterBlockChain(
@@ -423,15 +436,15 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 			const Floats8 weights = chainWeights<Chain>(spreader, blockWeights, firstWeights);
 			if constexpr (Start)
 			{
-				chainA = mul(loadFloats8(blockPixelsA + Chain * 8), weights);
+				chainA = mul(loadBlockPixels<FloatsPerPixel>(blockPixelsA + Chain * 8), weights);
 				if constexpr (Rows == 2)
-					chainB = mul(loadFloats8(blockPixelsB + Chain * 8), weights);
+					chainB = mul(loadBlockPixels<FloatsPerPixel>(blockPixelsB + Chain * 8), weights);
 			}
 			else
 			{
-				addProduct(chainA, loadFloats8(blockPixelsA + Chain * 8), weights);
+				addProduct(chainA, loadBlockPixels<FloatsPerPixel>(blockPixelsA + Chain * 8), weights);
 				if constexpr (Rows == 2)
-					addProduct(chainB, loadFloats8(blockPixelsB + Chain * 8), weights);
+					addProduct(chainB, loadBlockPixels<FloatsPerPixel>(blockPixelsB + Chain * 8), weights);
 			}
 		}
 
@@ -484,6 +497,11 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				return FixedTaps;
 			else
 				return readLength;
+		}
+
+		[[nodiscard]] IMAGE_PROCESSING_SIMD_INLINE const float* floatsAtByteOffset(const float* floats, size_t bytes) noexcept
+		{
+			return reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(floats) + bytes);
 		}
 
 		// Hides the pointer's value from Clang and GCC: they rederive a stepped pointer as origin plus offset, and fold that into each load as an index
@@ -606,7 +624,8 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				filterBlock<true, Rows>(weightSpreader, weights.data(), runPixels[0], runPixels[Rows - 1], chainsA, chainsB);
 				// Four chains - stepped pointers: MSVC addresses an indexed loop's loads by base and scaled index, a micro-op more per multiply-add on Skylake.
 				// Their bound is an end pointer: for a tap count bound MSVC steps two counters, 20 micro-ops a block against 17.
-				// Two chains - the index: a 12-tap run takes this loop there, and three more pointers push MSVC's column loop onto the stack.
+				// Two chains - a 12-tap run takes this loop there. Its index is the weights' byte offset, the pixels' floatsPerPixel times it:
+				// three more pointers push MSVC's column loop onto the stack, and from a tap index MSVC forms the pixels' offset in three more instructions a block.
 				if constexpr (horizontalChainCount == 4)
 				{
 					const float* blockWeights = weights.data() + blockTaps;
@@ -625,13 +644,16 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				}
 				else
 				{
-					size_t tap = blockTaps;
-					for (; tap + blockTaps <= tapCount; tap += blockTaps)
-						filterBlock<false, Rows>(weightSpreader, weights.data() + tap, runPixels[0] + tap * floatsPerPixel, runPixels[Rows - 1] + tap * floatsPerPixel, chainsA, chainsB);
+					constexpr size_t blockBytes = blockTaps * sizeof(float);
+					const size_t weightBytesEnd = blockedTaps * sizeof(float);
+					for (size_t weightBytes = blockBytes; weightBytes != weightBytesEnd; weightBytes += blockBytes)
+					{
+						filterBlock<false, Rows>(weightSpreader, floatsAtByteOffset(weights.data(), weightBytes), floatsAtByteOffset(runPixels[0], weightBytes * floatsPerPixel),
+							floatsAtByteOffset(runPixels[Rows - 1], weightBytes * floatsPerPixel), chainsA, chainsB);
+					}
 
-					// tap, not blockedTaps: the same value, and one fewer kept across MSVC's SSE4.1 loop
-					stepPixelsA += tap * floatsPerPixel;
-					stepPixelsB += tap * floatsPerPixel;
+					stepPixelsA += blockedTaps * floatsPerPixel;
+					stepPixelsB += blockedTaps * floatsPerPixel;
 				}
 
 				accumPairs[0] = sumChains(chainsA);
@@ -855,9 +877,7 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 					// A byte offset: MSVC re-derives the pointers after a run's first block, from a float offset in more lea's, which
 					// Skylake runs on ports 1 and 5 only, beside the multiply-adds and the weights' vpermps.
 					const size_t byteOffset = firstPixel * pixelFloats * sizeof(float);
-					const float* const pixelsA = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(originA) + byteOffset);
-					const float* const pixelsB = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(originB) + byteOffset);
-					filterRun<Channels, Rows, FixedTaps>(pixelsA, pixelsB, { run->weights, run->weightCount }, weightSpreader, outA, outB);
+					filterRun<Channels, Rows, FixedTaps>(floatsAtByteOffset(originA, byteOffset), floatsAtByteOffset(originB, byteOffset), { run->weights, run->weightCount }, weightSpreader, outA, outB);
 				}
 				outA += Channels;
 				if constexpr (Rows == 2)

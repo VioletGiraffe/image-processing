@@ -1530,3 +1530,25 @@ min. AVX2, the same code: every row within 1.7%. SSE4.1: 2.8 MP -> 1920x1280 +4.
   in the base build, their jumps off the boundaries: the bias subtracted +1.1% to +1.9% on the strong downscales again,
   padded -0.2% to 0.0% there, every row within 1.5% but 2.8 MP -> 1920x1280's median (+2.9% / -0.2%) and
   720p -> 4K Grayscale8's minimum (+1.1% / +7.5%).
+
+## SSE4.1's block loop by the weights' byte offset, its pixels aligned (open lead 11)
+
+At 9ca6f0b, three rounds with controls: clang-cl ahead of MSVC at SSE4.1 by 12.2-14.6% on every RGB32 downscale of
+2.4:1 and more, 3.5-5% on 4K -> 1080p RGB32 and RGBA32 and the 4-byte upscales; MSVC ahead by 10-11% on 4K -> 1080p
+Grayscale8. MSVC's SSE4.1 times match its 5a4d2c3 build's within 1.5%; at 6ab4ba0 clang-cl led those downscales by 3-8%.
+
+VTune, SSE4.1 1080p -> 120x68, `resizeRowsWith<3,4,0>`, mean of two or three profiles of 1000 samples:
+
+| Build | Instructions | Cycles | Block loop, instructions |
+|---|---:|---:|---:|
+| MSVC, 9ca6f0b | 77.8 G | 21.2 G | 39 |
+| MSVC, aligned pixel loads | 71.3 G | 19.6 G | 35 |
+| MSVC, both changes | 65.6 G | 18.2 G | 31 |
+| clang-cl, 9ca6f0b | 66.3 G | 18.1 G | 32 |
+| clang-cl, both changes | 66.9 G | 18.1 G | 32 |
+
+- The block loop held 15.1 G of MSVC's 21.2 G cycles, 12.4 G of clang-cl's, both at 3.9 micro-ops a cycle.
+- Not front end: clang-cl's kernel decoded 12.8 G micro-ops by MITE, MSVC's 8.1 G.
+- 1080p -> 240p, the same counters: MSVC 24.1 G cycles -> 21.5 G, clang-cl 21.5 G -> 21.8 G with 0.8 G fewer
+  instructions and MITE's micro-ops 12.8 G -> 28.1 G.
+- Rounds: "SSE4.1's block loop by the weights' byte offset, its pixels aligned" in resize-performance.md.

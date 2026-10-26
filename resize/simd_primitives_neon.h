@@ -55,6 +55,8 @@ namespace ImageProcessing::Detail::Neon
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 zeroFloats8() noexcept { return { vdupq_n_f32(0.0f), vdupq_n_f32(0.0f) }; }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 zeroFloats4() noexcept { return vdupq_n_f32(0.0f); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats8 loadFloats8(const float* floats) noexcept { return { vld1q_f32(floats), vld1q_f32(floats + 4) }; }
+	// Requires floats on a 16-byte boundary. The same load: NEON has no aligned form
+	IMAGE_PROCESSING_SIMD_INLINE Floats8 loadAlignedFloats8(const float* floats) noexcept { return loadFloats8(floats); }
 	IMAGE_PROCESSING_SIMD_INLINE Floats4 loadFloats4(const float* floats) noexcept { return vld1q_f32(floats); }
 
 	IMAGE_PROCESSING_SIMD_INLINE void storeFloats8(float* floats, Floats8 values) noexcept
