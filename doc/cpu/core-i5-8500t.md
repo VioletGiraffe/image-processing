@@ -1552,3 +1552,40 @@ VTune, SSE4.1 1080p -> 120x68, `resizeRowsWith<3,4,0>`, mean of two or three pro
 - 1080p -> 240p, the same counters: MSVC 24.1 G cycles -> 21.5 G, clang-cl 21.5 G -> 21.8 G with 0.8 G fewer
   instructions and MITE's micro-ops 12.8 G -> 28.1 G.
 - Rounds: "SSE4.1's block loop by the weights' byte offset, its pixels aligned" in resize-performance.md.
+
+## Catmull-Rom against Lanczos3 on downscales
+
+MSVC at bfbf885, AVX2: one build timed with `Auto`, which downscales with Lanczos3, and with Catmull-Rom in its place, as
+`run_benchmark_rounds.py --kernels auto,catmullrom` runs it. Ten alternating rounds without controls, median of
+same-round ratios / minimum to minimum. "T": with threads.
+
+| Scenario | Lanczos3, min ms | Catmull-Rom, min ms | Catmull-Rom against Lanczos3 |
+|---|---:|---:|---:|
+| 101 MP -> 720p RGB32 | 140.63 | 108.94 | -22.3% / -22.5% |
+| 24 MP -> 1620x1080 RGB32 | 41.78 | 31.07 | -26.0% / -25.6% |
+| 21 MP -> 175x117 RGB32 | 20.80 | 16.41 | -21.4% / -21.1% |
+| 4K -> 1080p RGBA32 | 19.95 | 16.24 | -18.7% / -18.6% |
+| 4K -> 1080p RGB24 | 17.37 | 14.00 | -19.3% / -19.4% |
+| 4K -> 1080p RGB32 | 16.95 | 13.70 | -19.2% / -19.2% |
+| 4K -> 1080p Grayscale8 | 8.70 | 7.44 | -15.0% / -14.4% |
+| 4K -> 1600x900 RGB32 | 15.40 | 13.16 | -14.9% / -14.6% |
+| 4K -> 720p RGB32 | 13.79 | 11.14 | -19.2% / -19.2% |
+| 4K -> 200x113 RGBA32 | 12.47 | 9.84 | -21.6% / -21.1% |
+| 4K -> 200x113 RGB32 | 10.58 | 8.12 | -22.3% / -23.2% |
+| 4K -> 64x64 RGB32 | 8.74 | 6.11 | -30.3% / -30.1% |
+| 2.8 MP -> 1920x1280 RGB32 | 9.07 | 7.71 | -15.0% / -15.0% |
+| 1080p -> 240p RGB32 | 3.29 | 2.57 | -21.4% / -21.9% |
+| 1080p -> 120x68 RGB32 | 2.26 | 1.73 | -23.0% / -23.2% |
+| 101 MP -> 720p RGB32, T | 39.62 | 30.57 | -25.8% / -22.8% |
+| 24 MP -> 1620x1080 RGB32, T | 12.20 | 9.11 | -25.7% / -25.3% |
+| 4K -> 1080p RGBA32, T | 6.09 | 5.05 | -17.1% / -17.0% |
+| 4K -> 1080p RGB24, T | 5.26 | 4.32 | -17.8% / -17.9% |
+| 4K -> 200x113 RGBA32, T | 4.16 | 3.01 | -28.0% / -27.8% |
+| 4K -> 200x113 RGB32, T | 3.64 | 2.53 | -30.2% / -30.4% |
+| 4K -> 64x64 RGB32, T | 3.18 | 2.05 | -35.2% / -35.4% |
+| 1080p -> 240p RGB32, T | 1.09 | 0.83 | -23.4% / -24.1% |
+
+- Catmull-Rom has 2/3 of Lanczos3's taps on each axis. The strongest downscale gains about that ratio: 4K -> 64x64
+  -30%, with threads -35%. The mildest, 2.8 MP -> 1920x1280, gains 15%.
+- The rows both runs filter alike: within 2.1%. These are the upscales and the native size, Catmull-Rom in both, and
+  the nearest-neighbor rows; the nearest-neighbor 4K -> 200x113 rows, under 0.1 ms, moved up to 13%.

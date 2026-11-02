@@ -25,7 +25,8 @@ Treat those documents as project memory: update them with any change to the kern
 ## Tools (`scripts/perf/`): use them before writing throwaway equivalents
 
 - `run_benchmark_rounds.py`: alternating rounds of Catch2 benchmark binaries; `--pinned P=4 --pinned E=1000` runs a
-  series per core type of the 12600K at once. `compare_benchmark_rounds.py` prints the tables.
+  series per core type of the 12600K at once; `--kernels auto,catmullrom` times one build with each kernel.
+  `compare_benchmark_rounds.py` prints the tables.
 - `build_revisions.py`: the tests of git revisions, a tree each; `--patch` for a variant. A history scan: build the
   revisions, one round of them with `run_benchmark_rounds.py`, then `find_benchmark_steps.py` lists the steps.
 - `annotate_vtune_hotspots.py`: a VTune profile summed over each kernel loop of a `dumpbin`/`objdump` listing.

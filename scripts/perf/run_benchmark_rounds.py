@@ -1,6 +1,7 @@
 # Runs benchmark binaries in alternating rounds, one Catch2 XML per run, for compare_benchmark_rounds.py.
 # Alternating: the machine's drift over the session lands on every binary alike.
 # A binary's label is its file name without the extension; labels must differ.
+# --kernels KERNEL,...: each binary runs once per kernel in a round, labelled <stem>-<kernel>.
 # The Qt libraries must be loadable: QT_ROOT_DIR's bin directory is put on PATH when the variable is set.
 # --pinned NAME=MASK, repeatable: a series of the same rounds pinned to the logical processors of a hexadecimal mask,
 # its results in <results>/NAME. The series run each binary at the same time: one per core type of a hybrid CPU, P=4 and E=1000 on a 12600K.
@@ -15,6 +16,8 @@ from pathlib import Path
 
 NO_CONTROLS_VARIABLE = "IMAGE_PROCESSING_BENCHMARK_NO_CONTROLS"
 CONTROLS_ONLY_VARIABLE = "IMAGE_PROCESSING_BENCHMARK_CONTROLS_ONLY"
+KERNEL_VARIABLE = "IMAGE_PROCESSING_BENCHMARK_KERNEL"
+KERNELS = ("auto", "catmullrom", "lanczos3")
 # Other processes below this much CPU time over a run are not reported
 REPORTED_CPU_SECONDS = 0.5
 HIGH_PRIORITY_CLASS = 0x80
@@ -101,21 +104,22 @@ def busiest_other_processes(before, after, own_name):
                      for seconds, name, process_id in used) or f"none above {REPORTED_CPU_SECONDS} s"
 
 
+# runs: (binary, label, environment) each, in a round's order.
 # series: (name, affinity mask or None, results directory) each. Every series runs a binary at the same time as the others.
 # Returns whether every run exited with 0.
-def run_rounds(binaries, rounds, series, catch_arguments, environment):
+def run_rounds(runs, rounds, series, catch_arguments):
     for _, _, results in series:
         results.mkdir(parents=True, exist_ok=True)
     succeeded = True
     for round_number in range(1, rounds + 1):
-        for binary in binaries:
+        for binary, label, environment in runs:
             # The snapshots stay outside the timed work, every series' alike
             before = process_cpu_seconds()
             started = time.monotonic()
             running = {}
             try:
                 for name, mask, results in series:
-                    output = results / f"r{round_number}_{binary.stem}.xml"
+                    output = results / f"r{round_number}_{label}.xml"
                     running[name] = start_run([str(binary.resolve()), *catch_arguments, "--reporter", "xml", "--out", str(output)], environment, mask)
             except BaseException:
                 # A series that could not start must not leave the others' runs behind
@@ -130,7 +134,7 @@ def run_rounds(binaries, rounds, series, catch_arguments, environment):
                 time.sleep(0.1)
             others = busiest_other_processes(before, process_cpu_seconds(), binary.stem)
             for name, process in running.items():
-                print(f"{time.strftime('%H:%M:%S')} {name + ' ' if name else ''}round {round_number} {binary.stem}: exit {process.returncode}, {finished[name]:.0f} s; other CPU: {others}", flush=True)
+                print(f"{time.strftime('%H:%M:%S')} {name + ' ' if name else ''}round {round_number} {label}: exit {process.returncode}, {finished[name]:.0f} s; other CPU: {others}", flush=True)
                 succeeded = succeeded and process.returncode == 0
     return succeeded
 
@@ -145,6 +149,13 @@ def parse_pinned_series(text):
         raise argparse.ArgumentTypeError(f"'{text}' is not NAME=MASK with a hexadecimal mask") from None
 
 
+def parse_kernels(text):
+    kernels = text.split(",")
+    if any(kernel not in KERNELS for kernel in kernels) or len(set(kernels)) != len(kernels):
+        raise argparse.ArgumentTypeError(f"'{text}' is not a list of distinct kernels out of {', '.join(KERNELS)}")
+    return kernels
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Runs benchmark binaries in alternating rounds, one Catch2 XML per run.",
@@ -157,6 +168,8 @@ def main():
     controls.add_argument("--controls-only", action="store_true", help="only the QImage runs: one binary times them for every build")
     parser.add_argument("--pinned", action="append", default=[], type=parse_pinned_series, metavar="NAME=MASK",
         help="a series pinned to a hexadecimal affinity mask, results in <results>/NAME; repeat for series that run at the same time")
+    parser.add_argument("--kernels", type=parse_kernels, metavar="KERNEL,...",
+        help=f"each binary runs once per kernel, labelled <stem>-<kernel>; kernels: {', '.join(KERNELS)}")
     # Split by hand: argparse would take what follows -- as more binaries
     own_arguments, catch_arguments = sys.argv[1:], []
     if "--" in own_arguments:
@@ -164,9 +177,6 @@ def main():
         own_arguments, catch_arguments = own_arguments[:separator], own_arguments[separator + 1:]
     arguments = parser.parse_args(own_arguments)
 
-    labels = [binary.stem for binary in arguments.binaries]
-    if len(set(labels)) != len(labels):
-        raise SystemExit("Two binaries share a label: rename one file.")
     for binary in arguments.binaries:
         if not binary.is_file():
             raise SystemExit(f"Not found: {binary}")
@@ -189,12 +199,21 @@ def main():
     if environment.get("QT_ROOT_DIR"):
         environment["PATH"] = str(Path(environment["QT_ROOT_DIR"]) / "bin") + os.pathsep + environment["PATH"]
 
+    if arguments.kernels:
+        runs = [(binary, f"{binary.stem}-{kernel}", {**environment, KERNEL_VARIABLE: kernel})
+                for binary in arguments.binaries for kernel in arguments.kernels]
+    else:
+        runs = [(binary, binary.stem, environment) for binary in arguments.binaries]
+    labels = [label for _, label, _ in runs]
+    if len(set(labels)) != len(labels):
+        raise SystemExit("Two runs share a label: rename one file.")
+
     names = [name for name, _ in arguments.pinned]
     if len(set(names)) != len(names):
         raise SystemExit("Two pinned series share a name.")
 
     series = [(name, mask, arguments.results / name) for name, mask in arguments.pinned] or [("", None, arguments.results)]
-    sys.exit(0 if run_rounds(arguments.binaries, arguments.rounds, series, catch_arguments, environment) else 1)
+    sys.exit(0 if run_rounds(runs, arguments.rounds, series, catch_arguments) else 1)
 
 if __name__ == "__main__":
     main()

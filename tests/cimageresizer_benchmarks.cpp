@@ -114,6 +114,24 @@ namespace
 		}
 	}
 
+	// IMAGE_PROCESSING_BENCHMARK_KERNEL: catmullrom or lanczos3 replaces a scenario's Auto kernel; auto or unset keeps it
+	ImageProcessing::ResizeKernel benchmarkedKernel(ImageProcessing::ResizeKernel scenarioKernel)
+	{
+		if (scenarioKernel != ImageProcessing::ResizeKernel::Auto)
+			return scenarioKernel;
+
+		const std::string name = qEnvironmentVariable("IMAGE_PROCESSING_BENCHMARK_KERNEL").toLower().toStdString();
+		if (name.empty() || name == "auto")
+			return scenarioKernel;
+		if (name == "catmullrom")
+			return ImageProcessing::ResizeKernel::CatmullRom;
+		if (name == "lanczos3")
+			return ImageProcessing::ResizeKernel::Lanczos3;
+
+		FAIL("IMAGE_PROCESSING_BENCHMARK_KERNEL is " << name << ", not auto, catmullrom or lanczos3");
+		return scenarioKernel;
+	}
+
 	void benchmarkResize(
 		const char* name,
 		uint64_t sourceWidth,
@@ -124,8 +142,9 @@ namespace
 		uint8_t pixelStrideBytes,
 		QImage::Format qImageFormat,
 		CThreadPool* threadPool = nullptr,
-		ImageProcessing::ResizeKernel kernel = ImageProcessing::ResizeKernel::Auto)
+		ImageProcessing::ResizeKernel scenarioKernel = ImageProcessing::ResizeKernel::Auto)
 	{
+		const ImageProcessing::ResizeKernel kernel = benchmarkedKernel(scenarioKernel);
 		const bool nearestNeighbor = kernel == ImageProcessing::ResizeKernel::NearestNeighbor;
 
 		// A section per scenario: -c "<scenario name>" runs one

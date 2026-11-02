@@ -97,7 +97,7 @@ In `scripts/perf/`, each with `--help`:
 
 | Script | Purpose |
 |---|---|
-| `run_benchmark_rounds.py` | Runs several builds' test executables in alternating rounds, one result file per run, and prints the other processes' CPU time over each run. `--no-controls` leaves out the QImage and SSE4.1 runs, about half of a round; `--controls-only` runs the QImage controls alone. `--pinned NAME=MASK`, repeatable, runs each build once per named series at the same time, each pinned to a hexadecimal affinity mask and at high priority on Windows, with results in a directory per series: a hybrid CPU's two core types in one run. |
+| `run_benchmark_rounds.py` | Runs several builds' test executables in alternating rounds, one result file per run, and prints the other processes' CPU time over each run. `--no-controls` leaves out the QImage and SSE4.1 runs, about half of a round; `--controls-only` runs the QImage controls alone. `--kernels auto,catmullrom` runs each build once per kernel, the filtered scenarios' Auto kernel replaced, labelled `<build>-<kernel>`. `--pinned NAME=MASK`, repeatable, runs each build once per named series at the same time, each pinned to a hexadecimal affinity mask and at high priority on Windows, with results in a directory per series: a hybrid CPU's two core types in one run. |
 | `compare_benchmark_rounds.py` | Per benchmark, each build against a reference build: the median of same-round ratios and the minimum-to-minimum ratio, the two figures of the per-CPU logs' A/B tables. `--rounds` prints each build's time in each round instead: a row that reads two levels by launch shows there. `--controls` reads the QImage controls in place of the resizer. |
 | `build_revisions.py` | Builds the tests of git revisions, each in a tree of its own: the revision's `git archive` with the three sibling repositories linked beside it at their current state, built by this checkout's `run_tests --build-only`. The executable lands in `<out>/bin/<label>`, the label the short hash; `--patch` applies a diff to every tree and appends its file name to the label. A tree keeps its build, for listings. Labels already built are skipped. |
 | `find_benchmark_steps.py` | Reads a history scan, builds in history order run once each by `run_benchmark_rounds.py`: each build against the one before, and the steps that persist over three builds on each side. Only the rows one run resolves: serial, 1 ms or more. `--tsv` writes every row's time per build. |
@@ -208,6 +208,31 @@ rounds. 8500T: MSVC, Qt 6.11.2. Pi: Clang 22; the soft temperature flag was set 
 
 - Nearest neighbor is 190-270x faster than the filtered kernel single-threaded, 64-77x against it threaded.
 - Threads slow nearest neighbor by 1-19%: 113 dest rows are too little work to split.
+
+### Catmull-Rom against Lanczos3 on downscales
+
+`ResizeKernel::Auto` downscales with Lanczos3; Catmull-Rom has 2/3 of its taps on each axis. At bfbf885, ten
+alternating rounds: Lanczos3 -> Catmull-Rom, minimum ms, and the median of same-round ratios. 8500T: MSVC. Pi: Clang 22
+and GCC 14.2. The full tables are in the [8500T's](cpu/core-i5-8500t.md) and the [Pi's](cpu/raspberry-pi-4.md) logs.
+"T": with threads.
+
+| Scenario | 8500T | Pi, Clang | Pi, GCC |
+|---|---|---|---|
+| 101 MP -> 720p | 140.6 -> 108.9, -22% | 1142 -> 894, -22% | 1230 -> 956, -22% |
+| 101 MP -> 720p, T | 39.6 -> 30.6, -26% | 370 -> 301, -20% | 401 -> 312, -22% |
+| 24 MP -> 1620x1080 | 41.8 -> 31.1, -26% | 311 -> 250, -21% | 319 -> 235, -26% |
+| 21 MP -> 175x117 | 20.8 -> 16.4, -21% | 202 -> 157, -21% | 224 -> 171, -22% |
+| 4K -> 1080p RGB32 | 17.0 -> 13.7, -19% | 132 -> 109, -17% | 132 -> 104, -21% |
+| 2.8 MP -> 1920x1280 | 9.07 -> 7.71, -15% | 61.1 -> 47.7, -22% | 63.3 -> 49.6, -22% |
+| 1080p -> 240p | 3.29 -> 2.57, -21% | 25.9 -> 21.1, -19% | 27.1 -> 21.7, -20% |
+| 4K -> 64x64 | 8.74 -> 6.11, -30% | 82.0 -> 62.8, -23% | 92.5 -> 68.6, -27% |
+| 4K -> 64x64, T | 3.18 -> 2.05, -35% | 30.4 -> 20.9, -31% | 33.7 -> 22.2, -34% |
+
+- Every downscale takes 15-35% less time with Catmull-Rom, on both machines and with each compiler. One threaded Pi row
+  read 12% by median, 16% minimum to minimum.
+- On the 8500T the strongest downscales gain about the taps' ratio of 2/3 and the mildest least. On the Pi most rows
+  gain 17-26% whatever the ratio.
+- Upscales, which `Auto` filters with Catmull-Rom in both runs, stay within 2.5%.
 
 ## What the design rests on
 

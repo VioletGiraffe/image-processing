@@ -639,6 +639,49 @@ minimum. Every NEON row pair goes through the changed conversion.
   its noise.
 - One run of the whole benchmark: about 50 s with either compiler.
 
+## Catmull-Rom against Lanczos3 on downscales
+
+bfbf885 with `--kernels auto,catmullrom`: each compiler's build timed with `Auto`, which downscales with Lanczos3, and
+with Catmull-Rom in its place. Ten alternating rounds of the four runs without controls, median of same-round ratios /
+minimum to minimum. "T": with threads. `vcgencmd get_throttled` printed `0x80000` after them; each label's runs took
+the same time within a second.
+
+| Scenario | Clang, Lanczos3, min ms | Clang, Catmull-Rom, min ms | Clang | GCC, Lanczos3, min ms | GCC, Catmull-Rom, min ms | GCC |
+|---|---:|---:|---:|---:|---:|---:|
+| 101 MP -> 720p RGB32 | 1142.18 | 893.60 | -21.8% / -21.8% | 1230.38 | 955.77 | -22.2% / -22.3% |
+| 24 MP -> 1620x1080 RGB32 | 310.64 | 249.75 | -20.6% / -19.6% | 318.64 | 235.26 | -26.2% / -26.2% |
+| 21 MP -> 175x117 RGB32 | 201.51 | 157.37 | -21.2% / -21.9% | 223.65 | 171.48 | -22.0% / -23.3% |
+| 4K -> 1080p RGBA32 | 160.39 | 132.96 | -17.2% / -17.1% | 158.77 | 126.13 | -20.5% / -20.6% |
+| 4K -> 1080p RGB24 | 133.39 | 110.62 | -16.8% / -17.1% | 133.01 | 104.69 | -21.2% / -21.3% |
+| 4K -> 1080p RGB32 | 131.78 | 109.21 | -17.2% / -17.1% | 131.80 | 103.66 | -21.4% / -21.4% |
+| 4K -> 1080p Grayscale8 | 55.67 | 46.59 | -17.1% / -16.3% | 52.41 | 43.03 | -17.8% / -17.9% |
+| 4K -> 1600x900 RGB32 | 127.99 | 99.69 | -21.7% / -22.1% | 121.27 | 102.04 | -15.8% / -15.9% |
+| 4K -> 720p RGB32 | 111.42 | 88.31 | -20.6% / -20.7% | 116.93 | 81.86 | -30.0% / -30.0% |
+| 4K -> 200x113 RGBA32 | 99.60 | 79.92 | -20.5% / -19.8% | 104.05 | 83.10 | -20.8% / -20.1% |
+| 4K -> 200x113 RGB32 | 84.63 | 65.65 | -23.1% / -22.4% | 93.17 | 70.91 | -24.7% / -23.9% |
+| 4K -> 64x64 RGB32 | 82.02 | 62.81 | -23.1% / -23.4% | 92.46 | 68.56 | -26.5% / -25.9% |
+| 2.8 MP -> 1920x1280 RGB32 | 61.10 | 47.68 | -21.8% / -22.0% | 63.32 | 49.57 | -21.9% / -21.7% |
+| 1080p -> 240p RGB32 | 25.89 | 21.09 | -19.0% / -18.5% | 27.14 | 21.73 | -20.1% / -19.9% |
+| 1080p -> 120x68 RGB32 | 20.79 | 15.84 | -24.4% / -23.8% | 22.89 | 17.17 | -25.4% / -25.0% |
+| 101 MP -> 720p RGB32, T | 370.19 | 300.51 | -20.4% / -18.8% | 401.33 | 312.41 | -22.1% / -22.2% |
+| 24 MP -> 1620x1080 RGB32, T | 89.95 | 73.14 | -19.8% / -18.7% | 92.20 | 67.66 | -26.5% / -26.6% |
+| 4K -> 1080p RGBA32, T | 47.22 | 39.47 | -11.5% / -16.4% | 47.26 | 38.96 | -18.9% / -17.6% |
+| 4K -> 1080p RGB24, T | 37.11 | 30.89 | -17.2% / -16.8% | 37.57 | 29.94 | -19.8% / -20.3% |
+| 4K -> 200x113 RGBA32, T | 36.54 | 28.03 | -25.1% / -23.3% | 38.06 | 28.40 | -24.4% / -25.4% |
+| 4K -> 200x113 RGB32, T | 30.12 | 22.31 | -25.9% / -25.9% | 32.28 | 23.32 | -28.9% / -27.7% |
+| 4K -> 64x64 RGB32, T | 30.36 | 20.92 | -30.7% / -31.1% | 33.73 | 22.24 | -34.2% / -34.1% |
+| 1080p -> 240p RGB32, T | 7.80 | 6.20 | -20.1% / -20.6% | 8.01 | 6.37 | -19.1% / -20.5% |
+
+- The gain follows the downscale's strength less than on the 8500T: the mild 2.8 MP -> 1920x1280 gains 22% with either
+  compiler, against 15% on the 8500T.
+- The compilers' order changes with the tap count. 4K -> 1600x900: GCC 5% ahead of Clang with Lanczos3, 2% behind with
+  Catmull-Rom. 4K -> 720p: GCC 5% behind with Lanczos3, 7% ahead with Catmull-Rom.
+- The upscales, Catmull-Rom in both runs, and the nearest-neighbor rows: within 2.5%, but the nearest-neighbor
+  4K -> 200x113 rows, 0.5 ms, up to 6.6%.
+- The native-size row, the same copy in both runs, read +8.3% / +8.3% under Clang: its runs spread 3.0-3.7 ms by process
+  on either side. Not the environment's length, which the kernel variable changes: a sweep of a padding variable over
+  0-32 bytes, two processes each, gave 3.0-3.5 ms in no order.
+
 ## Experiments that lost
 
 **2. An early return and register-held span state in `prepareRun`.** Both together cost 2-5% single-threaded and nothing
