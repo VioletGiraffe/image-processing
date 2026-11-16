@@ -416,8 +416,8 @@ On x64 Linux, and under clang-cl, the AVX2 kernel file compiles through its own 
   and Grayscale8 downscales and 101 MP -> 720p, and gains 2% on the RGBA32 upscale. The older CPUs' gain was preferred.
   AMD is unmeasured.
 - The option requires a build without LTO: the assembler runs at the link under LTO, and a per-file option is then
-  ignored without a diagnostic. LTO's only effect on a kernel, x64 and NEON alike, when the tests used it:
-  `TempRowRing`'s constructor, run once per band and strip, inlined into it.
+  ignored; GCC's `lto-wrapper` warns that it drops the option. LTO's only effect on a kernel, x64 and NEON alike, when
+  the tests used it: `TempRowRing`'s constructor, run once per band and strip, inlined into it.
 - The SSE4.1 kernels are left alone, as under MSVC: padding them costs the CPUs without the erratum (open lead 5).
 
 ### One-channel upscales filter four columns at a time (0bd90e4)

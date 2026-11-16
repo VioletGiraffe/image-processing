@@ -10,6 +10,11 @@ include(../global.pri)
 CONFIG -= ltcg
 QMAKE_CXXFLAGS -= /GL
 QMAKE_LFLAGS -= /LTCG
+linux*|mac*|freebsd {
+	QMAKE_CXXFLAGS -= -flto=auto -flto=thin -ffat-lto-objects
+	# Overrides any LTO flag spelled differently from those removed above
+	QMAKE_CXXFLAGS += -fno-lto
+}
 
 INCLUDEPATH += \
 	../cpp-template-utils
