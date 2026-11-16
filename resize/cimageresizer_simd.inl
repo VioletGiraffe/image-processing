@@ -499,10 +499,14 @@ namespace ImageProcessing::Detail::IMAGE_PROCESSING_SIMD_LEVEL
 				return readLength;
 		}
 
+		STORE_COMPILER_WARNINGS
+		// Every byte offset passed here is a whole number of floats
+		DISABLE_CLANG_GCC_WARNING("-Wcast-align")
 		[[nodiscard]] IMAGE_PROCESSING_SIMD_INLINE const float* floatsAtByteOffset(const float* floats, size_t bytes) noexcept
 		{
 			return reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(floats) + bytes);
 		}
+		RESTORE_COMPILER_WARNINGS
 
 		// Hides the pointer's value from Clang and GCC: they rederive a stepped pointer as origin plus offset, and fold that into each load as an index
 		IMAGE_PROCESSING_SIMD_INLINE void keepInRegister([[maybe_unused]] const float*& pointer) noexcept
